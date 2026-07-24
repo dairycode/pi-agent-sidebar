@@ -1,0 +1,1346 @@
+import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
+import path from "node:path";
+import * as vscode from "vscode";
+import { AsyncQueue } from "./asyncQueue.js";
+import {
+	AttachmentStore,
+	imageMimeTypeFromPath,
+	MAX_TOTAL_IMAGE_BYTES,
+	type ResolvedAttachment,
+} from "./attachmentStore.js";
+import { probePiBinary } from "./binaryProbe.js";
+import {
+	formatCodeReferenceMarker,
+	nearestOffset,
+	removeCodeReferenceRanges,
+	selectedLineRange,
+	serializeCodeReferencePayload,
+	serializeContextValue,
+	uniqueCodeReferenceMarker,
+	type CodeReferencePayload,
+} from "./codeReferences.js";
+import { PiRpcClient } from "./piRpcClient.js";
+import {
+	parseCommandsResponse,
+	parseMessagesResponse,
+	parseModelsResponse,
+	parsePiState,
+	parsePiStats,
+	parseSessionChangeResult,
+	parseThinkingLevelsResponse,
+	validateRpcEvent,
+} from "./rpcValidation.js";
+import {
+	deleteProjectSession,
+	listProjectSessions,
+	resolveSessionDirectory,
+} from "./sessionStore.js";
+import {
+	parseWebviewMessage,
+	type CodeReference,
+	type HostToWebviewMessage,
+	type JsonRecord,
+	type PiModel,
+	type PiState,
+	type PiStats,
+} from "./shared/protocol.js";
+import { createWebviewDocument } from "./webviewDocument.js";
+
+const VIEW_TYPE = "piAgentSidebar.chatView";
+const MAX_CODE_REFERENCE_COUNT = 10;
+const MAX_CODE_REFERENCE_BYTES = 64 * 1024;
+const MAX_TOTAL_CODE_REFERENCE_BYTES = 256 * 1024;
+const LONG_COMMAND_TIMEOUT_MS = 10 * 60_000;
+const RESERVED_ARGUMENTS = new Set([
+	"--mode",
+	"--session",
+	"--session-dir",
+	"--continue",
+	"-c",
+	"--resume",
+	"-r",
+]);
+
+interface CapturedCodeReference {
+	summary: CodeReference;
+	payload: CodeReferencePayload;
+	uri: vscode.Uri;
+	selection: vscode.Selection;
+	startOffset: number;
+	key: string;
+	byteLength: number;
+}
+
+interface SubmittedCodeReference {
+	reference: CapturedCodeReference;
+	start: number;
+	end: number;
+}
+
+class RuntimeUnavailableError extends Error {}
+
+export class PiViewProvider
+	implements vscode.WebviewViewProvider, vscode.Disposable
+{
+	public static readonly viewType = VIEW_TYPE;
+
+	private view: vscode.WebviewView | undefined;
+	private client: PiRpcClient | undefined;
+	private startPromise: Promise<void> | undefined;
+	private workspaceFolder: vscode.WorkspaceFolder | undefined;
+	private state: PiState = {};
+	private models: PiModel[] = [];
+	private thinkingLevels: string[] = ["off"];
+	private streaming = false;
+	private disposed = false;
+	private webviewReady = false;
+	private composerFocusRequestSequence = Date.now();
+	private pendingComposerFocusRequestId: number | undefined;
+	private workspaceGeneration = 0;
+	private snapshotSequence = 0;
+	private shutdownPromise: Promise<void> | undefined;
+	private readonly sessionMutations = new AsyncQueue();
+	private readonly attachmentStore: AttachmentStore;
+	private readonly codeReferences = new Map<string, CapturedCodeReference>();
+
+	public constructor(
+		private readonly context: vscode.ExtensionContext,
+		private readonly output: vscode.OutputChannel,
+	) {
+		this.attachmentStore = new AttachmentStore(context.globalStorageUri.fsPath);
+		void this.attachmentStore.initialize().catch((error: unknown) => {
+			this.output.appendLine(`[attachments] ${toErrorMessage(error)}`);
+		});
+	}
+
+	public resolveWebviewView(view: vscode.WebviewView): void {
+		this.view = view;
+		this.webviewReady = false;
+		view.webview.options = {
+			enableScripts: true,
+			localResourceRoots: [
+				vscode.Uri.joinPath(this.context.extensionUri, "media"),
+			],
+		};
+		view.webview.html = this.getHtml(view.webview);
+
+		const messageDisposable = view.webview.onDidReceiveMessage(
+			(message: unknown) => {
+				void this.handleWebviewMessage(message);
+			},
+		);
+		const disposeDisposable = view.onDidDispose(() => {
+			messageDisposable.dispose();
+			disposeDisposable.dispose();
+			if (this.view === view) {
+				this.view = undefined;
+				this.webviewReady = false;
+			}
+		});
+
+		void this.post({
+			type: "bootstrap",
+			phase: "starting",
+			detail: "Starting pi...",
+		});
+	}
+
+	public async reveal(): Promise<void> {
+		await vscode.commands.executeCommand(`${VIEW_TYPE}.focus`);
+	}
+
+	public async focusInputWithSelection(
+		editor: vscode.TextEditor | undefined,
+	): Promise<void> {
+		if (editor && !editor.selection.isEmpty) {
+			try {
+				this.captureCodeReference(editor);
+			} catch (error) {
+				void vscode.window.showWarningMessage(toErrorMessage(error));
+			}
+		}
+		this.composerFocusRequestSequence += 1;
+		this.pendingComposerFocusRequestId = this.composerFocusRequestSequence;
+		await this.reveal();
+		await this.syncCodeReferences();
+	}
+
+	public async createNewSession(requireConfirmation = true): Promise<boolean> {
+		if (requireConfirmation && (this.state.messageCount ?? 0) > 0) {
+			const choice = await vscode.window.showWarningMessage(
+				"Start a new pi session? The current session remains available in history.",
+				{ modal: true },
+				"New Session",
+			);
+			if (choice !== "New Session") return false;
+		}
+		const references = [...this.codeReferences.values()];
+		const attachments = this.attachmentStore.resolve(
+			this.attachmentStore.list().map((attachment) => attachment.id),
+		);
+		return this.sessionMutations.enqueue(async () => {
+			const client = await this.ensureClient();
+			const result = parseSessionChangeResult(
+				await client.request({ type: "new_session" }),
+			);
+			if (result?.cancelled) return false;
+			for (const reference of references) {
+				if (this.codeReferences.get(reference.summary.id) === reference) {
+					this.codeReferences.delete(reference.summary.id);
+				}
+			}
+			await this.attachmentStore.removeResolved(attachments);
+			await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+			await this.refreshSnapshot();
+			return true;
+		});
+	}
+
+	public async restart(): Promise<void> {
+		await this.startClient(true);
+	}
+
+	public async handleWorkspaceFoldersChanged(): Promise<void> {
+		const folders = vscode.workspace.workspaceFolders ?? [];
+		if (
+			this.workspaceFolder &&
+			folders.some(
+				(folder) =>
+					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+			)
+		) {
+			return;
+		}
+
+		this.workspaceGeneration += 1;
+		const pendingStart = this.startPromise;
+		const client = this.client;
+		this.workspaceFolder = undefined;
+		this.state = {};
+		this.client = undefined;
+		this.codeReferences.clear();
+		this.pendingComposerFocusRequestId = undefined;
+		await this.attachmentStore.clear();
+		if (client) await client.stop();
+		await this.post({
+			type: "bootstrap",
+			phase: "starting",
+			detail: "Workspace changed. Starting pi...",
+		});
+		await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+		if (pendingStart) await pendingStart.catch(() => undefined);
+		if (this.view) {
+			try {
+				await this.ensureClient();
+			} catch (error) {
+				if (!(error instanceof RuntimeUnavailableError)) throw error;
+			}
+		}
+	}
+
+	public shutdown(): Promise<void> {
+		if (this.shutdownPromise) return this.shutdownPromise;
+		this.disposed = true;
+		this.workspaceGeneration += 1;
+		const client = this.client;
+		this.client = undefined;
+		this.shutdownPromise = (async () => {
+			if (client) await client.stop();
+			await this.sessionMutations.drain();
+			await this.attachmentStore.dispose();
+		})();
+		return this.shutdownPromise;
+	}
+
+	public dispose(): void {
+		void this.shutdown();
+	}
+
+	private async handleWebviewMessage(value: unknown): Promise<void> {
+		const message = parseWebviewMessage(value);
+		if (!message) {
+			this.output.appendLine("[webview] Ignored an invalid message.");
+			return;
+		}
+		try {
+			switch (message.type) {
+				case "ready": {
+					this.webviewReady = true;
+					await Promise.all([
+						this.syncAttachments(),
+						this.syncCodeReferences(),
+					]);
+					const wasRunning = Boolean(this.client?.isRunning);
+					await this.ensureClient();
+					if (wasRunning) await this.refreshSnapshot();
+					break;
+				}
+				case "composerFocused": {
+					if (message.requestId === this.pendingComposerFocusRequestId) {
+						this.pendingComposerFocusRequestId = undefined;
+					}
+					break;
+				}
+				case "submit": {
+					await this.respondToAction(message.actionId, () =>
+						this.submitPrompt(
+							message.text,
+							message.attachmentIds,
+							message.references,
+						),
+					);
+					break;
+				}
+				case "abort": {
+					await this.respondToAction(message.actionId, () =>
+						this.abortPrompt(),
+					);
+					break;
+				}
+				case "newSession": {
+					await this.respondToAction(message.actionId, async () => {
+						if (!(await this.createNewSession(false))) {
+							throw new Error("New session was cancelled by a pi extension.");
+						}
+					});
+					break;
+				}
+				case "switchSession": {
+					await this.respondToAction(message.actionId, () =>
+						this.switchSession(message.path),
+					);
+					break;
+				}
+				case "deleteSession": {
+					await this.respondToAction(message.actionId, () =>
+						this.deleteSession(message.path),
+					);
+					break;
+				}
+				case "setModel": {
+					await this.respondToAction(message.actionId, () =>
+						this.setModel(message.provider, message.modelId),
+					);
+					break;
+				}
+				case "setThinking": {
+					await this.respondToAction(message.actionId, () =>
+						this.setThinkingLevel(message.level),
+					);
+					break;
+				}
+				case "compact": {
+					await this.respondToAction(message.actionId, () =>
+						this.compactSession(),
+					);
+					break;
+				}
+				case "restart": {
+					await this.respondToAction(message.actionId, async () =>
+						this.startClient(true),
+					);
+					break;
+				}
+				case "listSessions": {
+					await this.sendSessionList();
+					break;
+				}
+				case "pickAttachments": {
+					await this.pickAttachments();
+					break;
+				}
+				case "pasteImages": {
+					await this.respondToAction(message.actionId, async () => {
+						await this.attachmentStore.storePastedImages(message.images);
+						await this.syncAttachments();
+					});
+					break;
+				}
+				case "removeAttachment": {
+					await this.attachmentStore.remove(message.id);
+					await this.syncAttachments();
+					break;
+				}
+				case "removeCodeReference": {
+					await this.removeCodeReference(message.id, message.revision);
+					break;
+				}
+				case "openCodeReference": {
+					await this.openCodeReference(message.id);
+					break;
+				}
+				case "openExternal": {
+					await this.openExternal(message.href);
+					break;
+				}
+				case "showLogs": {
+					this.output.show(true);
+					break;
+				}
+				default:
+					break;
+			}
+		} catch (error) {
+			if (error instanceof RuntimeUnavailableError) return;
+			const detail = toErrorMessage(error);
+			this.output.appendLine(`[webview] ${detail}`);
+			if ("actionId" in message && typeof message.actionId === "string") {
+				await this.post({
+					type: "actionResult",
+					actionId: message.actionId,
+					ok: false,
+					error: detail,
+				});
+			} else {
+				await this.post({ type: "connection", phase: "error", detail });
+			}
+		}
+	}
+
+	private async submitPrompt(
+		text: string,
+		attachmentIds: unknown,
+		referenceIdentities: unknown,
+	): Promise<void> {
+		const attachments = this.attachmentStore.resolve(attachmentIds);
+		const references = this.resolveCodeReferences(referenceIdentities, text);
+		const client = await this.ensureClient();
+		const prompt = await this.buildPrompt(text, attachments, references);
+		if (!prompt.message.trim() && prompt.images.length === 0)
+			throw new Error("Enter a message or attach context.");
+		await client.request({
+			type: "prompt",
+			message: prompt.message,
+			images: prompt.images.length > 0 ? prompt.images : undefined,
+			streamingBehavior: this.streaming ? "steer" : undefined,
+		});
+		for (const submitted of references) {
+			const reference = submitted.reference;
+			if (this.codeReferences.get(reference.summary.id) === reference) {
+				this.codeReferences.delete(reference.summary.id);
+			}
+		}
+		await this.attachmentStore.removeResolved(attachments);
+		await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+	}
+
+	private async abortPrompt(): Promise<void> {
+		const client = await this.ensureClient();
+		await client.request({ type: "abort" });
+	}
+
+	private switchSession(sessionPath: string): Promise<void> {
+		return this.sessionMutations.enqueue(async () => {
+			const client = await this.ensureClient();
+			const folder = await this.requireWorkspaceFolder();
+			const sessions = await listProjectSessions(
+				folder.uri.fsPath,
+				this.state.sessionFile,
+				this.configuredSessionDirectory(folder),
+			);
+			if (!sessions.some((session) => session.path === sessionPath)) {
+				throw new Error("Session is not part of this workspace.");
+			}
+			const result = parseSessionChangeResult(
+				await client.request({ type: "switch_session", sessionPath }),
+			);
+			if (result?.cancelled) {
+				throw new Error("Session switch was cancelled by a pi extension.");
+			}
+			await this.refreshSnapshot();
+		});
+	}
+
+	private deleteSession(sessionPath: string): Promise<void> {
+		return this.sessionMutations.enqueue(async () => {
+			const folder = await this.requireWorkspaceFolder();
+			const client = await this.ensureClient();
+			const freshState = parsePiState(
+				await client.request({ type: "get_state" }),
+			);
+			if (this.client !== client) {
+				throw new Error("Pi restarted before the session could be deleted.");
+			}
+			this.state = freshState;
+			await deleteProjectSession(
+				folder.uri.fsPath,
+				sessionPath,
+				freshState.sessionFile,
+				this.configuredSessionDirectory(folder),
+			);
+			await this.sendSessionList();
+		});
+	}
+
+	private async setModel(provider: string, modelId: string): Promise<void> {
+		if (
+			!this.models.some(
+				(model) => model.provider === provider && model.id === modelId,
+			)
+		) {
+			throw new Error("Selected model is no longer available.");
+		}
+		const client = await this.ensureClient();
+		await client.request({ type: "set_model", provider, modelId });
+		await this.refreshSnapshot();
+	}
+
+	private async setThinkingLevel(level: string): Promise<void> {
+		if (!this.thinkingLevels.includes(level))
+			throw new Error("Thinking level is not supported by this model.");
+		const client = await this.ensureClient();
+		await client.request({ type: "set_thinking_level", level });
+		await this.refreshSnapshot();
+	}
+
+	private async compactSession(): Promise<void> {
+		const client = await this.ensureClient();
+		await client.request({ type: "compact" }, LONG_COMMAND_TIMEOUT_MS);
+		await this.refreshSnapshot();
+	}
+
+	private async ensureClient(): Promise<PiRpcClient> {
+		if (this.startPromise) await this.startPromise;
+		if (this.client?.isRunning) return this.client;
+		await this.startClient(false);
+		if (!this.client?.isRunning)
+			throw new RuntimeUnavailableError("Pi runtime is unavailable.");
+		return this.client;
+	}
+
+	private async startClient(force: boolean): Promise<void> {
+		if (this.startPromise) return this.startPromise;
+		if (!force && this.client?.isRunning) return;
+
+		this.startPromise = this.doStartClient(force).finally(() => {
+			this.startPromise = undefined;
+		});
+		return this.startPromise;
+	}
+
+	private async doStartClient(force: boolean): Promise<void> {
+		if (this.disposed) return;
+		const generation = this.workspaceGeneration;
+		await this.post({
+			type: "connection",
+			phase: "starting",
+			detail: force ? "Restarting pi..." : "Starting pi...",
+		});
+
+		if (!vscode.workspace.isTrusted) {
+			await this.post({
+				type: "bootstrap",
+				phase: "no-workspace",
+				detail:
+					"Trust this workspace to let pi read, edit, and run project files.",
+			});
+			return;
+		}
+
+		const folder = await this.selectWorkspaceFolder();
+		if (generation !== this.workspaceGeneration) return;
+		if (!folder) {
+			await this.post({
+				type: "bootstrap",
+				phase: "no-workspace",
+				detail: "Open a workspace folder to start pi.",
+			});
+			return;
+		}
+
+		const configuration = vscode.workspace.getConfiguration("piAgentSidebar");
+		const binary = configuration.get<string>("binaryPath", "pi").trim() || "pi";
+		const additionalArguments = configuration.get<string[]>(
+			"additionalArguments",
+			[],
+		);
+		this.validateAdditionalArguments(additionalArguments);
+
+		const probe = await probePiBinary(binary, folder.uri.fsPath);
+		if (generation !== this.workspaceGeneration) return;
+		this.output.appendLine(
+			`[runtime] ${binary} ${probe.version} in ${folder.uri.fsPath}`,
+		);
+		if (probe.warning) {
+			this.output.appendLine(`[runtime] ${probe.warning}`);
+			void vscode.window.showWarningMessage(probe.warning);
+		}
+
+		const previousClient = this.client;
+		this.client = undefined;
+		if (previousClient) await previousClient.stop();
+		if (generation !== this.workspaceGeneration) return;
+
+		const args = [...additionalArguments, "--mode", "rpc"];
+		const sessionDirectory = this.configuredSessionDirectory(folder);
+		if (sessionDirectory) args.push("--session-dir", sessionDirectory);
+		if (configuration.get<boolean>("trustProjectResources", true))
+			args.push("--approve");
+		else args.push("--no-approve");
+
+		if (configuration.get<boolean>("restoreSession", true)) {
+			const lastSession = this.context.workspaceState.get<string>(
+				this.sessionStorageKey(folder),
+			);
+			if (lastSession && (await fileExists(lastSession)))
+				args.push("--session", lastSession);
+		}
+		if (generation !== this.workspaceGeneration) return;
+
+		const client = new PiRpcClient({
+			binary,
+			args,
+			cwd: folder.uri.fsPath,
+			env: process.env,
+		});
+		this.client = client;
+		this.attachClientListeners(client);
+		await client.start();
+		if (generation !== this.workspaceGeneration) {
+			if (this.client === client) this.client = undefined;
+			await client.stop();
+			return;
+		}
+		await this.refreshSnapshot();
+	}
+
+	private attachClientListeners(client: PiRpcClient): void {
+		client.onStderr((text) => this.output.append(text));
+		client.onProtocolError((message) => {
+			this.output.appendLine(`[protocol] ${message}`);
+			void this.post({ type: "connection", phase: "error", detail: message });
+		});
+		client.onExit((exit) => {
+			if (this.client !== client) return;
+			this.streaming = false;
+			this.output.appendLine(
+				`[runtime] Pi exited with code ${String(exit.code)}, signal ${String(exit.signal)}.`,
+			);
+			void this.post({
+				type: "connection",
+				phase: "disconnected",
+				detail: "Pi stopped. Restart the runtime to continue.",
+			});
+		});
+		client.onEvent((event) => {
+			if (this.client !== client) return;
+			try {
+				validateRpcEvent(event);
+			} catch (error) {
+				this.output.appendLine(`[protocol] ${toErrorMessage(error)}`);
+				return;
+			}
+			if (event.type === "agent_start") this.streaming = true;
+			if (event.type === "agent_settled") {
+				this.streaming = false;
+				void this.refreshSnapshot().catch((error: unknown) => {
+					this.handleSnapshotError(error);
+				});
+			}
+			if (event.type === "extension_ui_request") {
+				void this.handleExtensionUiRequest(client, event).catch(
+					(error: unknown) => {
+						this.output.appendLine(`[extension-ui] ${toErrorMessage(error)}`);
+					},
+				);
+				return;
+			}
+			void this.post({ type: "rpcEvent", event });
+		});
+	}
+
+	private async handleExtensionUiRequest(
+		client: PiRpcClient,
+		event: JsonRecord,
+	): Promise<void> {
+		const id = typeof event.id === "string" ? event.id : undefined;
+		const method = typeof event.method === "string" ? event.method : "";
+		if (!id || this.client !== client) return;
+
+		try {
+			if (method === "notify") {
+				const message =
+					typeof event.message === "string" ? event.message : "Pi notification";
+				if (event.notifyType === "error")
+					void vscode.window.showErrorMessage(message);
+				else if (event.notifyType === "warning")
+					void vscode.window.showWarningMessage(message);
+				else void vscode.window.showInformationMessage(message);
+				return;
+			}
+			if (method === "set_editor_text" && typeof event.text === "string") {
+				if (this.client === client) {
+					await this.post({ type: "setComposerText", text: event.text });
+				}
+				return;
+			}
+			if (
+				method === "setTitle" &&
+				typeof event.title === "string" &&
+				this.client === client &&
+				this.view
+			) {
+				this.view.title = event.title;
+				return;
+			}
+			if (["setStatus", "setWidget"].includes(method)) {
+				if (this.client === client)
+					await this.post({ type: "rpcEvent", event });
+				return;
+			}
+
+			if (method === "select") {
+				const options = Array.isArray(event.options)
+					? event.options.filter(
+							(item): item is string => typeof item === "string",
+						)
+					: [];
+				const value = await vscode.window.showQuickPick(options, {
+					title: typeof event.title === "string" ? event.title : "Pi",
+					ignoreFocusOut: true,
+				});
+				await this.notifyExtensionUiResponse(
+					client,
+					value === undefined
+						? { type: "extension_ui_response", id, cancelled: true }
+						: { type: "extension_ui_response", id, value },
+				);
+				return;
+			}
+			if (method === "confirm") {
+				const accepted = await vscode.window.showInformationMessage(
+					typeof event.message === "string" ? event.message : "Continue?",
+					{
+						modal: true,
+						detail: typeof event.title === "string" ? event.title : undefined,
+					},
+					"Confirm",
+				);
+				await this.notifyExtensionUiResponse(client, {
+					type: "extension_ui_response",
+					id,
+					confirmed: accepted === "Confirm",
+				});
+				return;
+			}
+			if (method === "input") {
+				const value = await vscode.window.showInputBox({
+					title: typeof event.title === "string" ? event.title : "Pi input",
+					placeHolder:
+						typeof event.placeholder === "string"
+							? event.placeholder
+							: undefined,
+					ignoreFocusOut: true,
+				});
+				await this.notifyExtensionUiResponse(
+					client,
+					value === undefined
+						? { type: "extension_ui_response", id, cancelled: true }
+						: { type: "extension_ui_response", id, value },
+				);
+				return;
+			}
+			if (method === "editor") {
+				const document = await vscode.workspace.openTextDocument({
+					content: typeof event.prefill === "string" ? event.prefill : "",
+					language: "markdown",
+				});
+				await vscode.window.showTextDocument(document, { preview: true });
+				const choice = await vscode.window.showInformationMessage(
+					typeof event.title === "string"
+						? event.title
+						: "Edit the pi response",
+					{
+						detail:
+							"Edit the opened document, then submit or cancel this request.",
+					},
+					"Submit",
+					"Cancel",
+				);
+				await this.notifyExtensionUiResponse(
+					client,
+					choice === "Submit"
+						? { type: "extension_ui_response", id, value: document.getText() }
+						: { type: "extension_ui_response", id, cancelled: true },
+				);
+				return;
+			}
+			await this.notifyExtensionUiResponse(client, {
+				type: "extension_ui_response",
+				id,
+				cancelled: true,
+			});
+		} catch (error) {
+			this.output.appendLine(`[extension-ui] ${toErrorMessage(error)}`);
+			try {
+				await this.notifyExtensionUiResponse(client, {
+					type: "extension_ui_response",
+					id,
+					cancelled: true,
+				});
+			} catch (responseError) {
+				this.output.appendLine(
+					`[extension-ui] Failed to cancel request: ${toErrorMessage(responseError)}`,
+				);
+			}
+		}
+	}
+
+	private async notifyExtensionUiResponse(
+		client: PiRpcClient,
+		response: JsonRecord,
+	): Promise<void> {
+		if (this.client !== client || !client.isRunning) return;
+		await client.notify(response);
+	}
+
+	private handleSnapshotError(error: unknown): void {
+		const detail = `Unable to refresh the pi session: ${toErrorMessage(error)}`;
+		this.output.appendLine(`[snapshot] ${detail}`);
+		void this.post({ type: "connection", phase: "error", detail });
+	}
+
+	private async refreshSnapshot(): Promise<void> {
+		const sequence = ++this.snapshotSequence;
+		const client = this.client;
+		const folder = this.workspaceFolder;
+		if (!client?.isRunning || !folder) return;
+
+		const [
+			stateResult,
+			messagesResult,
+			statsResult,
+			modelsResult,
+			levelsResult,
+			commandsResult,
+		] = await Promise.allSettled([
+			client.request({ type: "get_state" }),
+			client.request({ type: "get_messages" }),
+			client.request({ type: "get_session_stats" }),
+			client.request({ type: "get_available_models" }),
+			client.request({ type: "get_available_thinking_levels" }),
+			client.request({ type: "get_commands" }),
+		]);
+
+		if (this.client !== client || sequence !== this.snapshotSequence) return;
+		if (stateResult.status === "rejected") throw stateResult.reason;
+		if (messagesResult.status === "rejected") throw messagesResult.reason;
+
+		this.state = parsePiState(stateResult.value);
+		const messages = parseMessagesResponse(messagesResult.value);
+		this.streaming = Boolean(this.state.isStreaming);
+		this.models = this.parseOptionalSnapshot(
+			"models",
+			modelsResult,
+			parseModelsResponse,
+			[],
+		);
+		this.thinkingLevels = this.parseOptionalSnapshot(
+			"thinking levels",
+			levelsResult,
+			parseThinkingLevelsResponse,
+			["off"],
+		);
+		const stats = this.parseOptionalSnapshot<PiStats | undefined>(
+			"session stats",
+			statsResult,
+			parsePiStats,
+			undefined,
+		);
+		const commands = this.parseOptionalSnapshot(
+			"commands",
+			commandsResult,
+			parseCommandsResponse,
+			[],
+		);
+
+		if (this.state.sessionFile) {
+			await this.context.workspaceState.update(
+				this.sessionStorageKey(folder),
+				this.state.sessionFile,
+			);
+		}
+
+		await this.post({
+			type: "snapshot",
+			state: this.state,
+			messages,
+			stats,
+			models: this.models,
+			thinkingLevels: this.thinkingLevels,
+			commands,
+			workspaceName: folder.name,
+		});
+		await this.post({ type: "connection", phase: "ready" });
+	}
+
+	private parseOptionalSnapshot<T>(
+		label: string,
+		result: PromiseSettledResult<unknown>,
+		parse: (value: unknown) => T,
+		fallback: T,
+	): T {
+		if (result.status === "rejected") {
+			this.output.appendLine(
+				`[snapshot] ${label}: ${toErrorMessage(result.reason)}`,
+			);
+			return fallback;
+		}
+		try {
+			return parse(result.value);
+		} catch (error) {
+			this.output.appendLine(`[snapshot] ${label}: ${toErrorMessage(error)}`);
+			return fallback;
+		}
+	}
+
+	private async respondToAction(
+		actionId: string,
+		operation: () => Promise<void>,
+	): Promise<void> {
+		try {
+			await operation();
+			await this.post({ type: "actionResult", actionId, ok: true });
+		} catch (error) {
+			await this.post({
+				type: "actionResult",
+				actionId,
+				ok: false,
+				error: toErrorMessage(error),
+			});
+		}
+	}
+
+	private async sendSessionList(): Promise<void> {
+		const folder = await this.requireWorkspaceFolder();
+		const sessions = await listProjectSessions(
+			folder.uri.fsPath,
+			this.state.sessionFile,
+			this.configuredSessionDirectory(folder),
+		);
+		await this.post({ type: "sessionList", sessions });
+	}
+
+	private captureCodeReference(editor: vscode.TextEditor): void {
+		const { document, selection } = editor;
+		const text = document.getText(selection);
+		if (!text) return;
+
+		const byteLength = Buffer.byteLength(text, "utf8");
+		if (byteLength > MAX_CODE_REFERENCE_BYTES) {
+			throw new Error("Select at most 64 KB of code for one reference.");
+		}
+
+		const key = [
+			document.uri.toString(),
+			selection.start.line,
+			selection.start.character,
+			selection.end.line,
+			selection.end.character,
+		].join(":");
+		const existing = [...this.codeReferences.values()].find(
+			(reference) => reference.key === key,
+		);
+		if (!existing && this.codeReferences.size >= MAX_CODE_REFERENCE_COUNT) {
+			throw new Error(
+				`Attach at most ${MAX_CODE_REFERENCE_COUNT} code references per message.`,
+			);
+		}
+		const totalBytes = [...this.codeReferences.values()].reduce(
+			(total, reference) =>
+				reference === existing ? total : total + reference.byteLength,
+			0,
+		);
+		if (totalBytes + byteLength > MAX_TOTAL_CODE_REFERENCE_BYTES) {
+			throw new Error("Code references exceed the 256 KB total limit.");
+		}
+
+		const lines = selectedLineRange(
+			selection.start.line,
+			selection.end.line,
+			selection.end.character,
+		);
+		const displayPath = this.codeReferenceDisplayPath(document);
+		const id = existing?.summary.id ?? randomUUID();
+		const revision = (existing?.summary.revision ?? -1) + 1;
+		const baseMarker = formatCodeReferenceMarker(
+			displayPath,
+			lines.startLine,
+			lines.endLine,
+		);
+		const marker =
+			existing?.summary.marker ??
+			uniqueCodeReferenceMarker(
+				baseMarker,
+				id,
+				new Set(
+					[...this.codeReferences.values()].map(
+						(reference) => reference.summary.marker,
+					),
+				),
+			);
+		const payload: CodeReferencePayload = {
+			path:
+				document.uri.scheme === "untitled"
+					? document.uri.toString(true)
+					: document.uri.fsPath || document.uri.toString(true),
+			displayPath,
+			languageId: document.languageId,
+			startLine: lines.startLine,
+			endLine: lines.endLine,
+			text,
+		};
+		this.codeReferences.set(id, {
+			summary: { id, revision, marker, displayPath, ...lines },
+			payload,
+			uri: document.uri,
+			selection,
+			startOffset: document.offsetAt(selection.start),
+			key,
+			byteLength,
+		});
+	}
+
+	private codeReferenceDisplayPath(document: vscode.TextDocument): string {
+		if (document.uri.scheme === "untitled") {
+			return path.basename(document.fileName) || "Untitled";
+		}
+		const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+		if (folder) {
+			const includeWorkspaceFolder =
+				(vscode.workspace.workspaceFolders?.length ?? 0) > 1;
+			return vscode.workspace
+				.asRelativePath(document.uri, includeWorkspaceFolder)
+				.split(path.sep)
+				.join("/");
+		}
+		return document.fileName || document.uri.toString(true);
+	}
+
+	private async syncCodeReferences(): Promise<void> {
+		if (!this.webviewReady) return;
+		await this.post({
+			type: "codeReferences",
+			references: [...this.codeReferences.values()].map(
+				(reference) => reference.summary,
+			),
+			focusRequestId: this.pendingComposerFocusRequestId,
+		});
+	}
+
+	private async removeCodeReference(
+		id: unknown,
+		revision: unknown,
+	): Promise<void> {
+		if (
+			typeof id !== "string" ||
+			typeof revision !== "number" ||
+			!Number.isInteger(revision)
+		)
+			return;
+		const reference = this.codeReferences.get(id);
+		if (!reference || reference.summary.revision !== revision) return;
+		this.codeReferences.delete(id);
+		await this.syncCodeReferences();
+	}
+
+	private async openCodeReference(id: string): Promise<void> {
+		const reference = this.codeReferences.get(id);
+		if (!reference) return;
+		try {
+			const document = await vscode.workspace.openTextDocument(reference.uri);
+			const editor = await vscode.window.showTextDocument(document, {
+				preview: true,
+			});
+			const start = document.validatePosition(reference.selection.start);
+			const end = document.validatePosition(reference.selection.end);
+			let selection = new vscode.Selection(start, end);
+			if (document.getText(selection) !== reference.payload.text) {
+				const documentText = document.getText();
+				const anchor = Math.min(reference.startOffset, documentText.length);
+				const before = documentText.lastIndexOf(reference.payload.text, anchor);
+				const after = documentText.indexOf(reference.payload.text, anchor);
+				const match = nearestOffset(anchor, before, after);
+				if (match >= 0) {
+					selection = new vscode.Selection(
+						document.positionAt(match),
+						document.positionAt(match + reference.payload.text.length),
+					);
+				}
+			}
+			editor.selection = selection;
+			editor.revealRange(
+				selection,
+				vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+			);
+		} catch (error) {
+			this.output.appendLine(
+				`[reference] Failed to open code reference: ${toErrorMessage(error)}`,
+			);
+			void vscode.window.showWarningMessage(
+				`Unable to open ${reference.summary.displayPath}.`,
+			);
+		}
+	}
+
+	private resolveCodeReferences(
+		values: unknown,
+		text: string,
+	): SubmittedCodeReference[] {
+		if (!Array.isArray(values)) return [];
+		if (values.length > MAX_CODE_REFERENCE_COUNT) {
+			throw new Error(
+				`Attach at most ${MAX_CODE_REFERENCE_COUNT} code references per message.`,
+			);
+		}
+		const references: SubmittedCodeReference[] = [];
+		const seen = new Set<string>();
+		for (const value of values) {
+			if (!value || typeof value !== "object") {
+				throw new Error("Invalid code reference.");
+			}
+			const { id, revision, start, end } = value as {
+				id?: unknown;
+				revision?: unknown;
+				start?: unknown;
+				end?: unknown;
+			};
+			if (
+				typeof id !== "string" ||
+				id.length === 0 ||
+				id.length > 128 ||
+				typeof revision !== "number" ||
+				!Number.isSafeInteger(revision) ||
+				revision < 0 ||
+				typeof start !== "number" ||
+				!Number.isSafeInteger(start) ||
+				start < 0 ||
+				typeof end !== "number" ||
+				!Number.isSafeInteger(end) ||
+				end <= start ||
+				end > text.length
+			) {
+				throw new Error("Invalid code reference.");
+			}
+			const key = `${id}:${revision}`;
+			if (seen.has(key)) throw new Error("Duplicate code reference.");
+			seen.add(key);
+			const reference = this.codeReferences.get(id);
+			if (!reference || reference.summary.revision !== revision) {
+				throw new Error("A code reference changed. Attach it again.");
+			}
+			if (text.slice(start, end) !== reference.summary.marker) {
+				throw new Error("A code reference marker changed. Attach it again.");
+			}
+			references.push({ reference, start, end });
+		}
+		const sorted = [...references].sort(
+			(left, right) => left.start - right.start,
+		);
+		for (let index = 1; index < sorted.length; index += 1) {
+			if ((sorted[index - 1]?.end ?? 0) > (sorted[index]?.start ?? 0)) {
+				throw new Error("Code reference markers overlap.");
+			}
+		}
+		return references;
+	}
+
+	private async pickAttachments(): Promise<void> {
+		const folder = await this.requireWorkspaceFolder();
+		const selected = await vscode.window.showOpenDialog({
+			defaultUri: folder.uri,
+			canSelectFiles: true,
+			canSelectFolders: false,
+			canSelectMany: true,
+			openLabel: "Attach to pi",
+		});
+		if (!selected) return;
+
+		try {
+			this.attachmentStore.registerSelected(
+				selected.map((uri) => {
+					const mimeType = imageMimeTypeFromPath(uri.fsPath);
+					return {
+						filePath: uri.fsPath,
+						label: path.basename(uri.fsPath),
+						kind: mimeType ? ("image" as const) : ("file" as const),
+						mimeType,
+					};
+				}),
+			);
+			await this.syncAttachments();
+		} catch (error) {
+			void vscode.window.showWarningMessage(toErrorMessage(error));
+		}
+	}
+
+	private async syncAttachments(): Promise<void> {
+		if (!this.webviewReady) return;
+		await this.post({
+			type: "attachments",
+			attachments: this.attachmentStore.list(),
+		});
+	}
+
+	private async buildPrompt(
+		text: string,
+		attachments: ResolvedAttachment[],
+		references: SubmittedCodeReference[],
+	): Promise<{
+		message: string;
+		images: Array<{ type: "image"; data: string; mimeType: string }>;
+	}> {
+		if (typeof text !== "string" || text.length > 1_000_000) {
+			throw new Error("Message is too large.");
+		}
+
+		const files: string[] = [];
+		const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
+		let totalImageBytes = 0;
+		for (const attachment of attachments) {
+			if (attachment.summary.kind !== "image") {
+				await this.attachmentStore.validateRegularFile(attachment);
+				files.push(attachment.filePath);
+				continue;
+			}
+			const image = await this.attachmentStore.readImage(attachment);
+			totalImageBytes += image.data.byteLength;
+			if (totalImageBytes > MAX_TOTAL_IMAGE_BYTES) {
+				throw new Error("Attached images exceed the 12 MB total limit.");
+			}
+			images.push({
+				type: "image",
+				data: image.data.toString("base64"),
+				mimeType: image.mimeType,
+			});
+		}
+
+		const contextLines = [
+			...files.map((file) => `- file: ${serializeContextValue(file)}`),
+			...references.map(
+				({ reference }) =>
+					`- selection: ${serializeCodeReferencePayload(reference.payload)}`,
+			),
+		];
+		const contextBlock =
+			contextLines.length > 0
+				? `<pi-context>\n${contextLines.join("\n")}\n</pi-context>\n\n`
+				: "";
+		let promptText = removeCodeReferenceRanges(
+			text,
+			references.map(({ start, end }) => ({ start, end })),
+		);
+		if (!promptText.trim()) {
+			if (references.length > 0) promptText = "Inspect the selected code.";
+			else if (images.length > 0) promptText = "Inspect the attached image.";
+		}
+		const message = `${contextBlock}${promptText}`;
+		if (message.length > 1_000_000) throw new Error("Message is too large.");
+		return { message, images };
+	}
+
+	private async selectWorkspaceFolder(): Promise<
+		vscode.WorkspaceFolder | undefined
+	> {
+		const folders = vscode.workspace.workspaceFolders;
+		if (!folders || folders.length === 0) return undefined;
+		if (
+			this.workspaceFolder &&
+			folders.some(
+				(folder) =>
+					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+			)
+		) {
+			return this.workspaceFolder;
+		}
+
+		const savedUri = this.context.workspaceState.get<string>(
+			"piAgentSidebar.workspaceFolder",
+		);
+		const saved = folders.find((folder) => folder.uri.toString() === savedUri);
+		if (saved) {
+			this.workspaceFolder = saved;
+			return saved;
+		}
+
+		const selected =
+			folders.length === 1
+				? folders[0]
+				: await vscode.window.showWorkspaceFolderPick({
+						placeHolder:
+							"Select the workspace folder pi can edit and run commands in",
+					});
+		if (selected) {
+			this.workspaceFolder = selected;
+			await this.context.workspaceState.update(
+				"piAgentSidebar.workspaceFolder",
+				selected.uri.toString(),
+			);
+		}
+		return selected;
+	}
+
+	private async requireWorkspaceFolder(): Promise<vscode.WorkspaceFolder> {
+		const folder = await this.selectWorkspaceFolder();
+		if (!folder) throw new Error("Open a workspace folder first.");
+		return folder;
+	}
+
+	private validateAdditionalArguments(args: string[]): void {
+		for (const argument of args) {
+			const key = argument.split("=")[0];
+			if (key && RESERVED_ARGUMENTS.has(key)) {
+				throw new Error(
+					`Remove reserved argument '${argument}' from piAgentSidebar.additionalArguments.`,
+				);
+			}
+		}
+	}
+
+	private async openExternal(href: string): Promise<void> {
+		let uri: vscode.Uri;
+		try {
+			uri = vscode.Uri.parse(href, true);
+		} catch {
+			throw new Error("Invalid external link.");
+		}
+		if (uri.scheme !== "https" && uri.scheme !== "http")
+			throw new Error("Only HTTP and HTTPS links can be opened.");
+		await vscode.env.openExternal(uri);
+	}
+
+	private configuredSessionDirectory(
+		folder: vscode.WorkspaceFolder,
+	): string | undefined {
+		const configured = vscode.workspace
+			.getConfiguration("piAgentSidebar")
+			.get<string>("sessionDirectory", "");
+		return resolveSessionDirectory(folder.uri.fsPath, configured);
+	}
+
+	private sessionStorageKey(folder: vscode.WorkspaceFolder): string {
+		return `piAgentSidebar.lastSession:${folder.uri.toString()}`;
+	}
+
+	private async post(message: HostToWebviewMessage): Promise<boolean> {
+		return this.view ? this.view.webview.postMessage(message) : false;
+	}
+
+	private getHtml(webview: vscode.Webview): string {
+		return createWebviewDocument(webview, this.context.extensionUri);
+	}
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+	try {
+		await stat(filePath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function toErrorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}

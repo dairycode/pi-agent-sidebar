@@ -1,0 +1,129 @@
+# Changelog
+
+## 0.2.12
+
+- Color inline code references blue and switch toolbar, tool, and reasoning
+  hover backgrounds to a neutral gray.
+- Keep the running send button a solid accent that brightens on hover.
+- Even out composer, message, and reasoning spacing and reliably scroll to the
+  latest message after sending, including image replies.
+
+## 0.2.11
+
+- Give the composer host-owned attachment IDs with bounded, regular-file image
+  reads, magic-byte validation, immediate temporary-file cleanup, and
+  per-extension-host storage isolation.
+- Serialize new/switch/delete session mutations and resolve a relative
+  `piAgentSidebar.sessionDirectory` against the workspace folder.
+- Bind pi extension UI responses to the originating runtime so a restart cannot
+  answer the replacement process.
+- Give every inline code reference a unique marker plus a tracked composer span
+  so same-line selections and literal text no longer collide.
+- Validate webview messages and pi RPC snapshots at the boundary and harden the
+  webview CSP and nonce.
+- Add hermetic attachment, protocol, composer, RPC, and async-queue tests plus
+  a reproducible-build drift check; stop committing generated bundles.
+
+## 0.2.10
+
+- Add a product screenshot to the Marketplace overview.
+- Add `Cmd+Esc` (`Ctrl+Esc` on Windows and Linux) editor-selection references
+  with exact unsaved text, accent-colored inline `@path#line` markers, and
+  source navigation.
+
+## 0.2.9
+
+- Replace the session history panel with a compact searchable popover and add
+  confirmed deletion with active-session and workspace safety checks.
+- Add a sharper transparent 256 px Marketplace icon.
+- Place active LSP/runtime status and context usage on one compact composer row,
+  hiding inactive states and preserving truncated details in tooltips.
+- Replace the visible working label and spinner with a reduced-motion-aware
+  accent light that sweeps across the composer divider.
+- Keep current reasoning expanded while it streams, collapse it automatically
+  when the message completes, and tighten consecutive activity spacing.
+- Reserve enough composer width for short thinking levels such as `xhigh` and
+  expose the complete selected value in a tooltip.
+
+## 0.2.0
+
+- Redesign the Webview around a restrained terracotta visual system inspired
+  by the information density of Claude Code while retaining Pi branding.
+- Add full-width user turns and a unified reasoning/tool activity timeline
+  with polished command output panels and persistent disclosure state.
+- Rework the composer with an orange border and focus ring, stable narrow-width
+  controls, orange primary action, compact metadata, and clearer busy state.
+- Improve dark, light, high-contrast, reduced-motion, and narrow sidebar styles.
+- Strip ANSI styling sequences from extension status and widget text.
+- Preserve the reader's scroll position while the agent is working.
+
+## 0.1.12
+
+- Use a compact 8 px Webview gutter and remove the header settings button,
+  leaving only session history and new session actions.
+
+## 0.1.11
+
+- Remove the Webview document padding so header actions can align with the
+  actual right edge while content areas retain their own spacing.
+
+## 0.1.10
+
+- Move the visible agent run state from the session header to the bottom of the
+  active response, replacing the standalone streaming cursor.
+
+## 0.1.9
+
+- Align the session action buttons closer to the view's right edge.
+
+## 0.1.8
+
+- Show reasoning content directly beside its label instead of collapsing it.
+- Add a visible working indicator, animated header progress line, pulsing status
+  dot, and accessible busy state while the agent runs.
+
+## 0.1.7
+
+- Merge the Send and Stop controls into one stateful composer button.
+
+## 0.1.6
+
+- Remove hidden connection-banner layout space and hide the welcome state as
+  soon as the first prompt is submitted.
+
+## 0.1.5
+
+- Size the model and thinking selectors to their selected text instead of
+  stretching them across the composer toolbar.
+
+## 0.1.4
+
+- Finalize concurrent storage and cleanup for pasted clipboard images.
+
+## 0.1.3
+
+- Let the model and thinking selectors use available width and wrap on narrow
+  sidebars instead of truncating their values.
+- Support pasting PNG, JPEG, GIF, and WebP clipboard images directly into the
+  prompt editor, with host-side count and size validation.
+
+## 0.1.2
+
+- Remove the New Session, Restart Runtime, and Show Logs buttons from the view
+  title bar. The commands remain available from the Command Palette.
+
+## 0.1.1
+
+- Namespace commands, views, configuration, and workspace state so Pi Agent
+  Sidebar can coexist with other pi extensions.
+- Harden Webview reconnection, session switching, RPC framing, runtime shutdown,
+  image limits, accessibility, and narrow-view behavior.
+- Add RPC framing and custom session-directory regression tests.
+
+## 0.1.0
+
+- Add the Pi Agent WebviewView in VS Code's auxiliary sidebar.
+- Add pi RPC process management, streaming messages, tool states, and native
+  extension UI requests.
+- Add session history, restoration, model and thinking controls, attachments,
+  Workspace Trust, and VSIX packaging.

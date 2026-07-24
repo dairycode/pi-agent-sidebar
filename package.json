@@ -1,0 +1,171 @@
+{
+  "name": "pi-sidebar",
+  "displayName": "Pi Agent Sidebar",
+  "description": "A focused pi coding-agent workspace in the VS Code auxiliary sidebar.",
+  "version": "0.2.12",
+  "publisher": "dairycode",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.129.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "pi",
+    "coding agent",
+    "ai",
+    "assistant"
+  ],
+  "activationEvents": [
+    "onView:piAgentSidebar.chatView",
+    "onCommand:piAgentSidebar.open",
+    "onCommand:piAgentSidebar.focusInput"
+  ],
+  "main": "./dist/extension.js",
+  "icon": "media/pi-logo.png",
+  "files": [
+    "dist/**",
+    "media/**",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "piAgentSidebar.open",
+        "title": "Pi Agent: Open",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "piAgentSidebar.focusInput",
+        "title": "Pi Agent: Focus Input with Selection"
+      },
+      {
+        "command": "piAgentSidebar.newSession",
+        "title": "Pi Agent: New Session",
+        "icon": "$(add)"
+      },
+      {
+        "command": "piAgentSidebar.restart",
+        "title": "Pi Agent: Restart Runtime",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "piAgentSidebar.showLogs",
+        "title": "Pi Agent: Show Logs",
+        "icon": "$(output)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "piAgentSidebar.focusInput",
+        "key": "ctrl+escape",
+        "mac": "cmd+escape",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Pi Agent",
+      "properties": {
+        "piAgentSidebar.binaryPath": {
+          "type": "string",
+          "default": "pi",
+          "scope": "machine",
+          "description": "Path to the pi executable. Use an absolute path when VS Code cannot resolve pi from PATH."
+        },
+        "piAgentSidebar.additionalArguments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "description": "Additional arguments passed to pi before RPC mode is enabled. Session and run-mode arguments are managed by this extension."
+        },
+        "piAgentSidebar.sessionDirectory": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Optional session storage directory passed to pi with --session-dir. Leave empty to use pi's default."
+        },
+        "piAgentSidebar.trustProjectResources": {
+          "type": "boolean",
+          "default": true,
+          "description": "Load project-local pi settings, extensions, skills, and prompts when the VS Code workspace is trusted."
+        },
+        "piAgentSidebar.restoreSession": {
+          "type": "boolean",
+          "default": true,
+          "description": "Restore the last Pi Agent session used in this workspace after VS Code reloads."
+        }
+      }
+    },
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "pi-agent-sidebar-secondary",
+          "title": "Pi Agent",
+          "icon": "media/pi.svg"
+        }
+      ]
+    },
+    "views": {
+      "pi-agent-sidebar-secondary": [
+        {
+          "type": "webview",
+          "id": "piAgentSidebar.chatView",
+          "name": "Pi Agent"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Pi can read, edit, and execute files. Trust the workspace before starting the agent."
+    }
+  },
+  "scripts": {
+    "clean": "node scripts/build.mjs --clean",
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test scripts/*.test.mjs",
+    "test:rpc": "node scripts/rpc-smoke.mjs",
+    "test:rpc:live": "node scripts/rpc-smoke.mjs",
+    "test": "npm run typecheck && npm run test:unit",
+    "check:generated": "node scripts/check-generated.mjs",
+    "verify": "npm run typecheck && npm run test:unit && npm run check:generated",
+    "package": "npm run typecheck && npm run test:unit && node scripts/build.mjs --production && vsce package --no-dependencies --allow-missing-repository",
+    "vscode:prepublish": "node scripts/build.mjs --production"
+  },
+  "knip": {
+    "entry": [
+      "src/extension.ts",
+      "webview/main.ts",
+      "scripts/*.mjs",
+      "scripts/**/*.mjs"
+    ],
+    "project": [
+      "src/**/*.ts",
+      "webview/**/*.ts",
+      "scripts/**/*.mjs"
+    ],
+    "ignoreDependencies": [
+      "@vscode/codicons"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.125.0",
+    "@vscode/codicons": "^0.0.44",
+    "@vscode/vsce": "^3.6.0",
+    "dompurify": "^3.2.6",
+    "esbuild": "^0.25.5",
+    "marked": "^15.0.12",
+    "typescript": "^5.8.3"
+  }
+}

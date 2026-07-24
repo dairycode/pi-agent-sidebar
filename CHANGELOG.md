@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.13
+
+- Add `author`, `repository`, `homepage`, and `bugs` metadata to the package
+  manifest and link the source repository from the README.
+
 ## 0.2.12
 
 - Color inline code references blue and switch toolbar, tool, and reasoning

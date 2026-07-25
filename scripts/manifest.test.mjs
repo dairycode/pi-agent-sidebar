@@ -8,6 +8,13 @@ const expectedCommands = [
 	"piAgentSidebar.newSession",
 	"piAgentSidebar.restart",
 	"piAgentSidebar.showLogs",
+	"piAgentSidebar.renameSession",
+	"piAgentSidebar.exportHtml",
+	"piAgentSidebar.explainSelection",
+	"piAgentSidebar.explainFile",
+	"piAgentSidebar.refactorSelection",
+	"piAgentSidebar.generateTests",
+	"piAgentSidebar.explainDiagnostics",
 ];
 
 test("manifest preserves public command IDs and selection keybindings", async () => {

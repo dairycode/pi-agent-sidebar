@@ -2,7 +2,7 @@
   "name": "pi-sidebar",
   "displayName": "Pi Agent Sidebar",
   "description": "A focused pi coding-agent workspace in the VS Code auxiliary sidebar.",
-  "version": "0.2.13",
+  "version": "0.3.0",
   "publisher": "dairycode",
   "license": "MIT",
   "author": "Liu Ze",
@@ -30,7 +30,14 @@
   "activationEvents": [
     "onView:piAgentSidebar.chatView",
     "onCommand:piAgentSidebar.open",
-    "onCommand:piAgentSidebar.focusInput"
+    "onCommand:piAgentSidebar.focusInput",
+    "onCommand:piAgentSidebar.explainSelection",
+    "onCommand:piAgentSidebar.explainFile",
+    "onCommand:piAgentSidebar.refactorSelection",
+    "onCommand:piAgentSidebar.generateTests",
+    "onCommand:piAgentSidebar.explainDiagnostics",
+    "onCommand:piAgentSidebar.renameSession",
+    "onCommand:piAgentSidebar.exportHtml"
   ],
   "main": "./dist/extension.js",
   "icon": "media/pi-logo.png",
@@ -66,8 +73,79 @@
         "command": "piAgentSidebar.showLogs",
         "title": "Pi Agent: Show Logs",
         "icon": "$(output)"
+      },
+      {
+        "command": "piAgentSidebar.renameSession",
+        "title": "Pi Agent: Rename Session",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "piAgentSidebar.exportHtml",
+        "title": "Pi Agent: Export Session to HTML",
+        "icon": "$(export)"
+      },
+      {
+        "command": "piAgentSidebar.explainSelection",
+        "title": "Pi Agent: Explain Selection"
+      },
+      {
+        "command": "piAgentSidebar.explainFile",
+        "title": "Pi Agent: Explain This File"
+      },
+      {
+        "command": "piAgentSidebar.refactorSelection",
+        "title": "Pi Agent: Refactor Selection"
+      },
+      {
+        "command": "piAgentSidebar.generateTests",
+        "title": "Pi Agent: Generate Tests for Selection"
+      },
+      {
+        "command": "piAgentSidebar.explainDiagnostics",
+        "title": "Pi Agent: Explain Problems in Selection"
       }
     ],
+    "submenus": [
+      {
+        "id": "piAgentSidebar.editorContext",
+        "label": "Pi Agent",
+        "icon": "media/pi.svg"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "piAgentSidebar.editorContext",
+          "group": "navigation@100"
+        }
+      ],
+      "piAgentSidebar.editorContext": [
+        {
+          "command": "piAgentSidebar.explainSelection",
+          "when": "editorHasSelection",
+          "group": "1_ask@1"
+        },
+        {
+          "command": "piAgentSidebar.refactorSelection",
+          "when": "editorHasSelection",
+          "group": "1_ask@2"
+        },
+        {
+          "command": "piAgentSidebar.generateTests",
+          "when": "editorHasSelection",
+          "group": "1_ask@3"
+        },
+        {
+          "command": "piAgentSidebar.explainDiagnostics",
+          "when": "editorHasSelection",
+          "group": "1_ask@4"
+        },
+        {
+          "command": "piAgentSidebar.explainFile",
+          "group": "2_file@1"
+        }
+      ]
+    },
     "keybindings": [
       {
         "command": "piAgentSidebar.focusInput",
@@ -109,6 +187,11 @@
           "type": "boolean",
           "default": true,
           "description": "Restore the last Pi Agent session used in this workspace after VS Code reloads."
+        },
+        "piAgentSidebar.autoRetry": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically retry transient provider errors (overloaded, rate limit, 5xx, and interrupted streams)."
         }
       }
     },

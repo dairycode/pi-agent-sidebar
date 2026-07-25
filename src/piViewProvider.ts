@@ -70,6 +70,7 @@ interface CapturedCodeReference {
 	startOffset: number;
 	key: string;
 	byteLength: number;
+	diagnostics: DiagnosticEntry[];
 }
 
 interface SubmittedCodeReference {
@@ -77,6 +78,42 @@ interface SubmittedCodeReference {
 	start: number;
 	end: number;
 }
+
+export type PresetPromptKind =
+	| "explainSelection"
+	| "explainFile"
+	| "refactorSelection"
+	| "generateTests"
+	| "explainDiagnostics";
+
+export interface StatusInfo {
+	phase: "starting" | "ready" | "disconnected" | "error" | "no-workspace";
+	modelName?: string;
+	thinkingLevel?: string;
+	contextPercent?: number;
+	streaming: boolean;
+}
+
+interface DiagnosticEntry {
+	line: number;
+	severity: string;
+	message: string;
+	source?: string;
+	code?: string;
+}
+
+const PRESET_INSTRUCTIONS: Record<PresetPromptKind, string> = {
+	explainSelection:
+		"Explain what the selected code does, step by step, and note anything surprising or risky.",
+	explainFile:
+		"Explain what this file does, its main responsibilities, and how its pieces fit together.",
+	refactorSelection:
+		"Refactor the selected code for clarity and maintainability without changing its behavior. Explain the key changes.",
+	generateTests:
+		"Write focused unit tests for the selected code using the project's existing test framework and conventions.",
+	explainDiagnostics:
+		"Explain the reported diagnostics for the selected code and propose a fix.",
+};
 
 class RuntimeUnavailableError extends Error {}
 
@@ -100,6 +137,7 @@ export class PiViewProvider
 	private workspaceGeneration = 0;
 	private snapshotSequence = 0;
 	private shutdownPromise: Promise<void> | undefined;
+	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
 	private readonly attachmentStore: AttachmentStore;
 	private readonly codeReferences = new Map<string, CapturedCodeReference>();
@@ -164,6 +202,132 @@ export class PiViewProvider
 		this.pendingComposerFocusRequestId = this.composerFocusRequestSequence;
 		await this.reveal();
 		await this.syncCodeReferences();
+	}
+
+	public async runPresetPrompt(
+		kind: PresetPromptKind,
+		editor: vscode.TextEditor | undefined,
+	): Promise<void> {
+		if (!editor) {
+			void vscode.window.showInformationMessage(
+				"Open a file in the editor to use this Pi action.",
+			);
+			return;
+		}
+		const needsSelection =
+			kind === "explainSelection" ||
+			kind === "refactorSelection" ||
+			kind === "generateTests" ||
+			kind === "explainDiagnostics";
+		if (needsSelection && editor.selection.isEmpty) {
+			// Fall back to the whole document range so the reference is meaningful.
+			const fullRange = new vscode.Selection(
+				editor.document.positionAt(0),
+				editor.document.positionAt(editor.document.getText().length),
+			);
+			editor.selection = fullRange;
+		}
+		try {
+			this.captureCodeReference(editor);
+		} catch (error) {
+			void vscode.window.showWarningMessage(toErrorMessage(error));
+		}
+		this.composerFocusRequestSequence += 1;
+		this.pendingComposerFocusRequestId = this.composerFocusRequestSequence;
+		await this.reveal();
+		await this.syncCodeReferences();
+		await this.post({
+			type: "setComposerText",
+			text: PRESET_INSTRUCTIONS[kind],
+		});
+	}
+
+	public async exportSessionHtml(): Promise<void> {
+		const client = await this.ensureClient();
+		const result = (await client.request({ type: "export_html" })) as
+			| { path?: unknown }
+			| undefined;
+		const exportedPath =
+			result && typeof result.path === "string" ? result.path : undefined;
+		if (!exportedPath) {
+			void vscode.window.showWarningMessage(
+				"Pi did not return an exported file path.",
+			);
+			return;
+		}
+		const choice = await vscode.window.showInformationMessage(
+			`Exported session to ${exportedPath}`,
+			"Open",
+		);
+		if (choice === "Open") {
+			const document = await vscode.workspace.openTextDocument(
+				vscode.Uri.file(exportedPath),
+			);
+			await vscode.window.showTextDocument(document, { preview: true });
+		}
+	}
+
+	public async renameSession(): Promise<void> {
+		const client = await this.ensureClient();
+		const name = await vscode.window.showInputBox({
+			title: "Rename Pi Session",
+			prompt: "Enter a display name for the current session.",
+			value:
+				typeof this.state.sessionName === "string"
+					? this.state.sessionName
+					: "",
+			ignoreFocusOut: true,
+		});
+		if (name === undefined) return;
+		await client.request({ type: "set_session_name", name });
+		await this.refreshSnapshot();
+	}
+
+	public bindStatusBar(item: vscode.StatusBarItem): void {
+		this.statusBarItem = item;
+		this.updateStatusBar("starting");
+	}
+
+	private updateStatusBar(
+		phase: "starting" | "ready" | "disconnected" | "error" | "no-workspace",
+	): void {
+		const item = this.statusBarItem;
+		if (!item) return;
+		const modelName = this.state.model?.name ?? this.state.model?.id;
+		let icon = "$(sparkle)";
+		let label = "Pi";
+		switch (phase) {
+			case "ready":
+				icon = this.streaming ? "$(sync~spin)" : "$(sparkle)";
+				label = modelName ? `Pi · ${modelName}` : "Pi";
+				break;
+			case "starting":
+				icon = "$(loading~spin)";
+				label = "Pi starting";
+				break;
+			case "disconnected":
+				icon = "$(debug-disconnect)";
+				label = "Pi stopped";
+				break;
+			case "error":
+				icon = "$(error)";
+				label = "Pi error";
+				break;
+			case "no-workspace":
+				icon = "$(folder)";
+				label = "Pi";
+				break;
+		}
+		item.text = `${icon} ${label}`;
+		const tooltipParts = ["Open Pi Agent"];
+		if (modelName) tooltipParts.push(`Model: ${modelName}`);
+		if (this.state.thinkingLevel)
+			tooltipParts.push(`Thinking: ${this.state.thinkingLevel}`);
+		const contextPercent = this.state.contextPercent;
+		if (typeof contextPercent === "number")
+			tooltipParts.push(`Context: ${contextPercent}%`);
+		item.tooltip = tooltipParts.join("\n");
+		item.show();
 	}
 
 	public async createNewSession(requireConfirmation = true): Promise<boolean> {
@@ -602,6 +766,14 @@ export class PiViewProvider
 			await client.stop();
 			return;
 		}
+		const autoRetry = configuration.get<boolean>("autoRetry", true);
+		try {
+			await client.request({ type: "set_auto_retry", enabled: autoRetry });
+		} catch (error) {
+			this.output.appendLine(
+				`[runtime] set_auto_retry: ${toErrorMessage(error)}`,
+			);
+		}
 		await this.refreshSnapshot();
 	}
 
@@ -999,6 +1171,7 @@ export class PiViewProvider
 			startOffset: document.offsetAt(selection.start),
 			key,
 			byteLength,
+			diagnostics: collectDiagnostics(document.uri, selection),
 		});
 	}
 
@@ -1222,6 +1395,15 @@ export class PiViewProvider
 				({ reference }) =>
 					`- selection: ${serializeCodeReferencePayload(reference.payload)}`,
 			),
+			...references
+				.filter(({ reference }) => reference.diagnostics.length > 0)
+				.map(
+					({ reference }) =>
+						`- diagnostics: ${serializeContextValue({
+							path: reference.payload.displayPath,
+							items: reference.diagnostics,
+						})}`,
+				),
 		];
 		const contextBlock =
 			contextLines.length > 0
@@ -1324,6 +1506,10 @@ export class PiViewProvider
 	}
 
 	private async post(message: HostToWebviewMessage): Promise<boolean> {
+		if (message.type === "connection") this.updateStatusBar(message.phase);
+		else if (message.type === "bootstrap" && message.phase === "no-workspace")
+			this.updateStatusBar("no-workspace");
+		else if (message.type === "snapshot") this.updateStatusBar("ready");
 		return this.view ? this.view.webview.postMessage(message) : false;
 	}
 
@@ -1343,4 +1529,51 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+const MAX_DIAGNOSTICS_PER_REFERENCE = 20;
+
+function diagnosticSeverityLabel(severity: vscode.DiagnosticSeverity): string {
+	switch (severity) {
+		case vscode.DiagnosticSeverity.Error:
+			return "error";
+		case vscode.DiagnosticSeverity.Warning:
+			return "warning";
+		case vscode.DiagnosticSeverity.Information:
+			return "info";
+		default:
+			return "hint";
+	}
+}
+
+function collectDiagnostics(
+	uri: vscode.Uri,
+	range?: vscode.Range,
+): DiagnosticEntry[] {
+	const all = vscode.languages.getDiagnostics(uri);
+	const entries: DiagnosticEntry[] = [];
+	for (const diagnostic of all) {
+		if (
+			diagnostic.severity !== vscode.DiagnosticSeverity.Error &&
+			diagnostic.severity !== vscode.DiagnosticSeverity.Warning
+		) {
+			continue;
+		}
+		if (range && !range.intersection(diagnostic.range)) continue;
+		const code =
+			diagnostic.code === undefined || diagnostic.code === null
+				? undefined
+				: typeof diagnostic.code === "object"
+					? String(diagnostic.code.value)
+					: String(diagnostic.code);
+		entries.push({
+			line: diagnostic.range.start.line + 1,
+			severity: diagnosticSeverityLabel(diagnostic.severity),
+			message: diagnostic.message,
+			...(diagnostic.source ? { source: diagnostic.source } : {}),
+			...(code ? { code } : {}),
+		});
+		if (entries.length >= MAX_DIAGNOSTICS_PER_REFERENCE) break;
+	}
+	return entries.sort((left, right) => left.line - right.line);
 }

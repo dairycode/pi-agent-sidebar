@@ -1013,6 +1013,10 @@ button {
 	background: transparent;
 }
 
+.workspace-path-link {
+	cursor: pointer;
+}
+
 #prompt-input {
 	position: relative;
 	z-index: 1;

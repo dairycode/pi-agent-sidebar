@@ -2,6 +2,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
 	formatCodeReferenceLocation,
+	formatCodeReferenceMarker,
 	parseCodeReferencePayload,
 } from "../src/codeReferences.js";
 import {
@@ -320,6 +321,22 @@ elements.messages.addEventListener("click", (event) => {
 		void navigator.clipboard
 			.writeText(code)
 			.then(() => showToast("Copied", "info"));
+		return;
+	}
+	const pathLink = target.closest<HTMLElement>("[data-workspace-path]");
+	if (pathLink) {
+		event.preventDefault();
+		const workspacePath = pathLink.dataset.workspacePath;
+		if (workspacePath) {
+			const lineValue = Number(pathLink.dataset.workspaceLine);
+			post({
+				type: "openWorkspacePath",
+				path: workspacePath,
+				...(Number.isInteger(lineValue) && lineValue >= 1
+					? { line: lineValue }
+					: {}),
+			});
+		}
 		return;
 	}
 	const anchor = target.closest<HTMLAnchorElement>("a[href]");
@@ -829,6 +846,73 @@ function renderMessages(): void {
 		button.append(createCodicon("copy"));
 		pre.append(button);
 	}
+
+	linkifyWorkspacePaths();
+}
+
+const WORKSPACE_PATH_PATTERN =
+	/\b([\w.-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*)(?::(\d+))?/gu;
+
+/**
+ * Walk rendered assistant/user message text nodes and turn `path/to/file.ts`
+ * or `path/to/file.ts:42` tokens into clickable spans. Code blocks, links,
+ * and already-processed nodes are skipped so inline code stays literal.
+ */
+function linkifyWorkspacePaths(): void {
+	const walker = document.createTreeWalker(
+		elements.messages,
+		NodeFilter.SHOW_TEXT,
+		{
+			acceptNode(node): number {
+				const parent = node.parentElement;
+				if (!parent) return NodeFilter.FILTER_REJECT;
+				// Skip code BLOCKS (pre), links, tool/thinking widgets, and
+				// already-linkified spans. Inline <code> is allowed so paths that
+				// pi wraps in backticks still become clickable.
+				if (
+					parent.closest(
+						"pre, a, .tool-call, .thinking-block, [data-workspace-path]",
+					)
+				) {
+					return NodeFilter.FILTER_REJECT;
+				}
+				WORKSPACE_PATH_PATTERN.lastIndex = 0;
+				return WORKSPACE_PATH_PATTERN.test(node.nodeValue ?? "")
+					? NodeFilter.FILTER_ACCEPT
+					: NodeFilter.FILTER_REJECT;
+			},
+		},
+	);
+	const targets: Text[] = [];
+	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+		targets.push(node as Text);
+	}
+	for (const textNode of targets) {
+		const text = textNode.nodeValue ?? "";
+		WORKSPACE_PATH_PATTERN.lastIndex = 0;
+		const fragment = document.createDocumentFragment();
+		let lastIndex = 0;
+		let match = WORKSPACE_PATH_PATTERN.exec(text);
+		while (match) {
+			const [full, filePath, lineText] = match;
+			if (match.index > lastIndex) {
+				fragment.append(text.slice(lastIndex, match.index));
+			}
+			const link = document.createElement("span");
+			link.className = "workspace-path-link";
+			link.setAttribute("role", "link");
+			link.tabIndex = 0;
+			link.dataset.workspacePath = filePath;
+			if (lineText) link.dataset.workspaceLine = lineText;
+			link.textContent = full;
+			fragment.append(link);
+			lastIndex = match.index + full.length;
+			match = WORKSPACE_PATH_PATTERN.exec(text);
+		}
+		if (lastIndex === 0) continue;
+		if (lastIndex < text.length) fragment.append(text.slice(lastIndex));
+		textNode.parentNode?.replaceChild(fragment, textNode);
+	}
 }
 
 function messageHtml(
@@ -876,45 +960,70 @@ function userMessageHtml(message: PiMessage): string {
 	);
 	const context = contextMatch?.[1] ?? "";
 	const text = contextMatch ? rawText.slice(contextMatch[0].length) : rawText;
-	const contextLabels = context
+	const markers = context
 		.split("\n")
-		.map(contextDisplayLabel)
-		.filter(Boolean);
-	const contextHtml =
-		contextLabels.length > 0
-			? `<div class="message-context"><i class="codicon codicon-file-code"></i>${contextLabels.map(escapeHtml).join("<br>")}</div>`
-			: "";
+		.map(contextInlineMarker)
+		.filter((marker): marker is InlineMarker => Boolean(marker));
+	const markerHtml = markers
+		.map((marker) => {
+			const attrs = marker.workspacePath
+				? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"${
+						marker.line ? ` data-workspace-line="${marker.line}"` : ""
+					}`
+				: "";
+			return `<span class="code-reference-highlight"${attrs}>${escapeHtml(marker.label)}</span>`;
+		})
+		.join(" ");
+	const bodyHtml = markerHtml
+		? `${markerHtml}${text ? ` ${escapeHtml(text)}` : ""}`
+		: escapeHtml(text);
 	const imageHtml = contentImages(message.content)
 		.map(
 			(image) =>
 				`<img class="message-image" src="data:${escapeHtml(image.mimeType ?? "image/png")};base64,${image.data ?? ""}" alt="Attached image">`,
 		)
 		.join("");
-	return `<article class="message user-message">${contextHtml}<div class="user-message-text">${escapeHtml(text)}</div>${imageHtml}</article>`;
+	return `<article class="message user-message"><div class="user-message-text">${bodyHtml}</div>${imageHtml}</article>`;
 }
 
-function contextDisplayLabel(line: string): string {
+interface InlineMarker {
+	label: string;
+	workspacePath?: string;
+	line?: number;
+}
+
+function contextInlineMarker(line: string): InlineMarker | undefined {
 	const filePrefix = "- file: ";
 	if (line.startsWith(filePrefix)) {
 		try {
 			const filePath = JSON.parse(line.slice(filePrefix.length)) as unknown;
-			return typeof filePath === "string" ? filePath : "Attached file";
+			if (typeof filePath !== "string") return { label: "@file" };
+			const name = filePath.split(/[/\\]/u).pop() || filePath;
+			return { label: `@${name}` };
 		} catch {
-			return "Attached file";
+			return { label: "@file" };
 		}
 	}
+	// symbol/diagnostics are supplemental data for a selection; keep them in the
+	// payload sent to pi but do not render an inline marker.
+	if (line.startsWith("- symbol: ") || line.startsWith("- diagnostics: ")) {
+		return undefined;
+	}
 	const selectionPrefix = "- selection: ";
-	if (!line.startsWith(selectionPrefix)) return line;
+	if (!line.startsWith(selectionPrefix)) return undefined;
 	const reference = parseCodeReferencePayload(
 		line.slice(selectionPrefix.length),
 	);
-	return reference
-		? formatCodeReferenceLocation(
-				reference.displayPath,
-				reference.startLine,
-				reference.endLine,
-			)
-		: "Code selection";
+	if (!reference) return undefined;
+	return {
+		label: formatCodeReferenceMarker(
+			reference.displayPath,
+			reference.startLine,
+			reference.endLine,
+		),
+		workspacePath: reference.displayPath,
+		line: reference.startLine,
+	};
 }
 
 function assistantMessageHtml(

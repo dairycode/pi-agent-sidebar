@@ -156,6 +156,7 @@ export type WebviewToHostMessage =
 	| { type: "removeCodeReference"; id: string; revision: number }
 	| { type: "openCodeReference"; id: string }
 	| { type: "openExternal"; href: string }
+	| { type: "openWorkspacePath"; path: string; line?: number }
 	| { type: "showLogs" };
 
 const MAX_ACTION_ID_LENGTH = 128;
@@ -228,6 +229,14 @@ export function parseWebviewMessage(
 	if (type === "openExternal") {
 		const href = boundedString(message.href, 8 * 1024);
 		return href ? { type, href } : undefined;
+	}
+	if (type === "openWorkspacePath") {
+		const workspacePath = boundedString(message.path, MAX_PATH_LENGTH);
+		if (!workspacePath) return undefined;
+		const line = nonNegativeInteger(message.line);
+		return line === undefined
+			? { type, path: workspacePath }
+			: { type, path: workspacePath, line };
 	}
 	return;
 }

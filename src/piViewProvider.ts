@@ -71,6 +71,7 @@ interface CapturedCodeReference {
 	key: string;
 	byteLength: number;
 	diagnostics: DiagnosticEntry[];
+	symbol?: string;
 }
 
 interface SubmittedCodeReference {
@@ -193,7 +194,8 @@ export class PiViewProvider
 	): Promise<void> {
 		if (editor && !editor.selection.isEmpty) {
 			try {
-				this.captureCodeReference(editor);
+				const id = this.captureCodeReference(editor);
+				await this.enrichReferenceWithSymbol(id, editor);
 			} catch (error) {
 				void vscode.window.showWarningMessage(toErrorMessage(error));
 			}
@@ -228,7 +230,8 @@ export class PiViewProvider
 			editor.selection = fullRange;
 		}
 		try {
-			this.captureCodeReference(editor);
+			const id = this.captureCodeReference(editor);
+			await this.enrichReferenceWithSymbol(id, editor);
 		} catch (error) {
 			void vscode.window.showWarningMessage(toErrorMessage(error));
 		}
@@ -536,6 +539,10 @@ export class PiViewProvider
 				}
 				case "openExternal": {
 					await this.openExternal(message.href);
+					break;
+				}
+				case "openWorkspacePath": {
+					await this.openWorkspacePath(message.path, message.line);
 					break;
 				}
 				case "showLogs": {
@@ -1094,10 +1101,10 @@ export class PiViewProvider
 		await this.post({ type: "sessionList", sessions });
 	}
 
-	private captureCodeReference(editor: vscode.TextEditor): void {
+	private captureCodeReference(editor: vscode.TextEditor): string | undefined {
 		const { document, selection } = editor;
 		const text = document.getText(selection);
-		if (!text) return;
+		if (!text) return undefined;
 
 		const byteLength = Buffer.byteLength(text, "utf8");
 		if (byteLength > MAX_CODE_REFERENCE_BYTES) {
@@ -1172,7 +1179,24 @@ export class PiViewProvider
 			key,
 			byteLength,
 			diagnostics: collectDiagnostics(document.uri, selection),
+			symbol: existing?.symbol,
 		});
+		return id;
+	}
+
+	private async enrichReferenceWithSymbol(
+		id: string | undefined,
+		editor: vscode.TextEditor,
+	): Promise<void> {
+		if (!id) return;
+		const symbol = await resolveEnclosingSymbol(
+			editor.document.uri,
+			editor.selection,
+		);
+		if (!symbol) return;
+		const reference = this.codeReferences.get(id);
+		if (!reference) return;
+		reference.symbol = symbol;
 	}
 
 	private codeReferenceDisplayPath(document: vscode.TextDocument): string {
@@ -1404,6 +1428,15 @@ export class PiViewProvider
 							items: reference.diagnostics,
 						})}`,
 				),
+			...references
+				.filter(({ reference }) => Boolean(reference.symbol))
+				.map(
+					({ reference }) =>
+						`- symbol: ${serializeContextValue({
+							path: reference.payload.displayPath,
+							name: reference.symbol,
+						})}`,
+				),
 		];
 		const contextBlock =
 			contextLines.length > 0
@@ -1492,6 +1525,46 @@ export class PiViewProvider
 		await vscode.env.openExternal(uri);
 	}
 
+	private async openWorkspacePath(
+		relativePath: string,
+		line?: number,
+	): Promise<void> {
+		const folder = this.workspaceFolder ?? (await this.selectWorkspaceFolder());
+		if (!folder) return;
+		const normalized = relativePath.replace(/^[./]+/u, "").replace(/\\/gu, "/");
+		if (!normalized || normalized.includes("..")) return;
+		const target = vscode.Uri.joinPath(folder.uri, normalized);
+		const relativeToFolder = path
+			.relative(folder.uri.fsPath, target.fsPath)
+			.split(path.sep)
+			.join("/");
+		if (
+			relativeToFolder.startsWith("..") ||
+			path.isAbsolute(relativeToFolder)
+		) {
+			return;
+		}
+		try {
+			const document = await vscode.workspace.openTextDocument(target);
+			const editor = await vscode.window.showTextDocument(document, {
+				preview: true,
+			});
+			if (typeof line === "number" && line >= 1) {
+				const position = new vscode.Position(
+					Math.min(line - 1, Math.max(0, document.lineCount - 1)),
+					0,
+				);
+				editor.selection = new vscode.Selection(position, position);
+				editor.revealRange(
+					new vscode.Range(position, position),
+					vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+				);
+			}
+		} catch {
+			void vscode.window.showWarningMessage(`Unable to open ${normalized}.`);
+		}
+	}
+
 	private configuredSessionDirectory(
 		folder: vscode.WorkspaceFolder,
 	): string | undefined {
@@ -1576,4 +1649,40 @@ function collectDiagnostics(
 		if (entries.length >= MAX_DIAGNOSTICS_PER_REFERENCE) break;
 	}
 	return entries.sort((left, right) => left.line - right.line);
+}
+
+function symbolKindLabel(kind: vscode.SymbolKind): string {
+	return vscode.SymbolKind[kind]?.toLowerCase() ?? "symbol";
+}
+
+function findEnclosingSymbol(
+	symbols: vscode.DocumentSymbol[],
+	range: vscode.Range,
+	trail: string[] = [],
+): string | undefined {
+	for (const symbol of symbols) {
+		if (!symbol.range.contains(range)) continue;
+		const here = `${symbolKindLabel(symbol.kind)} ${symbol.name}`;
+		const nested = findEnclosingSymbol(symbol.children ?? [], range, [
+			...trail,
+			here,
+		]);
+		return nested ?? [...trail, here].join(" > ");
+	}
+	return trail.length > 0 ? trail.join(" > ") : undefined;
+}
+
+async function resolveEnclosingSymbol(
+	uri: vscode.Uri,
+	range: vscode.Range,
+): Promise<string | undefined> {
+	try {
+		const symbols = await vscode.commands.executeCommand<
+			vscode.DocumentSymbol[]
+		>("vscode.executeDocumentSymbolProvider", uri);
+		if (!Array.isArray(symbols) || symbols.length === 0) return undefined;
+		return findEnclosingSymbol(symbols, range);
+	} catch {
+		return undefined;
+	}
 }

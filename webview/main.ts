@@ -46,6 +46,7 @@ interface LiveTool {
 	args: JsonRecord;
 	status: "running" | "success" | "error";
 	output: string;
+	diff?: string;
 	startedAt: number;
 }
 
@@ -626,6 +627,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 						: (existing?.args ?? {}),
 				status,
 				output: extractResultText(event.result),
+				diff: extractResultDiff(event.result),
 				startedAt: existing?.startedAt ?? Date.now(),
 			});
 			announce(
@@ -1096,7 +1098,8 @@ function toolDisclosureHtml(
 	const output = live?.output || (result ? contentText(result.content) : "");
 	const { label: statusLabel, icon } = toolStatusPresentation(status);
 	const target = summarizeTool(name, args);
-	const diffHtml = status === "success" ? inlineDiffHtml(name, args) : "";
+	const diff = live?.diff ?? (result ? extractResultDiff(result) : "");
+	const diffHtml = status === "success" && diff ? renderDiffBlock(diff) : "";
 	// For file edits the diff replaces the noisy "Successfully replaced..."
 	// output, so only show tool output when there is no diff to display.
 	const outputHtml =
@@ -1114,99 +1117,36 @@ function toolDisclosureHtml(
   </details>`;
 }
 
-const FILE_EDITING_TOOLS = new Set(["write", "edit"]);
-
 const MAX_DIFF_LINES = 400;
 
-interface DiffLine {
-	kind: "add" | "remove" | "context";
-	text: string;
-}
-
-function diffLines(oldText: string, newText: string): DiffLine[] {
-	const oldLines = oldText.length > 0 ? oldText.split("\n") : [];
-	const newLines = newText.length > 0 ? newText.split("\n") : [];
-	const rows = oldLines.length;
-	const cols = newLines.length;
-	const lcs: number[][] = Array.from({ length: rows + 1 }, () =>
-		new Array<number>(cols + 1).fill(0),
-	);
-	for (let i = rows - 1; i >= 0; i -= 1) {
-		const row = lcs[i] as number[];
-		const nextRow = lcs[i + 1] as number[];
-		for (let j = cols - 1; j >= 0; j -= 1) {
-			row[j] =
-				oldLines[i] === newLines[j]
-					? (nextRow[j + 1] ?? 0) + 1
-					: Math.max(nextRow[j] ?? 0, row[j + 1] ?? 0);
-		}
-	}
-	const result: DiffLine[] = [];
-	let i = 0;
-	let j = 0;
-	while (i < rows && j < cols) {
-		const oldLine = oldLines[i] ?? "";
-		const newLine = newLines[j] ?? "";
-		if (oldLine === newLine) {
-			result.push({ kind: "context", text: oldLine });
-			i += 1;
-			j += 1;
-		} else if ((lcs[i + 1]?.[j] ?? 0) >= (lcs[i]?.[j + 1] ?? 0)) {
-			result.push({ kind: "remove", text: oldLine });
-			i += 1;
-		} else {
-			result.push({ kind: "add", text: newLine });
-			j += 1;
-		}
-	}
-	while (i < rows) {
-		result.push({ kind: "remove", text: oldLines[i] ?? "" });
-		i += 1;
-	}
-	while (j < cols) {
-		result.push({ kind: "add", text: newLines[j] ?? "" });
-		j += 1;
-	}
-	return result;
-}
-
-function renderDiffBlock(lines: DiffLine[]): string {
+/**
+ * Render a diff string produced by pi (the `result.details.diff` field of a
+ * file-editing tool). Each line already begins with `+`, `-`, or a leading
+ * space for context; the client only classifies and colorizes it, and never
+ * recomputes the diff itself.
+ */
+function renderDiffBlock(diff: string): string {
+	const lines = diff.replace(/\n$/u, "").split("\n");
 	const truncated = lines.length > MAX_DIFF_LINES;
 	const shown = truncated ? lines.slice(0, MAX_DIFF_LINES) : lines;
 	const rows = shown
 		.map((line) => {
-			const sign =
-				line.kind === "add" ? "+" : line.kind === "remove" ? "-" : " ";
-			return `<div class="diff-line diff-${line.kind}"><span class="diff-sign">${sign}</span><span class="diff-text">${escapeHtml(line.text) || "&nbsp;"}</span></div>`;
+			const marker = line.charAt(0);
+			const kind =
+				marker === "+" ? "add" : marker === "-" ? "remove" : "context";
+			return `<div class="diff-line diff-${kind}"><span class="diff-text">${escapeHtml(line) || "&nbsp;"}</span></div>`;
 		})
 		.join("");
 	const more = truncated
-		? `<div class="diff-line diff-context"><span class="diff-sign"> </span><span class="diff-text">\u2026 ${lines.length - MAX_DIFF_LINES} more lines</span></div>`
+		? `<div class="diff-line diff-context"><span class="diff-text">\u2026 ${lines.length - MAX_DIFF_LINES} more lines</span></div>`
 		: "";
 	return `<div class="tool-diff">${rows}${more}</div>`;
 }
 
-function inlineDiffHtml(name: string, args: JsonRecord): string {
-	if (!FILE_EDITING_TOOLS.has(name)) return "";
-	if (name === "write") {
-		const content = stringValue(args.content);
-		if (!content) return "";
-		const lines = content
-			.split("\n")
-			.map((text): DiffLine => ({ kind: "add", text }));
-		return renderDiffBlock(lines);
-	}
-	const edits = Array.isArray(args.edits) ? args.edits : [];
-	const blocks: DiffLine[] = [];
-	for (const entry of edits) {
-		const edit = objectValue(entry);
-		const oldText = stringValue(edit.oldText);
-		const newText = stringValue(edit.newText);
-		if (!oldText && !newText) continue;
-		if (blocks.length > 0) blocks.push({ kind: "context", text: "" });
-		blocks.push(...diffLines(oldText, newText));
-	}
-	return blocks.length > 0 ? renderDiffBlock(blocks) : "";
+function extractResultDiff(result: unknown): string {
+	const record = objectValue(result);
+	const details = objectValue(record.details);
+	return stringValue(details.diff);
 }
 
 function buildToolResultMap(): Map<string, PiMessage> {

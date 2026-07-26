@@ -87,14 +87,6 @@ export type PresetPromptKind =
 	| "generateTests"
 	| "explainDiagnostics";
 
-export interface StatusInfo {
-	phase: "starting" | "ready" | "disconnected" | "error" | "no-workspace";
-	modelName?: string;
-	thinkingLevel?: string;
-	contextPercent?: number;
-	streaming: boolean;
-}
-
 interface DiagnosticEntry {
 	line: number;
 	severity: string;
@@ -319,6 +311,8 @@ export class PiViewProvider
 			case "no-workspace":
 				icon = "$(folder)";
 				label = "Pi";
+				break;
+			default:
 				break;
 		}
 		item.text = `${icon} ${label}`;
@@ -1419,24 +1413,26 @@ export class PiViewProvider
 				({ reference }) =>
 					`- selection: ${serializeCodeReferencePayload(reference.payload)}`,
 			),
-			...references
-				.filter(({ reference }) => reference.diagnostics.length > 0)
-				.map(
-					({ reference }) =>
-						`- diagnostics: ${serializeContextValue({
-							path: reference.payload.displayPath,
-							items: reference.diagnostics,
-						})}`,
-				),
-			...references
-				.filter(({ reference }) => Boolean(reference.symbol))
-				.map(
-					({ reference }) =>
-						`- symbol: ${serializeContextValue({
-							path: reference.payload.displayPath,
-							name: reference.symbol,
-						})}`,
-				),
+			...references.flatMap(({ reference }) =>
+				reference.diagnostics.length > 0
+					? [
+							`- diagnostics: ${serializeContextValue({
+								path: reference.payload.displayPath,
+								items: reference.diagnostics,
+							})}`,
+						]
+					: [],
+			),
+			...references.flatMap(({ reference }) =>
+				reference.symbol
+					? [
+							`- symbol: ${serializeContextValue({
+								path: reference.payload.displayPath,
+								name: reference.symbol,
+							})}`,
+						]
+					: [],
+			),
 		];
 		const contextBlock =
 			contextLines.length > 0

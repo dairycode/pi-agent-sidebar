@@ -117,6 +117,7 @@ let lastCompletedFocusRequestId = 0;
 let renderedPromptText: string | undefined;
 let renderedPromptMarkerSignature: string | undefined;
 let composerTextSnapshot = "";
+let lastComposerCaret = 0;
 let modalReturnFocus: HTMLElement | null = null;
 
 const SUPPORTED_CLIPBOARD_IMAGE_TYPES = new Set([
@@ -209,10 +210,16 @@ window.addEventListener("pointerdown", (event) => {
 
 elements.input.addEventListener("input", () => {
 	reconcileCodeReferencesWithComposer();
+	rememberComposerCaret();
 	resizeInput();
 	persistComposerState();
 	renderComposerHighlights();
 });
+
+elements.input.addEventListener("keyup", rememberComposerCaret);
+elements.input.addEventListener("pointerup", rememberComposerCaret);
+elements.input.addEventListener("select", rememberComposerCaret);
+elements.input.addEventListener("blur", rememberComposerCaret);
 
 elements.input.addEventListener("scroll", syncPromptHighlightScroll);
 window.addEventListener("resize", syncPromptHighlightScroll);
@@ -966,19 +973,7 @@ function userMessageHtml(message: PiMessage): string {
 		.split("\n")
 		.map(contextInlineMarker)
 		.filter((marker): marker is InlineMarker => Boolean(marker));
-	const markerHtml = markers
-		.map((marker) => {
-			const attrs = marker.workspacePath
-				? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"${
-						marker.line ? ` data-workspace-line="${marker.line}"` : ""
-					}`
-				: "";
-			return `<span class="code-reference-highlight"${attrs}>${escapeHtml(marker.label)}</span>`;
-		})
-		.join(" ");
-	const bodyHtml = markerHtml
-		? `${markerHtml}${text ? ` ${escapeHtml(text)}` : ""}`
-		: escapeHtml(text);
+	const bodyHtml = renderUserBodyHtml(text, markers);
 	const imageHtml = contentImages(message.content)
 		.map(
 			(image) =>
@@ -986,6 +981,48 @@ function userMessageHtml(message: PiMessage): string {
 		)
 		.join("");
 	return `<article class="message user-message"><div class="user-message-text">${bodyHtml}</div>${imageHtml}</article>`;
+}
+
+function markerSpanHtml(marker: InlineMarker): string {
+	const attrs = marker.workspacePath
+		? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"${
+				marker.line ? ` data-workspace-line="${marker.line}"` : ""
+			}`
+		: "";
+	return `<span class="code-reference-highlight"${attrs}>${escapeHtml(marker.label)}</span>`;
+}
+
+/**
+ * Render the user message body. Reference markers are kept in place within the
+ * text (see buildPrompt), so locate each marker where it actually appears and
+ * replace it with a highlight span. Markers not found inline (e.g. plain file
+ * attachments) are prefixed so their context is still visible.
+ */
+function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
+	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
+		[];
+	const leftover: InlineMarker[] = [];
+	let searchFrom = 0;
+	for (const marker of markers) {
+		const index = text.indexOf(marker.label, searchFrom);
+		if (index >= 0) {
+			inline.push({ start: index, end: index + marker.label.length, marker });
+			searchFrom = index + marker.label.length;
+		} else {
+			leftover.push(marker);
+		}
+	}
+	let body = "";
+	let cursor = 0;
+	for (const { start, end, marker } of inline) {
+		body += escapeHtml(text.slice(cursor, start));
+		body += markerSpanHtml(marker);
+		cursor = end;
+	}
+	body += escapeHtml(text.slice(cursor));
+	const prefix = leftover.map(markerSpanHtml).join(" ");
+	if (!prefix) return body;
+	return body ? `${prefix} ${body}` : prefix;
 }
 
 interface InlineMarker {
@@ -1308,9 +1345,15 @@ function writeComposerDraft(text: string, caret: number): void {
 	elements.input.value = text;
 	composerTextSnapshot = text;
 	elements.input.setSelectionRange(nextCaret, nextCaret);
+	lastComposerCaret = nextCaret;
 	persistComposerState();
 	resizeInput();
 	renderComposerHighlights();
+}
+
+function rememberComposerCaret(): void {
+	const caret = elements.input.selectionStart;
+	if (typeof caret === "number") lastComposerCaret = caret;
 }
 
 function reconcilePendingReferenceEdits(
@@ -1436,9 +1479,13 @@ function applyIncomingCodeReferences(
 		}
 
 		const previousText = elements.input.value;
+		const caretSource =
+			document.activeElement === elements.input
+				? (elements.input.selectionStart ?? lastComposerCaret)
+				: lastComposerCaret;
 		const insertion = insertManagedReference(
 			previousText,
-			elements.input.selectionStart ?? previousText.length,
+			Math.min(caretSource, previousText.length),
 			summary,
 			ui.codeReferences,
 		);

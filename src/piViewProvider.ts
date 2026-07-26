@@ -13,7 +13,6 @@ import { probePiBinary } from "./binaryProbe.js";
 import {
 	formatCodeReferenceMarker,
 	nearestOffset,
-	removeCodeReferenceRanges,
 	selectedLineRange,
 	serializeCodeReferencePayload,
 	serializeContextValue,
@@ -1438,10 +1437,10 @@ export class PiViewProvider
 			contextLines.length > 0
 				? `<pi-context>\n${contextLines.join("\n")}\n</pi-context>\n\n`
 				: "";
-		let promptText = removeCodeReferenceRanges(
-			text,
-			references.map(({ start, end }) => ({ start, end })),
-		);
+		// Keep the reference markers in place so their position in the sentence
+		// is preserved for pi and for the rendered message bubble. The
+		// structured <pi-context> block carries the full selection data.
+		let promptText = text;
 		if (!promptText.trim()) {
 			if (references.length > 0) promptText = "Inspect the selected code.";
 			else if (images.length > 0) promptText = "Inspect the attached image.";

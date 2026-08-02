@@ -78,14 +78,16 @@ export function createWebviewDocument(
         <div class="composer-toolbar">
           <div class="composer-tools">
             <button id="attach-button" class="icon-button" type="button" title="Attach files or images" aria-label="Attach files or images"><i class="codicon codicon-add"></i></button>
-            <label class="select-control model-control" title="Model">
+            <button id="model-select" class="select-control model-control" type="button" title="Model" aria-label="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="select-popup">
               <i class="codicon codicon-symbol-method" aria-hidden="true"></i>
-              <select id="model-select" aria-label="Model"></select>
-            </label>
-            <label class="select-control thinking-control" title="Thinking level">
+              <span id="model-select-value" class="select-value"></span>
+              <i class="codicon codicon-chevron-down select-chevron" aria-hidden="true"></i>
+            </button>
+            <button id="thinking-select" class="select-control thinking-control" type="button" title="Thinking level" aria-label="Thinking level" aria-haspopup="listbox" aria-expanded="false" aria-controls="select-popup">
               <i class="codicon codicon-lightbulb" aria-hidden="true"></i>
-              <select id="thinking-select" aria-label="Thinking level"></select>
-            </label>
+              <span id="thinking-select-value" class="select-value"></span>
+              <i class="codicon codicon-chevron-down select-chevron" aria-hidden="true"></i>
+            </button>
           </div>
           <div class="composer-actions">
             <button id="send-button" class="send-button" type="submit" title="Send" aria-label="Send message"><i class="codicon codicon-arrow-up"></i></button>
@@ -96,6 +98,7 @@ export function createWebviewDocument(
 
     <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
     <div id="live-status" class="sr-only" role="status" aria-live="polite"></div>
+    <div id="select-popup" class="select-popup" role="listbox" hidden></div>
     <div id="modal-backdrop" class="modal-backdrop" hidden></div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

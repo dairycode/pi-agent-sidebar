@@ -1157,12 +1157,16 @@ button {
 	min-width: 0;
 	max-width: 100%;
 	height: 27px;
-	padding-left: 5px;
+	padding: 0 5px;
+	border: 0;
 	border-radius: 4px;
 	color: var(--pi-muted);
+	background: transparent;
+	gap: 4px;
 }
 
-.select-control:hover {
+.select-control:hover:not(:disabled),
+.select-control[aria-expanded="true"] {
 	color: var(--vscode-foreground);
 	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
 }
@@ -1171,20 +1175,90 @@ button {
 	flex: 0 0 auto;
 }
 
-.select-control select {
-	field-sizing: content;
+.select-chevron {
+	font-size: 13px;
+}
+
+.select-value {
 	flex: 0 1 auto;
-	width: auto;
 	min-width: 0;
 	max-width: min(180px, 42vw);
-	height: 27px;
-	padding: 0 16px 0 4px;
 	overflow: hidden;
-	border: 0;
-	outline: 0;
 	color: var(--vscode-foreground);
-	background: transparent;
+	text-align: left;
 	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.thinking-control .select-value {
+	max-width: none;
+	text-transform: capitalize;
+}
+
+/* Custom listbox: a native <select> renders its list through the OS, so it
+   cannot pick up the VS Code theme. Positioned from script against `#app`,
+   which is the nearest non-clipping positioned ancestor. */
+.select-popup {
+	position: absolute;
+	z-index: 9;
+	display: flex;
+	flex-direction: column;
+	min-width: 160px;
+	max-width: calc(100% - 16px);
+	padding: 4px;
+	overflow-y: auto;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: 6px;
+	background: var(--pi-raised);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.select-popup[hidden] {
+	display: none;
+}
+
+.select-option {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	flex: 0 0 auto;
+	min-height: 26px;
+	padding: 0 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	gap: 6px;
+	font-size: var(--pi-font-chrome);
+}
+
+.select-option:hover,
+.select-option:focus-visible {
+	outline: 0;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.select-option[aria-selected="true"] {
+	color: var(--vscode-foreground);
+}
+
+.select-option-check {
+	font-size: 13px;
+	color: var(--pi-accent);
+}
+
+.select-option-check.is-hidden {
+	visibility: hidden;
+}
+
+.select-option-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.select-popup.is-thinking .select-option-label {
+	text-transform: capitalize;
 }
 
 .model-control {
@@ -1195,13 +1269,6 @@ button {
 	flex: 0 0 108px;
 	width: 108px;
 	max-width: 108px;
-}
-
-.thinking-control select {
-	flex: 1 1 auto;
-	width: 0;
-	max-width: none;
-	text-transform: capitalize;
 }
 
 .send-button {
@@ -1397,24 +1464,18 @@ button {
 		width: 100%;
 	}
 
-	.select-control > .codicon {
+	.select-control > .codicon:first-child {
 		display: none;
 	}
 
-	.select-control select {
-		padding-right: 12px;
-		padding-left: 2px;
+	.select-control {
+		padding: 0 4px;
 	}
 
 	.model-control {
 		width: 100%;
 		max-width: none;
 		overflow: hidden;
-	}
-
-	.model-control select {
-		width: 100%;
-		max-width: none;
 	}
 }
 

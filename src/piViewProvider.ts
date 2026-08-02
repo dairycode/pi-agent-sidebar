@@ -1508,6 +1508,13 @@ export class PiViewProvider
 		}
 	}
 
+	/**
+	 * Opens a link from the transcript. Going through the host rather than
+	 * letting VS Code's injected anchor handler do it is deliberate: that handler
+	 * passes `fromWorkspace: true`, which makes the trusted-domain validator
+	 * return early in a trusted workspace, so it never prompts. This path has no
+	 * such flag and still gets validated.
+	 */
 	private async openExternal(href: string): Promise<void> {
 		let uri: vscode.Uri;
 		try {

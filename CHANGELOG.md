@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.2
+
+- Ease the density of long answers: give headings a real size step
+  (1.26 / 1.13 / 1.02em, where an `h3` used to render at exactly body size),
+  separate the three spacing levels (12px between paragraphs, 20px between
+  messages, up from 9px and 15px), space out consecutive and nested list items,
+  and settle body line height on a single 1.65 value shared by user text,
+  assistant text, reasoning, and code blocks.
+- Collapse the 10/11/12px chrome sizes onto one `--pi-font-chrome` step for an
+  even 11 / 13 / 15 scale; icons keep their own size.
+- Drop the tint from inline code in assistant, reasoning, and system messages,
+  keeping only its faint background. `color` is set explicitly rather than
+  omitted because VS Code injects a base `code` rule painting
+  `--vscode-textPreformat-foreground`, which many themes define as a warm accent
+  (One Dark Pro Darker uses #d19a66).
+- Wrap message text with `break-word` instead of `anywhere`, so identifiers are
+  no longer split mid-word.
+- Keep the trusted-domain prompt working for links in the transcript. VS Code's
+  injected anchor handler opens links with `fromWorkspace: true`, and its
+  validator returns early for that flag in a trusted workspace
+  (`workbench.trustedDomains.promptInTrustedWorkspace` defaults to false), so it
+  never prompts. Links route through the host instead, and the click stops
+  propagating so that handler cannot also open them unprompted.
+
 ## 0.3.1
 
 - Pin the code block copy button to the top-right corner so horizontal

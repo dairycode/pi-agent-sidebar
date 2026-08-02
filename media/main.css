@@ -18,6 +18,12 @@
 		--vscode-editorWidget-background,
 		var(--vscode-editor-background)
 	);
+	/* Three-step type scale: 11 / inherited body (13px by default) / 15. Even
+	   2px steps, so each level is actually distinguishable — the 10/11/12px mix
+	   this replaces read as inconsistency rather than hierarchy. Ranking *within*
+	   a step is expressed through color and weight instead. */
+	--pi-font-chrome: 11px;
+	--pi-font-title: 15px;
 }
 
 * {
@@ -151,7 +157,7 @@ button {
 .session-title {
 	min-width: 0;
 	overflow: hidden;
-	font-size: 12px;
+	font-size: var(--pi-font-chrome);
 	font-weight: 650;
 	letter-spacing: 0;
 	text-overflow: ellipsis;
@@ -233,12 +239,15 @@ button {
 	flex-direction: column;
 	min-width: 0;
 	padding: 14px 8px 34px;
-	gap: 15px;
+	gap: 20px;
 }
 
+/* `break-word` rather than `anywhere`: the latter breaks mid-identifier, which
+   shredded names like handleExtensionUiRequest. Elements that really can
+   overflow (path links, URLs, the composer) opt into `anywhere` themselves. */
 .message {
 	min-width: 0;
-	overflow-wrap: anywhere;
+	overflow-wrap: break-word;
 }
 
 .user-message {
@@ -254,12 +263,12 @@ button {
 }
 
 .user-message-text {
-	line-height: 1.55;
+	line-height: 1.65;
 }
 
 .assistant-message {
 	align-self: stretch;
-	line-height: 1.62;
+	line-height: 1.65;
 }
 
 .assistant-message.ends-with-activity + .assistant-message {
@@ -280,21 +289,24 @@ button {
 	margin-top: 12px;
 }
 
+/* Headings need a real size step to act as scan anchors: at the old
+   1.14/1.07/1em an h3 was indistinguishable from body text. Bottom margin
+   stays smaller than the top one so a heading binds to the text below it. */
 .assistant-text h1,
 .assistant-text h2,
 .assistant-text h3 {
-	margin: 16px 0 7px;
-	font-size: 1em;
+	margin: 18px 0 8px;
+	font-size: 1.02em;
 	font-weight: 700;
 	letter-spacing: 0;
 }
 
 .assistant-text h1 {
-	font-size: 1.14em;
+	font-size: 1.26em;
 }
 
 .assistant-text h2 {
-	font-size: 1.07em;
+	font-size: 1.13em;
 }
 
 .assistant-text p,
@@ -302,12 +314,24 @@ button {
 .assistant-text ol,
 .assistant-text pre,
 .assistant-text blockquote {
-	margin-block: 9px;
+	margin-block: 12px;
 }
 
 .assistant-text ul,
 .assistant-text ol {
 	padding-left: 22px;
+}
+
+/* Tight lists otherwise run together at the 1.65 body line height. Loose
+   lists keep their wider rhythm: the item margin collapses with the child
+   paragraph's larger one. */
+.assistant-text li + li {
+	margin-top: 4px;
+}
+
+.assistant-text li > ul,
+.assistant-text li > ol {
+	margin-block: 4px;
 }
 
 .assistant-text a {
@@ -321,16 +345,26 @@ button {
 }
 
 .assistant-text code,
+.thinking-content code,
 .tool-output,
 .system-message,
 .message-context {
 	font-family: var(--vscode-editor-font-family, monospace);
 }
 
-.assistant-text :not(pre) > code {
+/* Inline code is dense in coding replies, so it carries only the faint
+   background: tinting the text as well turned long answers into noise.
+   `color` must be set explicitly rather than omitted — VS Code injects a base
+   `code` rule painting `--vscode-textPreformat-foreground`, which many themes
+   define as a warm accent (One Dark Pro Darker uses #d19a66), so dropping the
+   declaration hands the color back to the theme instead of clearing it.
+   Covers every container that renders markdown. */
+.assistant-text :not(pre) > code,
+.thinking-content :not(pre) > code,
+.system-message :not(pre) > code {
 	padding: 1px 4px;
 	border-radius: 3px;
-	color: var(--pi-accent-hover);
+	color: inherit;
 	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
 }
 
@@ -348,7 +382,7 @@ button {
 	);
 	font-family: var(--vscode-editor-font-family, monospace);
 	font-size: var(--vscode-editor-font-size, 12px);
-	line-height: 1.55;
+	line-height: 1.65;
 	white-space: pre;
 }
 
@@ -356,7 +390,7 @@ button {
    scrolls, so an absolute button placed in it would drift with the content. */
 .code-block {
 	position: relative;
-	margin-block: 9px;
+	margin-block: 12px;
 }
 
 .code-block pre {
@@ -400,7 +434,7 @@ button {
 	margin-bottom: 7px;
 	overflow: hidden;
 	color: var(--pi-muted);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	text-overflow: ellipsis;
 }
 
@@ -454,7 +488,7 @@ button {
 .thinking-block {
 	min-height: 28px;
 	color: var(--pi-muted);
-	font-size: 12px;
+	font-size: var(--pi-font-chrome);
 }
 
 .thinking-summary {
@@ -504,7 +538,7 @@ button {
 	padding: 5px 0 5px 8px;
 	border-left: 1px solid var(--pi-border-subtle);
 	color: var(--pi-muted);
-	line-height: 1.55;
+	line-height: 1.65;
 }
 
 .thinking-content p {
@@ -526,7 +560,7 @@ button {
 	cursor: pointer;
 	gap: 7px;
 	list-style: none;
-	font-size: 12px;
+	font-size: var(--pi-font-chrome);
 	user-select: none;
 }
 
@@ -574,7 +608,7 @@ button {
 
 .tool-status {
 	color: var(--pi-muted);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 }
 
 .tool-output {
@@ -593,7 +627,7 @@ button {
 .tool-output pre {
 	margin: 0;
 	padding: 7px 9px;
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	line-height: 1.5;
 	white-space: pre-wrap;
 	word-break: break-word;
@@ -610,7 +644,7 @@ button {
 		var(--vscode-editor-background)
 	);
 	font-family: var(--vscode-editor-font-family, monospace);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	line-height: 1.5;
 }
 
@@ -651,7 +685,7 @@ button {
 .history-omitted,
 .cancelled-note {
 	color: var(--pi-muted);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 }
 
 .context-divider,
@@ -680,7 +714,7 @@ button {
 		--vscode-notifications-background,
 		var(--vscode-sideBar-background)
 	);
-	font-size: 12px;
+	font-size: var(--pi-font-chrome);
 	gap: 8px;
 }
 
@@ -742,6 +776,8 @@ button {
 	border-color: var(--vscode-focusBorder, var(--pi-accent));
 }
 
+/* Icons size independently of the type scale: a codicon shrunk to caption size
+   reads lighter than the text beside it. */
 .history-search .codicon {
 	font-size: 14px;
 }
@@ -755,7 +791,7 @@ button {
 	outline: 0;
 	color: var(--vscode-input-foreground, var(--vscode-foreground));
 	background: transparent;
-	font-size: 12px;
+	font-size: var(--pi-font-chrome);
 }
 
 .history-search input::placeholder {
@@ -825,7 +861,7 @@ button {
 .session-open strong {
 	min-width: 0;
 	overflow: hidden;
-	font-size: 12px;
+	font-size: var(--pi-font-chrome);
 	font-weight: 600;
 	letter-spacing: 0;
 	text-overflow: ellipsis;
@@ -834,7 +870,7 @@ button {
 
 .session-open time {
 	color: var(--pi-muted);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	white-space: nowrap;
 }
 
@@ -867,7 +903,7 @@ button {
 .session-list-empty {
 	padding: 18px 8px;
 	color: var(--pi-muted);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	text-align: center;
 }
 
@@ -880,7 +916,7 @@ button {
 	background: var(--pi-surface);
 	color: var(--pi-muted);
 	font-family: var(--vscode-editor-font-family, monospace);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	white-space: pre-wrap;
 }
 
@@ -954,7 +990,7 @@ button {
 	min-width: 0;
 	overflow: hidden;
 	color: var(--pi-muted);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	line-height: 16px;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -982,7 +1018,7 @@ button {
 	border: 1px solid var(--pi-accent-border);
 	border-radius: 4px;
 	background: var(--pi-accent-soft);
-	font-size: 11px;
+	font-size: var(--pi-font-chrome);
 	gap: 4px;
 }
 
@@ -1202,7 +1238,7 @@ button {
 	margin-left: auto;
 	overflow: hidden;
 	color: var(--pi-muted);
-	font-size: 10px;
+	font-size: var(--pi-font-chrome);
 	line-height: 16px;
 	text-align: right;
 	text-overflow: ellipsis;
@@ -1238,7 +1274,7 @@ button {
 		var(--vscode-editor-background)
 	);
 	box-shadow: 0 3px 10px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25));
-	font-size: 12px;
+	font-size: var(--pi-font-chrome);
 	overflow-wrap: anywhere;
 }
 
@@ -1274,7 +1310,7 @@ button {
 
 .modal h2 {
 	margin: 0 0 6px;
-	font-size: 15px;
+	font-size: var(--pi-font-title);
 }
 
 .modal p {

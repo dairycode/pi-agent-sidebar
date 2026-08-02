@@ -2,7 +2,7 @@
   "name": "pi-sidebar",
   "displayName": "Pi Agent Sidebar",
   "description": "A focused pi coding-agent workspace in the VS Code auxiliary sidebar.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "dairycode",
   "license": "MIT",
   "author": "Liu Ze",

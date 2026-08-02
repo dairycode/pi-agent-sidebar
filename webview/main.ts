@@ -350,7 +350,15 @@ elements.messages.addEventListener("click", (event) => {
 	}
 	const anchor = target.closest<HTMLAnchorElement>("a[href]");
 	if (anchor) {
+		// VS Code's injected window-level anchor handler opens links with
+		// `fromWorkspace: true`, and its trusted-domain validator returns early for
+		// that flag in a trusted workspace (`trustedDomains.promptInTrustedWorkspace`
+		// defaults to false), so it never prompts. Routing through the host instead
+		// reaches the validator without that flag and keeps the prompt. The event
+		// must also stop bubbling: that handler ignores `defaultPrevented`, so
+		// leaving it to run would open the link a second time, unprompted.
 		event.preventDefault();
+		event.stopPropagation();
 		post({ type: "openExternal", href: anchor.href });
 	}
 });

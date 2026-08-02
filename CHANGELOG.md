@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.3
+
+- Replace the native model and thinking `<select>` elements with themed popups.
+  A native dropdown's list is drawn by the operating system, so it could not
+  follow the VS Code theme or this view's styling. The replacements reuse the
+  session history panel's surface, border, and shadow, mark the current value
+  with a checkmark, and support `ArrowUp`/`ArrowDown`, `Home`/`End`,
+  `Enter`/`Space`, `Escape`, outside clicks, and `role="listbox"` semantics.
+- Show the composer pickers' labels in full or not at all. Both collapse to
+  icons together once the row no longer fits, measured from script because label
+  widths range from `Max` to `Claude Sonnet 4.5 (latest)` and no fixed media
+  query threshold suits every model. Previously the model name was the only
+  element that gave way, so it was ellipsised and then clipped out of sight
+  entirely while the thinking level held a fixed 108px.
+- Keep the popup from skewing in a narrow sidebar: its `min-width` floor now
+  yields to the available width instead of fighting `max-width`.
+
 ## 0.3.2
 
 - Ease the density of long answers: give headings a real size step

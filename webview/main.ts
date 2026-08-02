@@ -158,6 +158,7 @@ const elements = {
 	promptHighlights: element<HTMLElement>("prompt-highlights"),
 	input: element<HTMLTextAreaElement>("prompt-input"),
 	attachButton: element<HTMLButtonElement>("attach-button"),
+	composerTools: element<HTMLElement>("composer-tools"),
 	modelSelect: element<HTMLButtonElement>("model-select"),
 	modelSelectValue: element<HTMLElement>("model-select-value"),
 	thinkingSelect: element<HTMLButtonElement>("thinking-select"),
@@ -239,6 +240,15 @@ const promptHighlightResizeObserver = new ResizeObserver(
 	syncPromptHighlightScroll,
 );
 promptHighlightResizeObserver.observe(elements.input);
+
+// Dragging the sidebar edge resizes the toolbar without any state change, so the
+// full/icon-only decision has to be re-measured from a resize observer as well
+// as from render().
+const composerToolsResizeObserver = new ResizeObserver(() => {
+	reflowComposerTools();
+	if (activeSelect) positionSelectPopup(selectTrigger(activeSelect));
+});
+composerToolsResizeObserver.observe(elements.composerTools);
 
 elements.input.addEventListener("keydown", (event) => {
 	if (event.key === "F12") {
@@ -807,9 +817,29 @@ function render(): void {
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
 	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
 	if (activeSelect && selectTrigger(activeSelect).disabled) closeSelect(false);
+	reflowComposerTools();
 	focusComposerIfRequested();
 
 	if (nearBottom) scrollTranscriptToBottom();
+}
+
+/**
+ * Chooses between full labels and icon-only pickers for the composer toolbar.
+ *
+ * This cannot be a media query: the labels range from "Max" to
+ * "Claude Sonnet 4.5 (latest)", so no fixed width threshold is right for every
+ * model. Instead the row is measured with labels shown, and both pickers switch
+ * together the moment they no longer fit — labels are therefore never
+ * ellipsised, and the toolbar never lands in a half-truncated state.
+ */
+function reflowComposerTools(): void {
+	const tools = elements.composerTools;
+	// Measured with labels visible so scrollWidth reports the expanded width.
+	// Both reads happen in the same frame, so the temporary class removal is
+	// never painted.
+	tools.classList.remove("is-compact");
+	const overflows = tools.scrollWidth > tools.clientWidth;
+	tools.classList.toggle("is-compact", overflows);
 }
 
 function scrollTranscriptToBottom(): void {

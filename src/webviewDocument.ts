@@ -76,7 +76,7 @@ export function createWebviewDocument(
           <textarea id="prompt-input" rows="1" placeholder="Ask pi to build, fix, or explain..." aria-label="Message pi" aria-describedby="prompt-input-help"></textarea>
         </div>
         <div class="composer-toolbar">
-          <div class="composer-tools">
+          <div id="composer-tools" class="composer-tools">
             <button id="attach-button" class="icon-button" type="button" title="Attach files or images" aria-label="Attach files or images"><i class="codicon codicon-add"></i></button>
             <button id="model-select" class="select-control model-control" type="button" title="Model" aria-label="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="select-popup">
               <i class="codicon codicon-symbol-method" aria-hidden="true"></i>

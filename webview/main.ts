@@ -325,7 +325,8 @@ elements.messages.addEventListener("click", (event) => {
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
-			copyButton.parentElement?.querySelector("code")?.textContent ?? "";
+			copyButton.closest(".code-block")?.querySelector("code")?.textContent ??
+			"";
 		void navigator.clipboard
 			.writeText(code)
 			.then(() => showToast("Copied", "info"));
@@ -846,6 +847,14 @@ function renderMessages(): void {
 
 	for (const pre of elements.messages.querySelectorAll("pre")) {
 		if (pre.parentElement?.classList.contains("tool-output")) continue;
+		if (pre.parentElement?.classList.contains("code-block")) continue;
+		// The button must live outside the scrolling <pre> so horizontal scrolling
+		// cannot drag it along: an absolute child is positioned against the
+		// scroll container's content box, not its visible frame.
+		const wrapper = document.createElement("div");
+		wrapper.className = "code-block";
+		pre.replaceWith(wrapper);
+		wrapper.append(pre);
 		const button = document.createElement("button");
 		button.type = "button";
 		button.className = "copy-code-button icon-button";
@@ -853,7 +862,7 @@ function renderMessages(): void {
 		button.setAttribute("aria-label", "Copy code");
 		button.setAttribute("data-copy-code", "true");
 		button.append(createCodicon("copy"));
-		pre.append(button);
+		wrapper.append(button);
 	}
 
 	linkifyWorkspacePaths();

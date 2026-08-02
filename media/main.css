@@ -352,10 +352,22 @@ button {
 	white-space: pre;
 }
 
+/* Non-scrolling positioning context for the copy button: the <pre> inside
+   scrolls, so an absolute button placed in it would drift with the content. */
+.code-block {
+	position: relative;
+	margin-block: 9px;
+}
+
+.code-block pre {
+	margin-block: 0;
+}
+
 .copy-code-button {
 	position: absolute;
 	top: 3px;
 	right: 3px;
+	z-index: 1;
 	width: 25px;
 	height: 25px;
 	background: var(

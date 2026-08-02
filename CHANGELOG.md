@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.1
+
+- Pin the code block copy button to the top-right corner so horizontal
+  scrolling no longer drags it along with the code.
+
+## 0.3.0
+
+- Add a `Pi Agent` editor context submenu with preset prompts for explaining a
+  selection, refactoring, generating tests, explaining reported problems, and
+  explaining the whole file.
+- Add a `Fix with Pi` quick fix that forwards the diagnostic under the cursor,
+  and include diagnostics plus the enclosing symbol in editor selection context.
+- Add `Rename Session` and `Export Session to HTML` commands, the latter
+  offering to open the exported file.
+- Add a status bar entry showing the runtime phase and active model.
+- Add the `piAgentSidebar.autoRetry` setting (default on) to retry transient
+  provider errors such as overloads, rate limits, 5xx, and interrupted streams.
+- Render file edit diffs in the tool timeline with added, removed, and context
+  lines.
+- Turn `path/to/file.ts:42` references in responses into links that open the
+  file at that line.
+- Activate on startup so the sidebar restores without opening it first.
+
 ## 0.2.13
 
 - Add `author`, `repository`, `homepage`, and `bugs` metadata to the package

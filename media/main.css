@@ -13,11 +13,19 @@
 	);
 	--pi-border-subtle: color-mix(in srgb, var(--pi-border) 65%, transparent);
 	--pi-muted: var(--vscode-descriptionForeground, #9ba1a6);
+	--pi-page-background: var(
+		--vscode-sideBar-background,
+		var(--vscode-editor-background)
+	);
 	--pi-surface: var(--vscode-input-background, rgba(128, 128, 128, 0.07));
 	--pi-raised: var(
 		--vscode-editorWidget-background,
 		var(--vscode-editor-background)
 	);
+	--pi-focus-ring: var(--vscode-focusBorder, var(--pi-accent));
+	--pi-radius-control: 4px;
+	--pi-radius-content: 6px;
+	--pi-radius-panel: 8px;
 	/* Three-step type scale: 11 / inherited body (13px by default) / 15. Even
 	   2px steps, so each level is actually distinguishable — the 10/11/12px mix
 	   this replaces read as inconsistency rather than hierarchy. Ranking *within*
@@ -54,7 +62,7 @@ body {
 	padding: 0 8px;
 	overflow: hidden;
 	color: var(--vscode-foreground);
-	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	background: var(--pi-page-background);
 	font-family: var(--vscode-font-family);
 	font-size: var(--vscode-font-size);
 	line-height: 1.5;
@@ -85,7 +93,7 @@ select:focus-visible,
 textarea:focus-visible,
 summary:focus-visible,
 a:focus-visible {
-	outline: 1px solid var(--pi-accent);
+	outline: 1px solid var(--pi-focus-ring);
 	outline-offset: 2px;
 }
 
@@ -119,12 +127,13 @@ button {
 	padding: 0 2px 0 4px;
 	overflow: hidden;
 	border-bottom: 1px solid var(--pi-border-subtle);
-	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	background: var(--pi-page-background);
 }
 
 .session-title-wrap {
 	display: flex;
 	align-items: center;
+	flex: 1 1 auto;
 	min-width: 0;
 	overflow: hidden;
 	gap: 8px;
@@ -160,8 +169,9 @@ button {
 .session-title {
 	min-width: 0;
 	overflow: hidden;
-	font-size: var(--pi-font-chrome);
-	font-weight: 650;
+	font-size: var(--vscode-font-size, 13px);
+	font-weight: 600;
+	line-height: 1.25;
 	letter-spacing: 0;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -192,7 +202,7 @@ button {
 	height: var(--pi-control-size);
 	padding: 0;
 	border: 1px solid transparent;
-	border-radius: 5px;
+	border-radius: var(--pi-radius-control);
 	color: var(--pi-muted);
 	background: transparent;
 }
@@ -221,12 +231,10 @@ button {
 }
 
 .empty-logo {
+	display: block;
 	width: 54px;
 	height: 54px;
 	margin-bottom: 12px;
-	border: 1px solid var(--pi-accent-border);
-	border-radius: 10px;
-	box-shadow: 0 8px 24px color-mix(in srgb, var(--pi-accent) 18%, transparent);
 }
 
 .empty-wordmark {
@@ -265,7 +273,7 @@ button {
 	padding: 9px 11px;
 	border: 1px solid var(--pi-border-subtle);
 	border-left: 2px solid var(--pi-accent);
-	border-radius: 5px;
+	border-radius: var(--pi-radius-content);
 	background: color-mix(in srgb, var(--pi-surface) 88%, transparent);
 	white-space: pre-wrap;
 }
@@ -383,7 +391,7 @@ button {
 	padding: 10px 34px 10px 11px;
 	overflow: auto;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 5px;
+	border-radius: var(--pi-radius-content);
 	background: var(
 		--vscode-textCodeBlock-background,
 		var(--vscode-editor-background)
@@ -457,7 +465,7 @@ button {
 	max-height: 260px;
 	margin-top: 8px;
 	border: 1px solid var(--pi-border);
-	border-radius: 4px;
+	border-radius: var(--pi-radius-content);
 	object-fit: contain;
 }
 
@@ -501,18 +509,27 @@ button {
 
 .thinking-summary {
 	display: grid;
-	grid-template-columns: 16px auto 16px;
+	grid-template-columns: 16px auto;
 	align-items: center;
 	width: fit-content;
 	min-height: 28px;
-	border-radius: 4px;
 	cursor: pointer;
-	column-gap: 7px;
+	column-gap: 3px;
 	list-style: none;
 	user-select: none;
 }
 
-.thinking-summary:hover {
+.thinking-summary-content {
+	display: grid;
+	grid-template-columns: auto 16px;
+	align-items: center;
+	min-height: 28px;
+	padding-inline: 5px;
+	border-radius: var(--pi-radius-control);
+	column-gap: 7px;
+}
+
+.thinking-summary:hover .thinking-summary-content {
 	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
 }
 
@@ -544,7 +561,6 @@ button {
 	min-width: 0;
 	margin: 1px 0 4px 23px;
 	padding: 5px 0 5px 8px;
-	border-left: 1px solid var(--pi-border-subtle);
 	color: var(--pi-muted);
 	line-height: 1.65;
 }
@@ -560,19 +576,28 @@ button {
 
 .tool-call summary {
 	display: grid;
-	grid-template-columns: 16px minmax(0, 1fr) auto;
+	grid-template-columns: 16px minmax(0, 1fr);
 	align-items: center;
 	min-height: 30px;
-	padding: 1px 4px 1px 0;
-	border-radius: 4px;
 	cursor: pointer;
-	gap: 7px;
+	gap: 3px;
 	list-style: none;
 	font-size: var(--pi-font-chrome);
 	user-select: none;
 }
 
-.tool-call summary:hover {
+.tool-summary-content {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	min-width: 0;
+	min-height: 30px;
+	padding: 1px 5px;
+	border-radius: var(--pi-radius-control);
+	gap: 7px;
+}
+
+.tool-call summary:hover .tool-summary-content {
 	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
 }
 
@@ -624,7 +649,7 @@ button {
 	margin: 3px 4px 9px 23px;
 	overflow: auto;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 5px;
+	border-radius: var(--pi-radius-content);
 	color: var(--pi-muted);
 	background: var(
 		--vscode-textCodeBlock-background,
@@ -646,7 +671,7 @@ button {
 	margin: 0 4px 9px 23px;
 	overflow: auto;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 5px;
+	border-radius: var(--pi-radius-content);
 	background: var(
 		--vscode-textCodeBlock-background,
 		var(--vscode-editor-background)
@@ -716,7 +741,7 @@ button {
 	padding: 6px 9px;
 	border: 1px solid var(--pi-border-subtle);
 	border-left: 2px solid var(--pi-danger);
-	border-radius: 5px;
+	border-radius: var(--pi-radius-content);
 	color: var(--vscode-notifications-foreground, var(--vscode-foreground));
 	background: var(
 		--vscode-notifications-background,
@@ -757,7 +782,7 @@ button {
 	padding: 8px;
 	overflow: hidden;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 6px;
+	border-radius: var(--pi-radius-panel);
 	background: var(--pi-raised);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
 }
@@ -781,7 +806,7 @@ button {
 }
 
 .history-search:focus-within {
-	border-color: var(--vscode-focusBorder, var(--pi-accent));
+	border-color: var(--pi-focus-ring);
 }
 
 /* Icons size independently of the type scale: a codicon shrunk to caption size
@@ -836,7 +861,7 @@ button {
 }
 
 .session-row:focus-within {
-	outline: 1px solid var(--vscode-focusBorder, var(--pi-accent));
+	outline: 1px solid var(--pi-focus-ring);
 	outline-offset: -1px;
 }
 
@@ -888,7 +913,7 @@ button {
 	width: 24px;
 	height: 24px;
 	padding: 0;
-	border-radius: 3px;
+	border-radius: var(--pi-radius-control);
 	color: var(--pi-muted);
 	background: transparent;
 	opacity: 0;
@@ -933,7 +958,7 @@ button {
 	padding: 4px;
 	overflow: hidden;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 6px;
+	border-radius: var(--pi-radius-panel);
 	background: var(--pi-raised);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
 }
@@ -965,7 +990,7 @@ button {
 }
 
 .command-search:focus-within {
-	border-color: var(--vscode-focusBorder, var(--pi-accent));
+	border-color: var(--pi-focus-ring);
 }
 
 /* Matches the history panel's search icon rather than the 16px toolbar scale: a
@@ -1092,7 +1117,7 @@ button {
 	padding: 7px 9px;
 	overflow: auto;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 5px;
+	border-radius: var(--pi-radius-content);
 	background: var(--pi-surface);
 	color: var(--pi-muted);
 	font-family: var(--vscode-editor-font-family, monospace);
@@ -1110,7 +1135,7 @@ button {
 	overflow-x: hidden;
 	overflow-y: auto;
 	border-top: 1px solid var(--pi-border-subtle);
-	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	background: var(--pi-page-background);
 }
 
 #app.is-working .composer-shell {
@@ -1232,7 +1257,7 @@ button {
 	max-width: 100%;
 	overflow: hidden;
 	border: 1px solid var(--pi-accent-border);
-	border-radius: 7px;
+	border-radius: var(--pi-radius-panel);
 	background: var(--pi-surface);
 	box-shadow: 0 5px 18px
 		color-mix(in srgb, var(--vscode-widget-shadow, #000) 14%, transparent);
@@ -1399,7 +1424,7 @@ button {
 	height: var(--pi-control-size);
 	padding: 0 6px;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 5px;
+	border-radius: var(--pi-radius-control);
 	color: var(--pi-muted);
 	background: transparent;
 	gap: 5px;
@@ -1455,7 +1480,7 @@ button {
 	padding: 4px;
 	overflow-y: auto;
 	border: 1px solid var(--pi-border-subtle);
-	border-radius: 6px;
+	border-radius: var(--pi-radius-panel);
 	background: var(--pi-raised);
 	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
@@ -1550,7 +1575,7 @@ button {
 	width: var(--pi-control-size);
 	height: var(--pi-control-size);
 	padding: 0;
-	border-radius: 5px;
+	border-radius: var(--pi-radius-control);
 	color: #fff;
 	background: var(--pi-accent);
 }
@@ -1592,7 +1617,7 @@ button {
 	position: absolute;
 	z-index: 20;
 	right: 8px;
-	bottom: 108px;
+	bottom: var(--pi-composer-overlay-offset, 108px);
 	left: 8px;
 	display: flex;
 	flex-direction: column;
@@ -1606,7 +1631,7 @@ button {
 	padding: 7px 9px;
 	border: 1px solid var(--pi-border-subtle);
 	border-left: 2px solid var(--pi-accent);
-	border-radius: 4px;
+	border-radius: var(--pi-radius-content);
 	color: var(--vscode-notifications-foreground, var(--vscode-foreground));
 	background: var(
 		--vscode-notifications-background,
@@ -1639,7 +1664,7 @@ button {
 	width: min(100%, 330px);
 	padding: 14px;
 	border: 1px solid var(--pi-accent-border);
-	border-radius: 6px;
+	border-radius: var(--pi-radius-panel);
 	background: var(
 		--vscode-editorWidget-background,
 		var(--vscode-editor-background)
@@ -1761,6 +1786,7 @@ button {
 	.attachment-chip,
 	.composer,
 	.tool-output,
+	.tool-diff,
 	.user-message,
 	.modal,
 	.toast {

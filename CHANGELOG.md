@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1
+
+- Fix the welcome logo's corner gaps by rendering the mark as one inline SVG,
+  with no separate image border, clipping curve, or shadow. Cache-bust the
+  stylesheet whenever the Webview is recreated.
+
 ## 0.4.0
 
 - Add a `/` composer button that lists the slash commands pi reports, grouped

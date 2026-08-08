@@ -293,6 +293,14 @@ const composerToolsResizeObserver = new ResizeObserver(() => {
 });
 composerToolsResizeObserver.observe(elements.composerTools);
 
+// Keep floating feedback immediately above the composer when attachments or a
+// multi-line draft change its height.
+const composerShellResizeObserver = new ResizeObserver(
+	updateComposerOverlayOffset,
+);
+composerShellResizeObserver.observe(elements.composerShell);
+updateComposerOverlayOffset();
+
 elements.input.addEventListener("keydown", (event) => {
 	// The palette claims Enter/Tab/arrows while it is open, so this runs before
 	// the composer's own send and reference-jump handling.
@@ -1277,7 +1285,7 @@ function assistantMessageHtml(
 			const openState = streaming ? " open" : "";
 			thinkingIndex += 1;
 			activity.push(
-				`<details class="activity-item thinking-block${streamingState}" data-thinking-key="${escapeHtml(thinkingKey)}"${openState}><summary class="thinking-summary"><span class="activity-marker"><i class="codicon codicon-lightbulb" aria-hidden="true"></i></span><span class="thinking-label">Reasoning</span><i class="codicon codicon-chevron-right thinking-chevron" aria-hidden="true"></i></summary><div class="thinking-content">${markdown(block.thinking ?? "")}</div></details>`,
+				`<details class="activity-item thinking-block${streamingState}" data-thinking-key="${escapeHtml(thinkingKey)}"${openState}><summary class="thinking-summary"><span class="activity-marker"><i class="codicon codicon-lightbulb" aria-hidden="true"></i></span><span class="thinking-summary-content"><span class="thinking-label">Reasoning</span><i class="codicon codicon-chevron-right thinking-chevron" aria-hidden="true"></i></span></summary><div class="thinking-content">${markdown(block.thinking ?? "")}</div></details>`,
 			);
 		}
 		if (block.type === "toolCall" && block.id && block.name) {
@@ -1325,8 +1333,7 @@ function toolDisclosureHtml(
 	return `<details class="activity-item tool-call ${status}" data-tool-key="${escapeHtml(id)}" ${status === "error" ? "open" : ""}>
     <summary>
       <span class="activity-marker"><i class="codicon codicon-${icon}" aria-hidden="true"></i></span>
-      <span class="tool-summary-main"><span class="tool-name">${escapeHtml(friendlyToolName(name))}</span><span class="tool-target">${escapeHtml(target)}</span></span>
-      <span class="tool-status">${statusLabel}</span>
+      <span class="tool-summary-content"><span class="tool-summary-main"><span class="tool-name">${escapeHtml(friendlyToolName(name))}</span><span class="tool-target">${escapeHtml(target)}</span></span><span class="tool-status">${statusLabel}</span></span>
     </summary>
     ${outputHtml}
     ${diffHtml}
@@ -2645,6 +2652,13 @@ function showToast(message: string, kind: "info" | "error"): void {
 	toast.textContent = message;
 	elements.toastRegion.append(toast);
 	setTimeout(() => toast.remove(), 4_500);
+}
+
+function updateComposerOverlayOffset(): void {
+	const appRect = elements.app.getBoundingClientRect();
+	const composerRect = elements.composerShell.getBoundingClientRect();
+	const offset = Math.max(8, Math.round(appRect.bottom - composerRect.top + 8));
+	elements.app.style.setProperty("--pi-composer-overlay-offset", `${offset}px`);
 }
 
 function focusComposerIfRequested(): void {

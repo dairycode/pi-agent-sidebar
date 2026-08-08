@@ -9,14 +9,11 @@ export function createWebviewDocument(
 	const scriptUri = webview.asWebviewUri(
 		vscode.Uri.joinPath(extensionUri, "media", "main.js"),
 	);
-	const styleUri = webview.asWebviewUri(
-		vscode.Uri.joinPath(extensionUri, "media", "main.css"),
-	);
+	const styleUri = webview
+		.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "main.css"))
+		.with({ query: `v=${nonce}` });
 	const codiconUri = webview.asWebviewUri(
 		vscode.Uri.joinPath(extensionUri, "media", "codicons", "codicon.css"),
-	);
-	const logoUri = webview.asWebviewUri(
-		vscode.Uri.joinPath(extensionUri, "media", "pi-logo.svg"),
 	);
 
 	return `<!doctype html>
@@ -45,7 +42,11 @@ export function createWebviewDocument(
     <main id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off">
       <div id="connection-banner" class="connection-banner" hidden></div>
       <section id="empty-state" class="empty-state">
-        <img src="${logoUri}" class="empty-logo" width="54" height="54" alt="">
+        <svg class="empty-logo" viewBox="0 0 256 256" width="54" height="54" aria-hidden="true">
+          <rect width="256" height="256" rx="48" fill="#d97757"/>
+          <path fill="#1f2328" d="M48 64h160v32h-24v112h-32V96h-48v112H72V96H48V64Z"/>
+          <path fill="#f1f3f5" d="M104 112h48v32h-48z" opacity=".9"/>
+        </svg>
         <div class="empty-wordmark">pi agent</div>
         <p id="empty-detail" class="empty-detail">Starting in this workspace...</p>
       </section>

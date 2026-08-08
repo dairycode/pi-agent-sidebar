@@ -128,6 +128,15 @@ export class PiViewProvider
 	private pendingComposerFocusRequestId: number | undefined;
 	private workspaceGeneration = 0;
 	private snapshotSequence = 0;
+	/**
+	 * Set when a post is refused because the view is hidden.
+	 *
+	 * `retainContextWhenHidden` keeps the DOM alive, but the editor still drops
+	 * messages aimed at a hidden view. Tracking the refusal means becoming visible
+	 * again only costs a snapshot when something was actually missed — collapsing
+	 * and expanding an idle session leaves the retained view untouched.
+	 */
+	private missedPostWhileHidden = false;
 	private shutdownPromise: Promise<void> | undefined;
 	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
@@ -160,8 +169,17 @@ export class PiViewProvider
 				void this.handleWebviewMessage(message);
 			},
 		);
+		// `retainContextWhenHidden` keeps the DOM alive across a collapse, but the
+		// editor refuses to deliver messages to a hidden view — so any pi event that
+		// arrived while collapsed was dropped and the transcript came back stale.
+		// Re-syncing on the way back fills that gap.
+		const visibilityDisposable = view.onDidChangeVisibility(() => {
+			if (!view.visible || this.view !== view || !this.webviewReady) return;
+			void this.resyncAfterHidden();
+		});
 		const disposeDisposable = view.onDidDispose(() => {
 			messageDisposable.dispose();
+			visibilityDisposable.dispose();
 			disposeDisposable.dispose();
 			if (this.view === view) {
 				this.view = undefined;
@@ -178,6 +196,30 @@ export class PiViewProvider
 
 	public async reveal(): Promise<void> {
 		await vscode.commands.executeCommand(`${VIEW_TYPE}.focus`);
+	}
+
+	/**
+	 * Brings the webview back in step after it was hidden.
+	 *
+	 * Skipped unless a post was actually refused while hidden: a snapshot rebuilds
+	 * the whole transcript DOM and resets the reader's scroll position, so paying
+	 * that on every expand made an idle session flicker for no reason.
+	 *
+	 * Only runs when a pi process is already up: with no client there is nothing to
+	 * snapshot, and `ready` handles the initial start. Failures are logged rather
+	 * than surfaced — the view still holds its retained content, so a missed resync
+	 * is a staleness problem, not a broken view.
+	 */
+	private async resyncAfterHidden(): Promise<void> {
+		if (!this.missedPostWhileHidden) return;
+		this.missedPostWhileHidden = false;
+		if (!this.client?.isRunning) return;
+		try {
+			await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+			await this.refreshSnapshot();
+		} catch (error) {
+			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
+		}
 	}
 
 	public async focusInputWithSelection(
@@ -1610,7 +1652,11 @@ export class PiViewProvider
 		else if (message.type === "bootstrap" && message.phase === "no-workspace")
 			this.updateStatusBar("no-workspace");
 		else if (message.type === "snapshot") this.updateStatusBar("ready");
-		return this.view ? this.view.webview.postMessage(message) : false;
+		if (!this.view) return false;
+		const delivered = await this.view.webview.postMessage(message);
+		// A hidden view refuses delivery; remember it so the next reveal resyncs.
+		if (!delivered) this.missedPostWhileHidden = true;
+		return delivered;
 	}
 
 	private getHtml(webview: vscode.Webview): string {

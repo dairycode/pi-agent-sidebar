@@ -61,6 +61,14 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.window.registerWebviewViewProvider(
 			PiViewProvider.viewType,
 			provider,
+			// Without this the editor tears down the webview whenever the view is
+			// collapsed or another sidebar group is shown, so expanding it again
+			// rebuilt the page from scratch: the transcript blanked and then popped
+			// back in. The conversation cannot be restored quickly enough to hide
+			// that — it means re-running the whole RPC snapshot — which is exactly
+			// the case this option exists for. The cost is holding the view's DOM in
+			// memory while hidden.
+			{ webviewOptions: { retainContextWhenHidden: true } },
 		),
 		vscode.commands.registerCommand("piAgentSidebar.open", () =>
 			provider.reveal(),

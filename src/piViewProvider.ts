@@ -506,6 +506,10 @@ export class PiViewProvider
 					await this.sendSessionList();
 					break;
 				}
+				case "listCommands": {
+					await this.sendCommandList();
+					break;
+				}
 				case "pickAttachments": {
 					await this.pickAttachments();
 					break;
@@ -1094,6 +1098,27 @@ export class PiViewProvider
 		await this.post({ type: "sessionList", sessions });
 	}
 
+	/**
+	 * Re-reads pi's command list on demand.
+	 *
+	 * The snapshot copy can be stale: extensions, prompt templates, and skills
+	 * are loaded (and reloaded) independently of the session events that trigger
+	 * a snapshot refresh. A failure here is non-fatal — the panel keeps showing
+	 * whatever the last snapshot carried.
+	 */
+	private async sendCommandList(): Promise<void> {
+		const client = await this.ensureClient();
+		try {
+			const response = await client.request({ type: "get_commands" });
+			await this.post({
+				type: "commandList",
+				commands: parseCommandsResponse(response),
+			});
+		} catch (error) {
+			this.output.appendLine(`[commands] ${toErrorMessage(error)}`);
+		}
+	}
+
 	private captureCodeReference(editor: vscode.TextEditor): string | undefined {
 		const { document, selection } = editor;
 		const text = document.getText(selection);
@@ -1621,6 +1646,14 @@ function diagnosticSeverityLabel(severity: vscode.DiagnosticSeverity): string {
 	}
 }
 
+function diagnosticCodeLabel(
+	code: vscode.Diagnostic["code"],
+): string | undefined {
+	if (code === undefined || code === null) return undefined;
+	if (typeof code === "object") return String(code.value);
+	return String(code);
+}
+
 function collectDiagnostics(
 	uri: vscode.Uri,
 	range?: vscode.Range,
@@ -1635,12 +1668,7 @@ function collectDiagnostics(
 			continue;
 		}
 		if (range && !range.intersection(diagnostic.range)) continue;
-		const code =
-			diagnostic.code === undefined || diagnostic.code === null
-				? undefined
-				: typeof diagnostic.code === "object"
-					? String(diagnostic.code.value)
-					: String(diagnostic.code);
+		const code = diagnosticCodeLabel(diagnostic.code);
 		entries.push({
 			line: diagnostic.range.start.line + 1,
 			severity: diagnosticSeverityLabel(diagnostic.severity),

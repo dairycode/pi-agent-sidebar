@@ -101,3 +101,24 @@ test("webview protocol rejects malformed action payloads", async () => {
 		await loaded.dispose();
 	}
 });
+
+test("webview protocol accepts argument-free requests", async () => {
+	const loaded = await loadProtocol();
+	try {
+		for (const type of [
+			"ready",
+			"listSessions",
+			"listCommands",
+			"pickAttachments",
+			"showLogs",
+		]) {
+			assert.deepEqual(loaded.module.parseWebviewMessage({ type }), { type });
+		}
+		assert.equal(
+			loaded.module.parseWebviewMessage({ type: "listCommandz" }),
+			undefined,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});

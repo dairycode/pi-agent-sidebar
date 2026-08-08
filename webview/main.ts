@@ -19,6 +19,7 @@ import type {
 	CodeReference,
 	HostToWebviewMessage,
 	JsonRecord,
+	PiCommand,
 	PiContentBlock,
 	PiMessage,
 	PiModel,
@@ -76,7 +77,7 @@ interface UiState {
 	streamingMessage?: PiMessage;
 	models: PiModel[];
 	thinkingLevels: string[];
-	commands: JsonRecord[];
+	commands: PiCommand[];
 	attachments: AttachmentRef[];
 	codeReferences: ManagedCodeReference[];
 	sessions: SessionSummary[];
@@ -158,6 +159,10 @@ const elements = {
 	promptHighlights: element<HTMLElement>("prompt-highlights"),
 	input: element<HTMLTextAreaElement>("prompt-input"),
 	attachButton: element<HTMLButtonElement>("attach-button"),
+	commandButton: element<HTMLButtonElement>("command-button"),
+	commandPanel: element<HTMLElement>("command-panel"),
+	commandSearch: element<HTMLInputElement>("command-search"),
+	commandList: element<HTMLElement>("command-list"),
 	composerTools: element<HTMLElement>("composer-tools"),
 	modelSelect: element<HTMLButtonElement>("model-select"),
 	modelSelectValue: element<HTMLElement>("model-select-value"),
@@ -199,6 +204,10 @@ window.addEventListener("keydown", (event) => {
 		closeSelect(true);
 		return;
 	}
+	if (!elements.commandPanel.hidden) {
+		closeCommandPalette(true);
+		return;
+	}
 	if (!elements.historyPanel.hidden) closeHistory();
 });
 
@@ -210,6 +219,16 @@ window.addEventListener("pointerdown", (event) => {
 		!selectTrigger(activeSelect).contains(event.target)
 	) {
 		closeSelect(false);
+	}
+	if (
+		!elements.commandPanel.hidden &&
+		!elements.commandPanel.contains(event.target) &&
+		!elements.commandButton.contains(event.target) &&
+		// The inline palette is driven by the composer, so clicking inside the
+		// textarea must not dismiss it; the caret checks decide that instead.
+		!(commandPaletteMode === "inline" && elements.input.contains(event.target))
+	) {
+		dismissCommandPalette();
 	}
 	if (
 		!elements.modalBackdrop.hidden ||
@@ -227,10 +246,25 @@ elements.input.addEventListener("input", () => {
 	resizeInput();
 	persistComposerState();
 	renderComposerHighlights();
+	syncInlineCommandPalette();
 });
 
-elements.input.addEventListener("keyup", rememberComposerCaret);
-elements.input.addEventListener("pointerup", rememberComposerCaret);
+elements.input.addEventListener("keyup", (event) => {
+	rememberComposerCaret();
+	// Caret keys move without firing `input`, so the inline palette has to
+	// re-check whether the caret is still inside its token.
+	if (
+		event.key.startsWith("Arrow") ||
+		event.key === "Home" ||
+		event.key === "End"
+	) {
+		syncInlineCommandPalette();
+	}
+});
+elements.input.addEventListener("pointerup", () => {
+	rememberComposerCaret();
+	syncInlineCommandPalette();
+});
 elements.input.addEventListener("select", rememberComposerCaret);
 elements.input.addEventListener("blur", rememberComposerCaret);
 
@@ -241,16 +275,19 @@ const promptHighlightResizeObserver = new ResizeObserver(
 );
 promptHighlightResizeObserver.observe(elements.input);
 
-// Dragging the sidebar edge resizes the toolbar without any state change, so the
-// full/icon-only decision has to be re-measured from a resize observer as well
-// as from render().
+// Dragging the sidebar edge changes the available width without any state
+// change, so the label stages have to be re-measured here as well as in render().
 const composerToolsResizeObserver = new ResizeObserver(() => {
 	reflowComposerTools();
 	if (activeSelect) positionSelectPopup(selectTrigger(activeSelect));
+	if (!elements.commandPanel.hidden) positionCommandPanel();
 });
 composerToolsResizeObserver.observe(elements.composerTools);
 
 elements.input.addEventListener("keydown", (event) => {
+	// The palette claims Enter/Tab/arrows while it is open, so this runs before
+	// the composer's own send and reference-jump handling.
+	if (handleInlineCommandKeydown(event)) return;
 	if (event.key === "F12") {
 		const reference = codeReferenceAtOffset(elements.input.selectionStart);
 		if (!reference) return;
@@ -284,6 +321,18 @@ elements.composer.addEventListener("submit", (event) => {
 elements.attachButton.addEventListener("click", () =>
 	post({ type: "pickAttachments" }),
 );
+elements.commandButton.addEventListener("click", toggleCommandPalette);
+elements.commandSearch.addEventListener("input", renderCommands);
+elements.commandSearch.addEventListener("keydown", (event) => {
+	if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+		event.preventDefault();
+		moveActiveCommand(event.key === "ArrowDown" ? 1 : -1);
+		return;
+	}
+	if (event.key !== "Enter" || event.isComposing || !activeCommandName) return;
+	event.preventDefault();
+	insertSlashCommand(activeCommandName);
+});
 elements.historyButton.addEventListener("click", toggleHistory);
 elements.sessionSearch.addEventListener("input", renderSessions);
 elements.sessionSearch.addEventListener("keydown", (event) => {
@@ -454,6 +503,11 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 		case "sessionList": {
 			ui.sessions = message.sessions;
 			renderSessions();
+			break;
+		}
+		case "commandList": {
+			ui.commands = message.commands;
+			if (!elements.commandPanel.hidden) renderCommands();
 			break;
 		}
 		case "attachments": {
@@ -814,9 +868,11 @@ function render(): void {
 	const enabled = ui.connection === "ready";
 	elements.input.disabled = !enabled;
 	elements.attachButton.disabled = !enabled;
+	elements.commandButton.disabled = !enabled;
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
 	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
 	if (activeSelect && selectTrigger(activeSelect).disabled) closeSelect(false);
+	if (!enabled) dismissCommandPalette();
 	reflowComposerTools();
 	focusComposerIfRequested();
 
@@ -824,22 +880,34 @@ function render(): void {
 }
 
 /**
- * Chooses between full labels and icon-only pickers for the composer toolbar.
+ * Chooses how much of the composer toolbar fits.
  *
- * This cannot be a media query: the labels range from "Max" to
- * "Claude Sonnet 4.5 (latest)", so no fixed width threshold is right for every
- * model. Instead the row is measured with labels shown, and both pickers switch
- * together the moment they no longer fit — labels are therefore never
- * ellipsised, and the toolbar never lands in a half-truncated state.
+ * Three states, widest first: both pickers labelled, both as icons, then both
+ * hidden. Every control is shown at full size or not at all, and the row's gaps
+ * are identical in all three — narrowing the sidebar removes controls but never
+ * squeezes, truncates, or clips them.
+ *
+ * The last state is not optional. A VS Code sidebar drags down to roughly 170px,
+ * which leaves about 128px inside the composer's padding, while five controls need
+ * about 158px. Something has to go, and hiding whole controls beats slicing an
+ * icon in half.
+ *
+ * Known limitation: while hidden, model and thinking cannot be changed from this
+ * view at all — the extension registers no command for either, and the status row
+ * reports only context and cost. Widening the sidebar restores both pickers.
+ *
+ * Measured rather than driven by a media query because label widths range from
+ * "Max" to "Claude Sonnet 4.5 (latest)", so no fixed breakpoint is right for
+ * every model. All reads happen in one frame, so intermediate states are never
+ * painted.
  */
 function reflowComposerTools(): void {
 	const tools = elements.composerTools;
-	// Measured with labels visible so scrollWidth reports the expanded width.
-	// Both reads happen in the same frame, so the temporary class removal is
-	// never painted.
-	tools.classList.remove("is-compact");
-	const overflows = tools.scrollWidth > tools.clientWidth;
-	tools.classList.toggle("is-compact", overflows);
+	tools.classList.remove("is-icons", "is-minimal");
+	if (tools.scrollWidth <= tools.clientWidth) return;
+	tools.classList.add("is-icons");
+	if (tools.scrollWidth <= tools.clientWidth) return;
+	tools.classList.add("is-minimal");
 }
 
 function scrollTranscriptToBottom(): void {
@@ -1826,6 +1894,355 @@ function closeHistory(): void {
 }
 
 /**
+ * Slash-command palette.
+ *
+ * pi's `prompt` command already recognises a leading `/name` and expands
+ * extension commands, prompt templates, and skills itself, so this palette only
+ * has to write text into the composer — it never needs to know what a command
+ * does. Selecting a row inserts `/name ` rather than submitting, because many
+ * commands take arguments (`/deploy prod`); no-argument commands cost one extra
+ * Enter in exchange for supporting both.
+ *
+ * Two entry points share one panel:
+ *  - the toolbar button, which owns its own search field, and
+ *  - a `/` token typed at the start of a composer line, where the textarea
+ *    itself is the search field (`is-inline`).
+ */
+type CommandPaletteMode = "button" | "inline";
+
+interface InlineCommandToken {
+	start: number;
+	end: number;
+	query: string;
+}
+
+const COMMAND_GROUP_ORDER = ["extension", "prompt", "skill"];
+const COMMAND_GROUP_LABELS: Record<string, string> = {
+	extension: "Extensions",
+	prompt: "Prompts",
+	skill: "Skills",
+};
+
+let commandPaletteMode: CommandPaletteMode | undefined;
+let activeCommandName: string | undefined;
+let renderedCommandNames: string[] = [];
+
+function commandPaletteQuery(): string {
+	if (commandPaletteMode === "inline") return inlineCommandToken()?.query ?? "";
+	return elements.commandSearch.value.trim();
+}
+
+/**
+ * Finds the `/token` the caret currently sits in, or `undefined` when it is not
+ * inside one.
+ *
+ * The token has to start a line so ordinary prose like `and/or` and paths like
+ * `src/main.ts` never trigger the palette, and it stops at the first whitespace
+ * — once a space is typed the user is writing arguments, not picking a command.
+ */
+function inlineCommandToken(): InlineCommandToken | undefined {
+	const text = elements.input.value;
+	const caret = elements.input.selectionStart;
+	if (typeof caret !== "number" || caret !== elements.input.selectionEnd)
+		return undefined;
+	const lineStart = text.lastIndexOf("\n", caret - 1) + 1;
+	if (text[lineStart] !== "/") return undefined;
+	let end = lineStart + 1;
+	while (end < text.length && !/\s/u.test(text[end] ?? "")) end += 1;
+	if (caret < lineStart + 1 || caret > end) return undefined;
+	return { start: lineStart, end, query: text.slice(lineStart + 1, end) };
+}
+
+function matchingCommands(): PiCommand[] {
+	return commandsMatching(commandPaletteQuery());
+}
+
+function commandsMatching(query: string): PiCommand[] {
+	const terms = query.toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+	if (terms.length === 0) return ui.commands;
+	return ui.commands.filter((command) => {
+		const searchable =
+			`${command.name}\n${command.description ?? ""}`.toLocaleLowerCase();
+		return terms.every((term) => searchable.includes(term));
+	});
+}
+
+function renderCommands(): void {
+	const commands = matchingCommands();
+	renderedCommandNames = commands.map((command) => command.name);
+	if (activeCommandName && !renderedCommandNames.includes(activeCommandName))
+		activeCommandName = undefined;
+	if (!activeCommandName) activeCommandName = renderedCommandNames[0];
+
+	if (commands.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "command-list-empty";
+		empty.textContent =
+			ui.commands.length === 0
+				? "No commands available"
+				: "No matching commands";
+		elements.commandList.replaceChildren(empty);
+		setCommandActiveDescendant(undefined);
+		return;
+	}
+
+	// Unknown sources keep their raw key as a heading instead of being dropped, so
+	// a command kind pi adds later still appears.
+	const groups = new Map<string, PiCommand[]>();
+	for (const command of commands) {
+		const key = command.source ?? "other";
+		const existing = groups.get(key);
+		if (existing) existing.push(command);
+		else groups.set(key, [command]);
+	}
+	const orderedKeys = [
+		...COMMAND_GROUP_ORDER.filter((key) => groups.has(key)),
+		...[...groups.keys()].filter((key) => !COMMAND_GROUP_ORDER.includes(key)),
+	];
+
+	const nodes: HTMLElement[] = [];
+	let rowIndex = 0;
+	for (const key of orderedKeys) {
+		const group = groups.get(key) ?? [];
+		if (group.length === 0) continue;
+		if (groups.size > 1) {
+			const label = document.createElement("div");
+			label.className = "command-group-label";
+			label.textContent = COMMAND_GROUP_LABELS[key] ?? key;
+			nodes.push(label);
+		}
+		for (const command of group) {
+			nodes.push(createCommandRow(command, rowIndex));
+			rowIndex += 1;
+		}
+	}
+	elements.commandList.replaceChildren(...nodes);
+	highlightActiveCommand(false);
+}
+
+function createCommandRow(command: PiCommand, index: number): HTMLElement {
+	const row = document.createElement("div");
+	row.className = "command-row";
+	row.id = `command-row-${index}`;
+	row.setAttribute("role", "option");
+	row.dataset.command = command.name;
+	row.tabIndex = -1;
+	// The row shows the name only, so the tooltip carries the description and the
+	// source path. Filtering still matches description text — see matchingCommands.
+	row.title = [`/${command.name}`, command.description, command.path]
+		.filter(Boolean)
+		.join("\n");
+
+	const name = document.createElement("span");
+	name.className = "command-row-name";
+	name.textContent = `/${command.name}`;
+	row.append(name);
+
+	if (command.location) {
+		const scope = document.createElement("span");
+		scope.className = "command-row-scope";
+		scope.textContent = command.location;
+		row.append(scope);
+	}
+
+	row.addEventListener("click", () => insertSlashCommand(command.name));
+	return row;
+}
+
+/**
+ * Marks the active row and points the focused element at it.
+ *
+ * `aria-activedescendant` has to live on whichever element holds focus, not on
+ * the list: in button mode that is the search input, and in inline mode it is the
+ * composer textarea. Setting it on the list meant screen readers never announced
+ * the highlighted command.
+ */
+function highlightActiveCommand(scroll = true): void {
+	let activeId: string | undefined;
+	for (const row of elements.commandList.querySelectorAll<HTMLElement>(
+		".command-row",
+	)) {
+		const active = row.dataset.command === activeCommandName;
+		row.classList.toggle("is-active", active);
+		row.setAttribute("aria-selected", String(active));
+		if (!active) continue;
+		activeId = row.id;
+		if (scroll) row.scrollIntoView({ block: "nearest" });
+	}
+	setCommandActiveDescendant(activeId);
+}
+
+function commandFocusHost(): HTMLElement {
+	return commandPaletteMode === "inline"
+		? elements.input
+		: elements.commandSearch;
+}
+
+function setCommandActiveDescendant(rowId: string | undefined): void {
+	// Both hosts are cleared: the mode can flip between renders, and a stale
+	// pointer on the other element would outlive the row it names.
+	for (const host of [elements.input, elements.commandSearch]) {
+		host.removeAttribute("aria-activedescendant");
+	}
+	if (rowId) commandFocusHost().setAttribute("aria-activedescendant", rowId);
+}
+
+function moveActiveCommand(delta: number): void {
+	if (renderedCommandNames.length === 0) return;
+	const current = activeCommandName
+		? renderedCommandNames.indexOf(activeCommandName)
+		: -1;
+	const next =
+		(current + delta + renderedCommandNames.length) %
+		renderedCommandNames.length;
+	activeCommandName = renderedCommandNames[next];
+	highlightActiveCommand();
+}
+
+function openCommandPalette(mode: CommandPaletteMode): void {
+	if (ui.connection !== "ready") return;
+	closeSelect(false);
+	dismissHistory();
+	commandPaletteMode = mode;
+	activeCommandName = undefined;
+	elements.commandPanel.classList.toggle("is-inline", mode === "inline");
+	elements.commandPanel.hidden = false;
+	elements.commandButton.setAttribute("aria-expanded", "true");
+	if (mode === "button") elements.commandSearch.value = "";
+
+	// The snapshot copy renders immediately so the panel never flashes empty; the
+	// refresh matters because extensions and skills load independently of the
+	// session events that trigger a snapshot.
+	renderCommands();
+	post({ type: "listCommands" });
+	positionCommandPanel();
+	if (mode === "button") elements.commandSearch.focus();
+}
+
+function dismissCommandPalette(): void {
+	if (elements.commandPanel.hidden) return;
+	commandPaletteMode = undefined;
+	activeCommandName = undefined;
+	renderedCommandNames = [];
+	elements.commandPanel.hidden = true;
+	elements.commandPanel.classList.remove("is-inline");
+	setCommandActiveDescendant(undefined);
+	elements.commandList.replaceChildren();
+	elements.commandButton.setAttribute("aria-expanded", "false");
+}
+
+function closeCommandPalette(restoreFocus: boolean): void {
+	const wasInline = commandPaletteMode === "inline";
+	dismissCommandPalette();
+	if (!restoreFocus) return;
+	if (wasInline) elements.input.focus();
+	else elements.commandButton.focus();
+}
+
+function toggleCommandPalette(): void {
+	if (elements.commandPanel.hidden) openCommandPalette("button");
+	else closeCommandPalette(true);
+}
+
+/**
+ * Writes `/name ` into the composer.
+ *
+ * Inline mode replaces the `/token` in place; button mode inserts at the
+ * remembered caret. The edit is then pushed through the same path the composer's
+ * own `input` handler uses, so a marker destroyed by the insertion is reported to
+ * the host rather than only dropped locally.
+ */
+function insertSlashCommand(name: string): void {
+	const text = elements.input.value;
+	const insertion = `/${name} `;
+	const token =
+		commandPaletteMode === "inline" ? inlineCommandToken() : undefined;
+
+	let start = token
+		? token.start
+		: Math.max(0, Math.min(lastComposerCaret, text.length));
+	let end = token ? token.end : start;
+	if (!token) {
+		// Never split a marker: land after it instead.
+		const marker = referenceAtOffset(ui.codeReferences, start);
+		if (marker && start > marker.start && start < marker.end) {
+			start = marker.end;
+			end = marker.end;
+		}
+	}
+
+	const caret = start + insertion.length;
+	elements.input.value = `${text.slice(0, start)}${insertion}${text.slice(end)}`;
+	elements.input.setSelectionRange(caret, caret);
+	lastComposerCaret = caret;
+	dismissCommandPalette();
+	// Same sequence as the composer's `input` listener: this diffs against the
+	// previous snapshot, posts any lost code references, and refreshes highlights.
+	reconcileCodeReferencesWithComposer();
+	resizeInput();
+	persistComposerState();
+	renderComposerHighlights();
+	elements.input.focus();
+	announce(`Inserted /${name}`);
+}
+
+/**
+ * Re-evaluates the inline palette after the composer changes.
+ *
+ * Driven from the composer `input` and caret handlers so every edit path lands
+ * here: typing `/` at a line start opens it, deleting the slash or typing a
+ * space closes it, and moving the caret out of the token closes it too.
+ */
+function syncInlineCommandPalette(): void {
+	const token = inlineCommandToken();
+	if (!token) {
+		if (commandPaletteMode === "inline") dismissCommandPalette();
+		return;
+	}
+	if (commandPaletteMode === "button") return;
+	if (commandPaletteMode === undefined) {
+		// A bare `/` always opens, which also refreshes the list. A longer token
+		// that matches nothing does not: it was dismissed as prose a keystroke ago,
+		// and reopening it here would flip the panel open and shut on every
+		// subsequent character.
+		if (token.query.length > 0 && commandsMatching(token.query).length === 0)
+			return;
+		openCommandPalette("inline");
+		return;
+	}
+	renderCommands();
+	// A query that matches nothing is just prose, so get out of the way.
+	if (renderedCommandNames.length === 0) dismissCommandPalette();
+	else positionCommandPanel();
+}
+
+/**
+ * Handles keys while the inline palette owns the composer.
+ *
+ * Returns true when the key was consumed so the composer's own Enter-to-send and
+ * caret movement stay untouched whenever the palette is closed.
+ */
+function handleInlineCommandKeydown(event: KeyboardEvent): boolean {
+	if (commandPaletteMode !== "inline" || elements.commandPanel.hidden)
+		return false;
+	if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+		event.preventDefault();
+		moveActiveCommand(event.key === "ArrowDown" ? 1 : -1);
+		return true;
+	}
+	if (event.key === "Escape") {
+		event.preventDefault();
+		closeCommandPalette(true);
+		return true;
+	}
+	if (event.key !== "Tab" && event.key !== "Enter") return false;
+	if (event.shiftKey || event.isComposing || !activeCommandName) return false;
+	event.preventDefault();
+	insertSlashCommand(activeCommandName);
+	return true;
+}
+
+/**
  * The model and thinking pickers are custom popups rather than native
  * `<select>` elements: a native dropdown's list is drawn by the OS, so it
  * cannot follow the VS Code theme or this view's styling. The popup lives under
@@ -1867,6 +2284,7 @@ function openSelect(kind: SelectKind): void {
 	if (options.length === 0) return;
 	if (activeSelect) closeSelect(false);
 	dismissHistory();
+	dismissCommandPalette();
 	activeSelect = kind;
 
 	const current = selectedValue(kind);
@@ -1907,15 +2325,35 @@ function focusSelectOption(row: HTMLElement | undefined): void {
 }
 
 function positionSelectPopup(trigger: HTMLElement): void {
-	const popup = elements.selectPopup;
+	positionPopupAbove(trigger, elements.selectPopup);
+}
+
+/**
+ * Places a popup above a composer element, inside `#app`.
+ *
+ * Shared by the model/thinking listbox and the slash-command palette: the
+ * composer sits at the bottom of the view, so both open upward, cap their height
+ * at the space actually available, and clamp horizontally to stay in view.
+ *
+ * `anchor` defaults to the trigger but the palette passes the whole composer.
+ * Anchoring the palette to its toolbar button put its bottom edge level with the
+ * button, which is *below* the textarea — so the panel covered the text being
+ * typed. The listbox pickers are short-lived and keep anchoring to their trigger.
+ */
+function positionPopupAbove(
+	trigger: HTMLElement,
+	popup: HTMLElement,
+	anchor: HTMLElement = trigger,
+): void {
 	const appRect = elements.app.getBoundingClientRect();
-	const rect = trigger.getBoundingClientRect();
-	// The composer sits at the bottom of the view, so the list opens upward.
+	const rect = anchor.getBoundingClientRect();
 	popup.style.bottom = `${Math.round(appRect.bottom - rect.top + 4)}px`;
 	popup.style.maxHeight = `${Math.max(
 		120,
 		Math.round(rect.top - appRect.top - 12),
 	)}px`;
+	// Reset before measuring: offsetWidth has to be read at the popup's natural
+	// width, not at whatever the previous placement left behind.
 	popup.style.left = "0px";
 	const left = Math.max(
 		8,
@@ -1925,6 +2363,21 @@ function positionSelectPopup(trigger: HTMLElement): void {
 		),
 	);
 	popup.style.left = `${left}px`;
+}
+
+/**
+ * Positions the command palette above the composer and matches its width, so the
+ * list lines up with the input it writes into.
+ */
+function positionCommandPanel(): void {
+	elements.commandPanel.style.width = `${Math.round(
+		elements.composer.getBoundingClientRect().width,
+	)}px`;
+	positionPopupAbove(
+		elements.commandButton,
+		elements.commandPanel,
+		elements.composer,
+	);
 }
 
 function closeSelect(restoreFocus: boolean): void {
@@ -2037,6 +2490,9 @@ function sendPrompt(): void {
 		ui.codeReferences.length === 0
 	)
 		return;
+	// The send button can be clicked while the palette is open, and submitting
+	// clears the text the palette was filtering on.
+	dismissCommandPalette();
 	pendingSubmit = true;
 	runAction("submit", {
 		text,

@@ -78,15 +78,14 @@ export function createWebviewDocument(
         <div class="composer-toolbar">
           <div id="composer-tools" class="composer-tools">
             <button id="attach-button" class="icon-button" type="button" title="Attach files or images" aria-label="Attach files or images"><i class="codicon codicon-add"></i></button>
+            <button id="command-button" class="icon-button" type="button" title="Slash commands" aria-label="Slash commands" aria-haspopup="listbox" aria-controls="command-panel" aria-expanded="false"><svg class="slash-icon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M11 2.59L5 13.35" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>
             <button id="model-select" class="select-control model-control" type="button" title="Model" aria-label="Model" aria-haspopup="listbox" aria-expanded="false" aria-controls="select-popup">
               <i class="codicon codicon-symbol-method" aria-hidden="true"></i>
               <span id="model-select-value" class="select-value"></span>
-              <i class="codicon codicon-chevron-down select-chevron" aria-hidden="true"></i>
             </button>
             <button id="thinking-select" class="select-control thinking-control" type="button" title="Thinking level" aria-label="Thinking level" aria-haspopup="listbox" aria-expanded="false" aria-controls="select-popup">
               <i class="codicon codicon-lightbulb" aria-hidden="true"></i>
               <span id="thinking-select-value" class="select-value"></span>
-              <i class="codicon codicon-chevron-down select-chevron" aria-hidden="true"></i>
             </button>
           </div>
           <div class="composer-actions">
@@ -99,6 +98,13 @@ export function createWebviewDocument(
     <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
     <div id="live-status" class="sr-only" role="status" aria-live="polite"></div>
     <div id="select-popup" class="select-popup" role="listbox" hidden></div>
+    <div id="command-panel" class="command-panel" role="region" aria-label="Slash commands" hidden>
+      <div id="command-list" class="command-list" role="listbox" aria-label="Slash commands"></div>
+      <div class="command-search" role="search">
+        <svg class="slash-icon is-search" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M11 2.59L5 13.35" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        <input id="command-search" type="search" placeholder="Search commands..." aria-label="Search commands" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="command-list">
+      </div>
+    </div>
     <div id="modal-backdrop" class="modal-backdrop" hidden></div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

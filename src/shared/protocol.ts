@@ -33,6 +33,21 @@ export interface PiModel extends JsonRecord {
 	contextWindow?: number;
 }
 
+/**
+ * A slash command reported by pi's `get_commands`.
+ *
+ * `source` and `location` stay open-ended on purpose: pi may add new kinds, and
+ * an unknown value should only cost the row its grouping header rather than
+ * failing validation and blanking the whole list.
+ */
+export interface PiCommand extends JsonRecord {
+	name: string;
+	description?: string;
+	source?: "extension" | "prompt" | "skill" | (string & {});
+	location?: "user" | "project" | "path" | (string & {});
+	path?: string;
+}
+
 export interface PiState extends JsonRecord {
 	model?: PiModel | null;
 	thinkingLevel?: string;
@@ -107,12 +122,13 @@ export type HostToWebviewMessage =
 			stats?: PiStats;
 			models: PiModel[];
 			thinkingLevels: string[];
-			commands: JsonRecord[];
+			commands: PiCommand[];
 			workspaceName: string;
 	  }
 	| { type: "rpcEvent"; event: JsonRecord }
 	| { type: "actionResult"; actionId: string; ok: boolean; error?: string }
 	| { type: "sessionList"; sessions: SessionSummary[] }
+	| { type: "commandList"; commands: PiCommand[] }
 	| { type: "attachments"; attachments: AttachmentRef[] }
 	| {
 			type: "codeReferences";
@@ -150,6 +166,7 @@ export type WebviewToHostMessage =
 	| { type: "compact"; actionId: string }
 	| { type: "restart"; actionId: string }
 	| { type: "listSessions" }
+	| { type: "listCommands" }
 	| { type: "pickAttachments" }
 	| { type: "pasteImages"; actionId: string; images: PastedImage[] }
 	| { type: "removeAttachment"; id: string }
@@ -172,7 +189,15 @@ export function parseWebviewMessage(
 	const type = boundedString(message.type, 64);
 	if (!type) return;
 
-	if (["ready", "listSessions", "pickAttachments", "showLogs"].includes(type)) {
+	if (
+		[
+			"ready",
+			"listSessions",
+			"listCommands",
+			"pickAttachments",
+			"showLogs",
+		].includes(type)
+	) {
 		return { type } as WebviewToHostMessage;
 	}
 	if (type === "composerFocused") {

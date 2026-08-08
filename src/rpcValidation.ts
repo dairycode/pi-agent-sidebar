@@ -1,5 +1,6 @@
 import type {
 	JsonRecord,
+	PiCommand,
 	PiContentBlock,
 	PiMessage,
 	PiModel,
@@ -11,6 +12,8 @@ const MAX_MESSAGES = 5_000;
 const MAX_CONTENT_BLOCKS = 10_000;
 const MAX_MODELS = 1_000;
 const MAX_COMMANDS = 2_000;
+const MAX_COMMAND_NAME_LENGTH = 512;
+const MAX_COMMAND_DESCRIPTION_LENGTH = 8 * 1024;
 const MAX_THINKING_LEVELS = 100;
 const MAX_TEXT_LENGTH = 1_000_000;
 const MAX_IMAGE_DATA_LENGTH = 16 * 1024 * 1024 + 16;
@@ -53,11 +56,55 @@ export function parseThinkingLevelsResponse(value: unknown): string[] {
 	);
 }
 
-export function parseCommandsResponse(value: unknown): JsonRecord[] {
+/**
+ * Extracts the command fields the sidebar renders.
+ *
+ * Rows missing a usable `name` are dropped rather than throwing: a single
+ * malformed entry from an extension should not blank the entire command list.
+ * Unknown `source`/`location` values pass through untouched so a newly added
+ * pi command kind only loses its grouping header.
+ */
+export function parseCommandsResponse(value: unknown): PiCommand[] {
 	const response = record(value, "commands response");
-	return array(response.commands, "commands", MAX_COMMANDS).map(
-		(command, index) => record(command, `commands[${index}]`),
-	);
+	const commands: PiCommand[] = [];
+	for (const [index, entry] of array(
+		response.commands,
+		"commands",
+		MAX_COMMANDS,
+	).entries()) {
+		const command = record(entry, `commands[${index}]`);
+		const name = command.name;
+		if (
+			typeof name !== "string" ||
+			name.length === 0 ||
+			name.length > MAX_COMMAND_NAME_LENGTH
+		) {
+			continue;
+		}
+		const parsed: PiCommand = { ...command, name };
+		parsed.description = optionalString(
+			command.description,
+			`commands[${index}].description`,
+			MAX_COMMAND_DESCRIPTION_LENGTH,
+		);
+		parsed.source = optionalString(
+			command.source,
+			`commands[${index}].source`,
+			128,
+		);
+		parsed.location = optionalString(
+			command.location,
+			`commands[${index}].location`,
+			128,
+		);
+		parsed.path = optionalString(
+			command.path,
+			`commands[${index}].path`,
+			32 * 1024,
+		);
+		commands.push(parsed);
+	}
+	return commands;
 }
 
 export function parsePiStats(value: unknown): PiStats {
@@ -119,10 +166,13 @@ function parsePiMessage(value: unknown, label = "message"): PiMessage {
 		if (typeof message.content === "string") {
 			string(message.content, `${label}.content`, MAX_TEXT_LENGTH);
 		} else {
-			array(message.content, `${label}.content`, MAX_CONTENT_BLOCKS).forEach(
-				(block, index) =>
-					parseContentBlock(block, `${label}.content[${index}]`),
-			);
+			for (const [index, block] of array(
+				message.content,
+				`${label}.content`,
+				MAX_CONTENT_BLOCKS,
+			).entries()) {
+				parseContentBlock(block, `${label}.content[${index}]`);
+			}
 		}
 	}
 	return message as PiMessage;

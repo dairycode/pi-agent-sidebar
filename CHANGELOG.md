@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.4.0
+
+- Add a `/` composer button that lists the slash commands pi reports, grouped
+  into extensions, prompt templates, and skills, with the scope each was loaded
+  from. Typing `/` at the start of a composer line opens the same list and
+  filters it as you type, where `ArrowUp`/`ArrowDown` move the selection and
+  `Enter`/`Tab` complete. A `/` mid-line or after a space is left alone, so
+  prose like `and/or` and paths like `src/main.ts` never trigger it.
+- Insert `/name` into the composer rather than submitting it, because commands
+  such as `/deploy prod` take arguments. Commands that take none cost one extra
+  `Enter` in exchange.
+- Re-read `get_commands` each time the list opens: extensions, templates, and
+  skills load independently of the session events that refresh the snapshot, so
+  the copy held from the last snapshot can be stale. The panel renders that copy
+  first and replaces it on response, so it never flashes empty.
+- Drop individual command entries that arrive without a usable name instead of
+  failing the whole response, and pass through command sources this extension
+  does not recognize. A kind pi adds later loses its grouping header rather than
+  its rows.
+- Built-in interactive commands such as `/model` and `/compact` are absent by
+  design: pi excludes them from `get_commands` because they are handled only in
+  its TUI and would not execute if sent as a prompt. The sidebar already exposes
+  the common ones as buttons. Argument completion is also unavailable, since
+  `getArgumentCompletions` is not part of the RPC payload.
+- Stop the model and thinking pickers jumping 4px narrower partway through a
+  drag. A `max-width: 320px` media query trimmed their padding to claw back room,
+  which fired at a breakpoint unrelated to whether the labels actually fit. Narrow
+  widths are handled by dropping labels instead, which is measured. Removing a
+  `max-width: 100%` from the same rule fixed a second squeeze: a hard cap
+  overrides `flex-shrink: 0`, and a clamped button stops overflowing its
+  container, which is the very signal the label/icon switch measures.
+- Give every composer-toolbar control one height, one corner radius, and a faint
+  resting border, so the row reads as a set rather than loose glyphs. The border
+  is scoped to the composer; the session header's buttons sit 1px apart, where a
+  border on each would double into a thick seam.
+- Show the pickers' labels or their icons, never both, and never a truncated
+  label. Dropping the redundant icon also frees the width that used to force the
+  icon-only state sooner. Below icon-only both pickers hide entirely: a sidebar
+  can be narrower than five controls, and hiding beats slicing an icon in half.
+- Align the status row and attachment list to the composer's text edge. They are
+  siblings of `.composer`, so they inherited none of its inset and hung 8-12px
+  past the send button.
+- Draw the slash trigger as an inline SVG. The codicon set has no plain slash, and
+  a text character is positioned by its font's ascent and descent, so it could
+  never share an optical centre with the codicons beside it. The path is fitted to
+  measured codicon metrics: 12.06px ink height, and a 1.3 stroke against a 1.13px
+  stem because a diagonal of equal width reads lighter.
+- Add `npm run preview`, which renders the webview in headless Chrome for visual
+  checks. It uses the real `createWebviewDocument()` and `media/main.css` so the
+  preview cannot drift from what ships, stubs only what VS Code owns, and fails
+  loudly if the injected theme is blocked — a silently unstyled shot still looks
+  plausible while every measurement in it is wrong.
+
 ## 0.3.3
 
 - Replace the native model and thinking `<select>` elements with themed popups.

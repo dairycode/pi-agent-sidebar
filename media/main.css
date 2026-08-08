@@ -1156,16 +1156,14 @@ button {
 	}
 }
 
-/* Inset to 12px so the text starts on the composer's own content edge (1px border
-   + 11px padding). These rows are siblings of `.composer`, not children, so they
-   inherit nothing from it — at 4px the context/cost readout hung 8px past the send
-   button's right edge. */
+/* Align status metadata with the toolbar controls rather than the textarea text.
+   These rows are siblings of `.composer`, so they need their own inset. */
 .composer-status-row {
 	display: flex;
 	align-items: center;
 	min-width: 0;
 	min-height: 16px;
-	margin: 0 12px 5px;
+	margin: 0 8px 5px;
 	gap: 8px;
 }
 
@@ -1180,11 +1178,11 @@ button {
 	white-space: nowrap;
 }
 
-/* Same 12px inset as the status row, so chips align with the composer's text edge
-   instead of its outer border. */
+/* Match the status row and toolbar inset so attachment chips sit on the same
+   visual edge as the controls below. */
 .attachment-list {
 	display: flex;
-	margin: 0 12px 5px;
+	margin: 0 8px 5px;
 	overflow-x: auto;
 	gap: 4px;
 }
@@ -1332,16 +1330,15 @@ button {
 	white-space: nowrap;
 }
 
-/* Horizontal inset matches the textarea's 11px so the first control's border sits
-   on the same vertical line as the placeholder text, and the send button lines up
-   with the text's right edge. The bottom matches too: at 9px the controls sat
-   closer to the composer's floor than the text sat to its ceiling. */
+/* Keep the controls slightly closer to the composer's edges than the textarea
+   text. The 8px inset compensates for each control's own border and inner space,
+   while the tighter bottom inset keeps the single-line composer compact. */
 .composer-toolbar {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
 	align-items: center;
 	min-height: 34px;
-	padding: 2px 11px 11px;
+	padding: 2px 8px 8px;
 	gap: 6px;
 }
 

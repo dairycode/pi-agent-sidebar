@@ -240,6 +240,15 @@ window.addEventListener("pointerdown", (event) => {
 	dismissHistory();
 });
 
+// Pointer events do not cross the webview boundary. Dismiss transient panels
+// when focus moves to the editor or another VS Code surface, without restoring
+// focus to their triggers and pulling it back into the sidebar.
+window.addEventListener("blur", () => {
+	if (activeSelect) closeSelect(false);
+	if (!elements.commandPanel.hidden) dismissCommandPalette();
+	if (!elements.historyPanel.hidden) dismissHistory();
+});
+
 elements.input.addEventListener("input", () => {
 	reconcileCodeReferencesWithComposer();
 	rememberComposerCaret();

@@ -7,7 +7,8 @@
  * drift from what ships — only the pieces VS Code owns are stubbed:
  *
  *  - `vscode.Uri` / `webview.asWebviewUri` become plain `file://` paths.
- *  - The ~27 `--vscode-*` theme variables are injected with Dark Modern values.
+ *  - The ~27 `--vscode-*` theme variables are injected from a preview preset.
+ *    The default detects the active VS Code theme when a matching preset exists.
  *  - `acquireVsCodeApi()` is faked, and a snapshot is posted in so the webview
  *    reaches its normal "ready" state instead of the starting placeholder.
  *
@@ -18,9 +19,10 @@
  *   node scripts/preview.mjs --width=200           # narrow sidebar
  *   node scripts/preview.mjs --state=palette       # slash-command panel open
  *   node scripts/preview.mjs --theme=light
+ *   node scripts/preview.mjs --theme=one-dark-pro-darker
  *   node scripts/preview.mjs --out=/tmp/shot.png
  */
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -41,7 +43,7 @@ const CHROME_CANDIDATES = [
 	"/usr/bin/chromium-browser",
 ];
 
-/** VS Code Dark Modern / Light Modern, limited to the variables this CSS reads. */
+/** Known VS Code themes, limited to the variables the webview CSS reads. */
 const THEMES = {
 	dark: {
 		"font-family": "-apple-system, BlinkMacSystemFont, sans-serif",
@@ -60,7 +62,7 @@ const THEMES = {
 		"editorWidget-background": "#202020",
 		"widget-shadow": "rgba(0, 0, 0, 0.36)",
 		"panel-border": "#2b2b2b",
-		"widget-border": "#313131",
+		"widget-border": "#454545",
 		"list-hoverBackground": "#2a2d2e",
 		"list-inactiveSelectionForeground": "#cccccc",
 		"toolbar-hoverBackground": "#383b3d",
@@ -74,6 +76,39 @@ const THEMES = {
 		"editorWarning-foreground": "#cca700",
 		"notifications-foreground": "#cccccc",
 		"testing-iconPassed": "#73c991",
+	},
+	"one-dark-pro-darker": {
+		"font-family": "-apple-system, BlinkMacSystemFont, sans-serif",
+		"font-size": "13px",
+		"editor-font-family": "Menlo, monospace",
+		"editor-font-size": "12px",
+		foreground: "#abb2bf",
+		descriptionForeground: "#abb2bf",
+		errorForeground: "#c24038",
+		focusBorder: "#3e4452",
+		"editor-background": "#23272e",
+		"sideBar-background": "#1e2227",
+		"input-background": "#1d1f23",
+		"input-foreground": "#abb2bf",
+		"input-placeholderForeground": "#7f848e",
+		"editorWidget-background": "#1e2227",
+		"widget-shadow": "rgba(0, 0, 0, 0.36)",
+		"panel-border": "#3e4452",
+		// One Dark Pro does not define widget.border. Leaving it unset mirrors
+		// VS Code and lets main.css fall back to panel.border.
+		"list-hoverBackground": "#2c313a",
+		"list-inactiveSelectionForeground": "#d7dae0",
+		"toolbar-hoverBackground": "#2c313a",
+		"textLink-foreground": "#61afef",
+		"textCodeBlock-background": "#2c313c",
+		"textPreformat-foreground": "#d19a66",
+		"scrollbarSlider-background": "rgba(78, 86, 102, 0.38)",
+		"button-secondaryBackground": "#30333d",
+		"button-secondaryForeground": "#c0bdbd",
+		"button-secondaryHoverBackground": "#404754",
+		"editorWarning-foreground": "#d19a66",
+		"notifications-foreground": "#abb2bf",
+		"testing-iconPassed": "#98c379",
 	},
 	light: {
 		"font-family": "-apple-system, BlinkMacSystemFont, sans-serif",
@@ -161,7 +196,7 @@ function parseArgs(argv) {
 	const options = {
 		width: 380,
 		height: 0,
-		theme: "dark",
+		theme: "auto",
 		state: "idle",
 		out: path.join(os.tmpdir(), "pi-sidebar-preview.png"),
 	};
@@ -175,12 +210,68 @@ function parseArgs(argv) {
 	if (!Number.isFinite(options.width) || options.width < 120) {
 		throw new Error("--width must be a number >= 120");
 	}
-	if (!THEMES[options.theme]) {
+	if (options.theme !== "auto" && !THEMES[options.theme]) {
 		throw new Error(
-			`--theme must be one of: ${Object.keys(THEMES).join(", ")}`,
+			`--theme must be one of: auto, ${Object.keys(THEMES).join(", ")}`,
 		);
 	}
 	return options;
+}
+
+async function configuredColorTheme() {
+	const home = os.homedir();
+	const candidates =
+		process.platform === "darwin"
+			? [
+					path.join(
+						home,
+						"Library/Application Support/Code/User/settings.json",
+					),
+					path.join(
+						home,
+						"Library/Application Support/Code - Insiders/User/settings.json",
+					),
+				]
+			: process.platform === "win32"
+				? [path.join(process.env.APPDATA ?? "", "Code/User/settings.json")]
+				: [path.join(home, ".config/Code/User/settings.json")];
+
+	for (const candidate of candidates) {
+		try {
+			const settings = await readFile(candidate, "utf8");
+			const match = /^\s*"workbench\.colorTheme"\s*:\s*"([^"]+)"/mu.exec(
+				settings,
+			);
+			if (match) return match[1];
+		} catch {
+			// Try the next VS Code installation.
+		}
+	}
+	return undefined;
+}
+
+async function resolvePreviewTheme(requested) {
+	if (requested !== "auto") return { key: requested, warning: undefined };
+
+	const configured = await configuredColorTheme();
+	const normalized = configured?.trim().toLowerCase();
+	if (normalized === "one dark pro darker") {
+		return { key: "one-dark-pro-darker", warning: undefined };
+	}
+	if (normalized === "dark modern" || normalized === "default dark modern") {
+		return { key: "dark", warning: undefined };
+	}
+	if (normalized === "light modern" || normalized === "default light modern") {
+		return { key: "light", warning: undefined };
+	}
+
+	const fallback = normalized?.includes("light") ? "light" : "dark";
+	return {
+		key: fallback,
+		warning: configured
+			? `No exact preview preset for VS Code theme "${configured}"; using the ${fallback} approximation.`
+			: `Could not detect the VS Code color theme; using the ${fallback} approximation.`,
+	};
 }
 
 async function findChrome() {
@@ -259,12 +350,52 @@ function previewStyle(theme, width) {
  */
 function themeAssertScript() {
 	return `
-const applied = getComputedStyle(document.documentElement)
-	.getPropertyValue("--vscode-font-size").trim();
-if (!applied) {
-	document.title = "PREVIEW_THEME_BLOCKED";
-	throw new Error("Theme stylesheet did not apply; preview metrics would be wrong.");
-}
+window.__validatePreviewTheme = () => {
+	const root = document.documentElement;
+	const applied = getComputedStyle(root)
+		.getPropertyValue("--vscode-font-size").trim();
+	const parseColor = (value) => {
+		const numbers = value.match(/[0-9.]+/gu)?.map(Number) ?? [];
+		if (value.startsWith("color(srgb") && numbers.length >= 3) {
+			return [numbers[0] * 255, numbers[1] * 255, numbers[2] * 255, numbers[3] ?? 1];
+		}
+		if (value.startsWith("rgb") && numbers.length >= 3) {
+			return [numbers[0], numbers[1], numbers[2], numbers[3] ?? 1];
+		}
+		return undefined;
+	};
+	const control = document.querySelector("#attach-button");
+	const composer = document.querySelector("#composer");
+	const controlStyle = getComputedStyle(control);
+	const borderText = controlStyle.borderTopColor;
+	const backgroundText = getComputedStyle(composer).backgroundColor;
+	root.dataset.previewControlBorder = borderText;
+	root.dataset.previewComposerBackground = backgroundText;
+
+	if (!applied) {
+		root.dataset.previewError = "Theme stylesheet did not apply";
+		return;
+	}
+	const border = parseColor(borderText);
+	const background = parseColor(backgroundText);
+	if (!border || !background) {
+		root.dataset.previewError = "Could not validate preview colors";
+		return;
+	}
+	const blended = border.slice(0, 3).map(
+		(channel, index) => channel * border[3] + background[index] * (1 - border[3]),
+	);
+	const channelDelta = Math.max(
+		...blended.map((channel, index) => Math.abs(channel - background[index])),
+	);
+	if (
+		controlStyle.borderTopStyle === "none" ||
+		Number.parseFloat(controlStyle.borderTopWidth) === 0 ||
+		channelDelta < 6
+	) {
+		root.dataset.previewError = "Toolbar border is indistinguishable from its background";
+	}
+};
 `;
 }
 
@@ -299,6 +430,7 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
 		input.value = "Refactor the composer toolbar so the controls line up";
 		input.dispatchEvent(new Event("input", { bubbles: true }));
 	}
+	window.__validatePreviewTheme();
 	document.documentElement.dataset.previewReady = "true";
 }));
 `;
@@ -306,6 +438,10 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
 
 async function main() {
 	const options = parseArgs(process.argv.slice(2));
+	const resolvedTheme = await resolvePreviewTheme(options.theme);
+	if (resolvedTheme.warning) {
+		process.stderr.write(`PREVIEW WARNING: ${resolvedTheme.warning}\n`);
+	}
 	const chrome = await findChrome();
 	const workDir = await mkdtemp(path.join(os.tmpdir(), "pi-sidebar-preview-"));
 
@@ -330,7 +466,7 @@ async function main() {
 		// fallback, so text renders at the browser's 16px default, labels measure wider
 		// than they ever would in VS Code, and every reflow threshold shifts.
 		const themeFile = path.join(workDir, "theme.css");
-		await writeFile(themeFile, previewStyle(options.theme, options.width));
+		await writeFile(themeFile, previewStyle(resolvedTheme.key, options.width));
 
 		const nonce = /nonce-([A-Za-z0-9_-]+)/u.exec(html)?.[1];
 		if (!nonce) throw new Error("Could not read the document nonce.");
@@ -361,29 +497,47 @@ window.acquireVsCodeApi = () => ({
 		// #app is 100vh, so the window height sets the layout height. The composer
 		// pins to the bottom either way.
 		const height = options.height > 0 ? options.height : 520;
-		await run(
-			chrome,
-			[
-				"--headless=new",
-				"--disable-gpu",
-				"--no-sandbox",
-				"--hide-scrollbars",
-				"--force-device-scale-factor=2",
-				"--allow-file-access-from-files",
-				`--window-size=${options.width},${height}`,
-				"--virtual-time-budget=4000",
-				`--screenshot=${options.out}`,
-				pathToFileURL(page).href,
-			],
-			{ timeout: 60_000 },
-		).catch((error) => {
-			// Chrome writes benign allocator warnings to stderr and still exits 0 on
-			// some builds; only a missing output file is a real failure.
-			if (!error.stdout && !error.stderr) throw error;
-		});
+		const pageUrl = pathToFileURL(page).href;
+		const chromeArgs = [
+			"--headless=new",
+			"--disable-gpu",
+			"--no-sandbox",
+			"--hide-scrollbars",
+			"--force-device-scale-factor=2",
+			"--allow-file-access-from-files",
+			`--window-size=${options.width},${height}`,
+			"--virtual-time-budget=4000",
+		];
 
+		// JavaScript exceptions do not make Chrome's screenshot command fail.
+		// Inspect the rendered DOM first so blocked styles and collapsed borders
+		// cannot silently produce a plausible but misleading image.
+		const validation = await run(
+			chrome,
+			[...chromeArgs, "--dump-dom", pageUrl],
+			{ timeout: 60_000, maxBuffer: 4 * 1024 * 1024 },
+		);
+		const previewError = /data-preview-error="([^"]+)"/u.exec(
+			validation.stdout,
+		)?.[1];
+		if (previewError) {
+			throw new Error(`Preview validation failed: ${previewError}`);
+		}
+		if (!validation.stdout.includes('data-preview-ready="true"')) {
+			throw new Error(
+				"Preview validation failed: webview did not reach its ready state",
+			);
+		}
+
+		await rm(options.out, { force: true });
+		await run(chrome, [...chromeArgs, `--screenshot=${options.out}`, pageUrl], {
+			timeout: 60_000,
+		});
+		await access(options.out);
+
+		const autoLabel = options.theme === "auto" ? " (auto-detected)" : "";
 		process.stdout.write(
-			`${options.out}\n  ${options.width}x${height} @2x  theme=${options.theme}  state=${options.state}\n`,
+			`${options.out}\n  ${options.width}x${height} @2x  theme=${resolvedTheme.key}${autoLabel}  state=${options.state}\n`,
 		);
 	} finally {
 		await rm(workDir, { recursive: true, force: true });

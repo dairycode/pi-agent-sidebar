@@ -718,7 +718,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 			if (!message) break;
 			if (message.role === "assistant") ui.streamingMessage = message;
 			else if (
-				message.role === "user" &&
+				(message.role === "user" || message.role === "custom") &&
 				!hasEquivalentTail(ui.messages, message)
 			)
 				ui.messages.push(message);
@@ -736,7 +736,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 				if (!hasEquivalentTail(ui.messages, message)) ui.messages.push(message);
 				ui.streamingMessage = undefined;
 			} else if (
-				message.role === "toolResult" &&
+				(message.role === "toolResult" || message.role === "custom") &&
 				!hasEquivalentTail(ui.messages, message)
 			) {
 				ui.messages.push(message);
@@ -1144,7 +1144,7 @@ function messageHtml(
 		return `<div class="context-divider"><i class="codicon codicon-fold"></i> Context summarized</div>`;
 	}
 	if (message.role === "custom" && message.display !== false) {
-		return `<div class="message system-message">${markdown(contentText(message.content))}</div>`;
+		return `<div class="message system-message custom-message">${markdown(contentText(message.content))}</div>`;
 	}
 	return "";
 }

@@ -368,6 +368,21 @@ button {
 	font-family: var(--vscode-editor-font-family, monospace);
 }
 
+/* Extension custom messages (e.g. remote-pi's QR pair code) carry
+   whitespace-sensitive block art: markdown keeps single newlines as soft
+   breaks, so the container must preserve them or the QR collapses into one
+   wrapped line and becomes unscannable.
+
+   Terminal-style line-height keeps the half-block art square: the QR is
+   drawn with ▀▄█ where each text line encodes two modules vertically, which
+   only renders square at roughly 1:1 character cells (line-height ~1.2 with
+   a 0.6em monospace advance). The body's 1.5 line-height stretches the art
+   ~28% taller than wide. */
+.custom-message {
+	white-space: pre-wrap;
+	line-height: 1.2;
+}
+
 /* Inline code is dense in coding replies, so it carries only the faint
    background: tinting the text as well turned long answers into noise.
    `color` must be set explicitly rather than omitted — VS Code injects a base

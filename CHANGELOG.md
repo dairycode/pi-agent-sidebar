@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.2
+
+- Render extension custom messages (role `custom`, e.g. remote-pi's QR pair
+  code) live as they arrive instead of waiting for the next snapshot: the
+  stream reducer previously only accepted `assistant`, `user`, and
+  `toolResult` roles, silently dropping the `message_start`/`message_end`
+  events pi emits for `sendMessage` calls, so the QR only appeared after
+  reloading the view.
+- Preserve whitespace in custom messages with `white-space: pre-wrap`: the QR
+  block art is plain text lines joined by single newlines, which markdown
+  keeps as soft breaks and the browser then collapses into one wrapped line.
+- Give the QR half-block art terminal-style metrics (`line-height: 1.2`) so
+  it renders square instead of stretched ~28% taller than wide by the body's
+  `1.5` line-height.
+
 ## 0.4.1
 
 - Fix the welcome logo's corner gaps by rendering the mark as one inline SVG,

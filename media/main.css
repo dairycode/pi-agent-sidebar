@@ -1270,11 +1270,20 @@ button {
 	pointer-events: none;
 }
 
+/* Both layers share one rule so the highlight backdrop cannot drift from the text
+   it sits behind — any padding or line-height change has to apply to both.
+
+   The vertical padding is symmetrical and derived: one line of 13px text at 1.45
+   is 18.85px, so 12.5px above and below fills the 44px minimum almost exactly
+   (43.85, with `min-height` covering the remainder). The old 11px/4px split looked
+   even while typing but not at rest: a textarea is top-aligned, so the leftover
+   10px of the minimum height all pooled below the text — 11px above against
+   14.15px below. */
 .prompt-highlights,
 #prompt-input {
 	width: 100%;
 	min-height: 44px;
-	padding: 11px 11px 4px;
+	padding: 12.5px 11px;
 	font: inherit;
 	letter-spacing: 0;
 	line-height: 1.45;
@@ -1311,8 +1320,16 @@ button {
 	background: transparent;
 }
 
+/* Truncated rather than wrapped. The prompt is a `textarea`, so its placeholder
+   inherits the `pre-wrap` that real input needs and would break onto a second line
+   in a narrow sidebar — pushing the toolbar down and reflowing the composer while
+   the field is still empty. Scoped to the placeholder so typed text keeps wrapping
+   normally. */
 #prompt-input::placeholder {
+	overflow: hidden;
 	color: var(--vscode-input-placeholderForeground);
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 /* Horizontal inset matches the textarea's 11px so the first control's border sits

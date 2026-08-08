@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.4.3
+
+- Fix streaming output: assistant replies now appear live instead of all at
+  once after a long wait. pi 0.84+ streams `message_update` events as deltas
+  (`assistantMessageEvent` with `text_delta`/`thinking_delta`/`toolcall_delta`
+  chunks) rather than cumulative message snapshots, and the strict RPC event
+  validator rejected every delta for missing the former `message` field,
+  dropping them before the webview could render. The validator now accepts the
+  delta shape (legacy snapshots still pass), and the webview assembles the
+  partial message from deltas by `contentIndex` — text, reasoning, and tool
+  call arguments stream live and are replaced by the authoritative
+  `message_end` copy when the message completes.
+- Extract the delta assembly into `webview/streaming.ts` with unit tests,
+  including a replay check that the assembled content matches pi's
+  `message_end` payload exactly.
+- Fix the layout jump when a reply starts: pi opens assistant messages with an
+  empty `content: []` that is filled by deltas, and rendering that empty shell
+  inserted a blank message slot that shoved a bottom-anchored transcript up
+  ~20px right as streaming began. The placeholder is skipped until the first
+  content block arrives; the busy indicator covers the gap.
+- Fix the same jump when pi queues a message while busy: the composer status
+  row (`"1 queued"`) appeared and disappeared on demand, resizing the
+  transcript. The row now keeps its slot whether or not it has text.
+- Fix `npm run preview`, which crashed since 0.4.1: the document template
+  calls `asWebviewUri(...).with({ query })` to cache-bust the stylesheet, but
+  the preview's vscode stub returned a bare string. The stub now supports
+  `.with()`, and the bootstrap waits on timers instead of a double
+  `requestAnimationFrame`, which `--dump-dom` with `--virtual-time-budget`
+  does not reliably advance (the second frame often never runs).
+
 ## 0.4.2
 
 - Render extension custom messages (role `custom`, e.g. remote-pi's QR pair

@@ -139,14 +139,42 @@ export function parseSessionChangeResult(value: unknown): {
 export function validateRpcEvent(event: JsonRecord): JsonRecord {
 	const type = optionalString(event.type, "event.type", 128);
 	if (!type) throw new ProtocolValidationError("Pi event is missing a type.");
-	if (["message_start", "message_update", "message_end"].includes(type)) {
+	if (["message_start", "message_end"].includes(type)) {
 		parsePiMessage(event.message, `${type}.message`);
+	}
+	if (type === "message_update") {
+		// pi streams message updates as deltas (`assistantMessageEvent`) rather
+		// than cumulative message snapshots. `message` may still appear when
+		// talking to an older binary, so validate it when present.
+		if (event.message !== undefined) {
+			parsePiMessage(event.message, "message_update.message");
+		}
+		parseAssistantMessageEvent(event.assistantMessageEvent);
 	}
 	if (type.startsWith("tool_execution_")) {
 		optionalString(event.toolCallId, `${type}.toolCallId`, 512);
 		optionalString(event.toolName, `${type}.toolName`, 512);
 	}
 	return event;
+}
+
+/**
+ * Validates a `message_update` delta payload. The field is optional so a
+ * bare event (no delta yet) cannot fail the whole stream.
+ */
+function parseAssistantMessageEvent(value: unknown): void {
+	if (value === undefined || value === null) return;
+	const label = "message_update.assistantMessageEvent";
+	const delta = record(value, label);
+	optionalString(delta.type, `${label}.type`, 128);
+	optionalNumber(delta.contentIndex, `${label}.contentIndex`);
+	optionalString(delta.delta, `${label}.delta`, MAX_TEXT_LENGTH);
+	optionalString(delta.content, `${label}.content`, MAX_TEXT_LENGTH);
+	if (delta.toolCall !== undefined) {
+		const toolCall = record(delta.toolCall, `${label}.toolCall`);
+		optionalString(toolCall.id, `${label}.toolCall.id`, 512);
+		optionalString(toolCall.name, `${label}.toolCall.name`, 512);
+	}
 }
 
 function parsePiMessage(value: unknown, label = "message"): PiMessage {

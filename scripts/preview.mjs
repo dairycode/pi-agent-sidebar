@@ -421,8 +421,12 @@ const post = (message) => window.postMessage(message, "*");
 post(snapshot);
 post({ type: "connection", phase: "ready" });
 
-// Rendering is queued through requestAnimationFrame, so interactions wait for it.
-requestAnimationFrame(() => requestAnimationFrame(() => {
+// Rendering is queued through requestAnimationFrame, so interactions wait
+// for it. dump-dom with virtual-time-budget does not reliably advance rAF
+// frames (virtual time only moves while tasks are pending, so the second
+// frame of a double rAF often never runs), but setTimeout is deterministic
+// under virtual time — chain two zero timers instead.
+setTimeout(() => setTimeout(() => {
 	const state = ${JSON.stringify(state)};
 	if (state === "palette") document.querySelector("#command-button").click();
 	if (state === "typing") {
@@ -432,7 +436,7 @@ requestAnimationFrame(() => requestAnimationFrame(() => {
 	}
 	window.__validatePreviewTheme();
 	document.documentElement.dataset.previewReady = "true";
-}));
+}, 0), 0);
 `;
 }
 
@@ -453,8 +457,12 @@ async function main() {
 				cspSource: "file:",
 				// The real implementation hands back a webview URI; a file URL is the
 				// headless equivalent and keeps every asset path relative to media/.
-				asWebviewUri: (uri) =>
-					`${mediaRoot}/${uri.fsPath.split("/media/").pop()}`,
+				// It also supports `.with({ query })`, which the document template
+				// uses to cache-bust the stylesheet, so wrap it in a small object.
+				asWebviewUri: (uri) => {
+					const url = `${mediaRoot}/${uri.fsPath.split("/media/").pop()}`;
+					return { toString: () => url, with: () => url };
+				},
 			},
 			{ fsPath: root },
 		);

@@ -83,8 +83,61 @@ test("Pi snapshot validation rejects malformed shapes and oversized content", as
 		);
 		assert.throws(
 			() =>
-				loaded.module.validateRpcEvent({ type: "message_update", message: 3 }),
+				loaded.module.validateRpcEvent({
+					type: "message_update",
+					message: 3,
+				}),
 			/must be an object/iu,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("message_update validates delta events and keeps legacy message shape", async () => {
+	const loaded = await loadValidation();
+	try {
+		// pi >= 0.84 streams deltas without a cumulative message snapshot.
+		loaded.module.validateRpcEvent({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 1,
+				delta: "Hello",
+			},
+		});
+		loaded.module.validateRpcEvent({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "toolcall_end",
+				contentIndex: 1,
+				toolCall: {
+					type: "toolCall",
+					id: "call_1",
+					name: "bash",
+					arguments: { command: "ls" },
+				},
+			},
+		});
+		// No delta payload at all must not fail the stream.
+		loaded.module.validateRpcEvent({ type: "message_update" });
+		// A malformed delta payload still fails.
+		assert.throws(
+			() =>
+				loaded.module.validateRpcEvent({
+					type: "message_update",
+					assistantMessageEvent: 3,
+				}),
+			/must be an object/iu,
+		);
+		// Older binaries that still send a cumulative message are validated.
+		assert.throws(
+			() =>
+				loaded.module.validateRpcEvent({
+					type: "message_update",
+					message: { role: 3 },
+				}),
+			/must be a string/iu,
 		);
 	} finally {
 		await loaded.dispose();

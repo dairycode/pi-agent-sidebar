@@ -14,6 +14,7 @@ import {
 	removeManagedReferences,
 	type ManagedCodeReference,
 } from "./composerModel.js";
+import { applyAssistantMessageDelta } from "./streaming.js";
 import type {
 	AttachmentRef,
 	CodeReference,
@@ -725,8 +726,16 @@ function reduceRpcEvent(event: JsonRecord): void {
 			break;
 		}
 		case "message_update": {
-			const message = asMessage(event.message);
-			if (message) ui.streamingMessage = message;
+			if (event.assistantMessageEvent !== undefined && ui.streamingMessage) {
+				ui.streamingMessage = applyAssistantMessageDelta(
+					ui.streamingMessage,
+					event,
+				);
+			} else {
+				// Older pi builds sent a cumulative message snapshot here.
+				const message = asMessage(event.message);
+				if (message) ui.streamingMessage = message;
+			}
 			break;
 		}
 		case "message_end": {
@@ -989,9 +998,25 @@ function renderMessages(): void {
 			.filter((key): key is string => Boolean(key)),
 	);
 	const resultMap = buildToolResultMap();
-	const allMessages = ui.streamingMessage
-		? [...ui.messages, ui.streamingMessage]
-		: ui.messages;
+	const streamingMessage = ui.streamingMessage;
+	// pi opens assistant messages with an empty `content: []` and fills them
+	// via message_update deltas. Rendering that empty shell would insert a
+	// blank message slot (20px of flex gap plus the article) that shoves a
+	// bottom-anchored transcript up before the first delta arrives — the
+	// visible "jump" right as streaming starts. Skip the placeholder until a
+	// content block exists; the busy indicator already covers the gap.
+	let streamingVisible = false;
+	if (streamingMessage) {
+		const content = streamingMessage.content;
+		streamingVisible =
+			typeof content === "string"
+				? content.length > 0
+				: Array.isArray(content) && content.length > 0;
+	}
+	const allMessages =
+		streamingVisible && streamingMessage
+			? [...ui.messages, streamingMessage]
+			: ui.messages;
 	const visible = allMessages.slice(-150);
 	const omitted = allMessages.length - visible.length;
 	let html =
@@ -1794,8 +1819,11 @@ function renderRuntimeMeta(): void {
 }
 
 function renderComposerStatusRow(): void {
-	elements.composerStatusRow.hidden =
-		elements.queueStatus.hidden && elements.runtimeMeta.hidden;
+	// The row keeps its slot even when empty: toggling it would change the
+	// transcript height the moment queue/status text appears (e.g. "1 queued"
+	// while pi is busy), which shoves the whole layout up ~21px under a
+	// bottom-anchored viewport and back down when the queue drains.
+	elements.composerStatusRow.hidden = false;
 }
 
 function renderSendButton(): void {

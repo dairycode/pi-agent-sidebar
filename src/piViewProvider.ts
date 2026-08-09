@@ -304,7 +304,6 @@ export class PiViewProvider
 	}
 
 	public async renameSession(): Promise<void> {
-		const client = await this.ensureClient();
 		const name = await vscode.window.showInputBox({
 			title: "Rename Pi Session",
 			prompt: "Enter a display name for the current session.",
@@ -315,8 +314,24 @@ export class PiViewProvider
 			ignoreFocusOut: true,
 		});
 		if (name === undefined) return;
-		await client.request({ type: "set_session_name", name });
-		await this.refreshSnapshot();
+		await this.applySessionName(name);
+	}
+
+	/**
+	 * Shared rename core for the command palette and webview flows. The name is
+	 * applied through pi's public `set_session_name` RPC, which only ever targets
+	 * the current session, so non-active sessions cannot be renamed without
+	 * switching to them first.
+	 */
+	private applySessionName(name: string): Promise<void> {
+		return this.sessionMutations.enqueue(async () => {
+			const trimmed = name.trim();
+			if (!trimmed) throw new Error("Session name cannot be empty.");
+			const client = await this.ensureClient();
+			await client.request({ type: "set_session_name", name: trimmed });
+			await this.refreshSnapshot();
+			await this.sendSessionList();
+		});
 	}
 
 	public bindStatusBar(item: vscode.StatusBarItem): void {
@@ -517,6 +532,12 @@ export class PiViewProvider
 				case "deleteSession": {
 					await this.respondToAction(message.actionId, () =>
 						this.deleteSession(message.path),
+					);
+					break;
+				}
+				case "renameSession": {
+					await this.respondToAction(message.actionId, () =>
+						this.applySessionName(message.name),
 					);
 					break;
 				}

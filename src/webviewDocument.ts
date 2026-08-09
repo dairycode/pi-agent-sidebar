@@ -34,6 +34,7 @@ export function createWebviewDocument(
         <div id="session-title" class="session-title" title="Untitled">Untitled</div>
       </div>
       <div class="header-actions" role="toolbar" aria-label="Session actions">
+        <button id="rename-session-button" class="icon-button" type="button" title="Rename session" aria-label="Rename session"><i class="codicon codicon-edit"></i></button>
         <button id="history-button" class="icon-button" type="button" title="Session history" aria-label="Session history" aria-controls="history-panel" aria-expanded="false"><i class="codicon codicon-history"></i></button>
         <button id="new-session-button" class="icon-button" type="button" title="New session" aria-label="New session"><i class="codicon codicon-add"></i></button>
       </div>

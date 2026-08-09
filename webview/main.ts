@@ -131,6 +131,7 @@ const SUPPORTED_CLIPBOARD_IMAGE_TYPES = new Set([
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_IMAGE_COUNT = 4;
+const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/gu;
 const ORPHAN_SGR_PATTERN = /\[(?:\d{1,3}(?:;\d{1,3})*)m/gu;
@@ -145,6 +146,7 @@ const elements = {
 	connectionDot: element<HTMLElement>("connection-dot"),
 	connectionBanner: element<HTMLElement>("connection-banner"),
 	sessionTitle: element<HTMLElement>("session-title"),
+	renameSessionButton: element<HTMLButtonElement>("rename-session-button"),
 	historyButton: element<HTMLButtonElement>("history-button"),
 	newSessionButton: element<HTMLButtonElement>("new-session-button"),
 	historyPanel: element<HTMLElement>("history-panel"),
@@ -394,6 +396,9 @@ elements.newSessionButton.addEventListener("click", () => {
 		runAction("newSession");
 	}
 });
+elements.renameSessionButton.addEventListener("click", () =>
+	openRenamePrompt(),
+);
 
 elements.modelSelect.addEventListener("click", () => toggleSelect("model"));
 elements.thinkingSelect.addEventListener("click", () =>
@@ -700,6 +705,10 @@ function handleActionResult(
 		announce("Session deleted");
 		if (!elements.historyPanel.hidden) elements.sessionSearch.focus();
 	}
+	if (ok && action?.type === "renameSession") {
+		showToast("Session renamed", "info");
+		announce("Session renamed");
+	}
 	if (!ok) showToast(error ?? "Action failed", "error");
 	scheduleRender();
 }
@@ -895,6 +904,7 @@ function render(): void {
 	elements.input.disabled = !enabled;
 	elements.attachButton.disabled = !enabled;
 	elements.commandButton.disabled = !enabled;
+	elements.renameSessionButton.disabled = !enabled;
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
 	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
 	if (activeSelect && selectTrigger(activeSelect).disabled) closeSelect(false);
@@ -1905,7 +1915,23 @@ function renderSessions(): void {
 			});
 		});
 
-		row.append(openButton, deleteButton);
+		const renameButton = document.createElement("button");
+		renameButton.type = "button";
+		renameButton.className = "session-rename";
+		renameButton.disabled = !session.active;
+		renameButton.title = session.active
+			? "Rename session"
+			: "Open the session to rename it";
+		renameButton.setAttribute(
+			"aria-label",
+			session.active
+				? `Rename ${session.title}`
+				: "Open the session to rename it",
+		);
+		renameButton.append(createCodicon("edit"));
+		renameButton.addEventListener("click", () => openRenamePrompt());
+
+		row.append(openButton, renameButton, deleteButton);
 		return row;
 	});
 	elements.sessionList.replaceChildren(...rows);
@@ -2563,6 +2589,7 @@ function runAction(
 		| "newSession"
 		| "switchSession"
 		| "deleteSession"
+		| "renameSession"
 		| "setModel"
 		| "setThinking"
 		| "compact"
@@ -2632,6 +2659,67 @@ function closeModal(): void {
 	setBackgroundInert(false);
 	modalReturnFocus?.focus();
 	modalReturnFocus = null;
+}
+
+/**
+ * Renames the current session through pi's `set_session_name` RPC, which only
+ * applies to the active session. The name is left empty when the session has
+ * no custom name yet, so a message-derived title is never offered as an
+ * editing target.
+ */
+function openRenamePrompt(): void {
+	const dialog = document.createElement("section");
+	dialog.className = "modal";
+	dialog.setAttribute("role", "dialog");
+	dialog.setAttribute("aria-modal", "true");
+	dialog.setAttribute("aria-label", "Rename session");
+	const heading = document.createElement("h2");
+	heading.textContent = "Rename session";
+	const input = document.createElement("input");
+	input.type = "text";
+	input.className = "modal-input";
+	input.maxLength = MAX_SESSION_NAME_LENGTH;
+	input.value = ui.state.sessionName ?? "";
+	input.setAttribute("aria-label", "Session name");
+	input.setAttribute("autocomplete", "off");
+	const actions = document.createElement("div");
+	actions.className = "modal-actions";
+	const cancel = document.createElement("button");
+	cancel.type = "button";
+	cancel.className = "secondary-button";
+	cancel.textContent = "Cancel";
+	cancel.addEventListener("click", closeModal);
+	const confirm = document.createElement("button");
+	confirm.type = "button";
+	confirm.className = "primary-button";
+	confirm.textContent = "Rename";
+	const submit = () => {
+		const name = input.value.trim();
+		if (!name || confirm.disabled) return;
+		closeModal();
+		runAction("renameSession", { name });
+	};
+	const updateConfirm = () => {
+		confirm.disabled = input.value.trim().length === 0;
+	};
+	confirm.addEventListener("click", submit);
+	input.addEventListener("input", updateConfirm);
+	input.addEventListener("keydown", (event) => {
+		if (event.key === "Enter") submit();
+	});
+	updateConfirm();
+	actions.append(cancel, confirm);
+	dialog.append(heading, input, actions);
+	modalReturnFocus =
+		document.activeElement instanceof HTMLElement
+			? document.activeElement
+			: null;
+	elements.modalBackdrop.replaceChildren();
+	elements.modalBackdrop.append(dialog);
+	elements.modalBackdrop.hidden = false;
+	setBackgroundInert(true);
+	input.focus();
+	input.select();
 }
 
 function handleModalKeydown(event: KeyboardEvent): void {

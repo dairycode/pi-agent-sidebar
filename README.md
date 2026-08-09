@@ -12,14 +12,38 @@ Source: <https://github.com/dairycode/pi-agent-sidebar>
 
 ## Features
 
-- Streams assistant text, reasoning, and tool execution in the auxiliary sidebar
-- Supports persistent sessions, history, new sessions, and reload restoration
-- Switches configured models and supported thinking levels
-- Queues steering prompts while pi is working and can abort the active run
-- Attaches project files by path and sends supported image formats to models
-- Inserts selected editor code as an inline `@path#line` composer reference
-- Handles pi extension dialogs with native VS Code UI
-- Uses Workspace Trust, strict JSONL, sanitized Markdown, and a restrictive CSP
+- **Streaming conversation** — renders pi's text, reasoning, and tool
+execution live in the auxiliary sidebar, fully themed to the VS Code
+color scheme
+- **Session management** — persistent session history with search, switching,
+new sessions, delete, and rename; the last session in the workspace is
+restored automatically after a VS Code reload
+- **Model and thinking level** — switch among configured models and supported
+thinking levels from themed pickers in the composer
+- **Conversation control** — queue follow-up prompts while pi is working, or
+abort the active run; transient provider errors (overload, rate limit, 5xx,
+interrupted streams) are retried automatically
+- **Attachments** — attach project files by path and paste clipboard images to
+send to the model
+- **Code references** — select code and press `Cmd+Esc` / `Ctrl+Esc` to insert
+an inline `@path#line` reference at the caret, then jump back to the source
+with `Cmd`/`Ctrl`-click or `F12`
+- **Editor integration** — a right-click `Pi Agent` submenu explains the
+selection, refactors it, generates tests, explains reported problems, or
+explains the whole file, plus a `Fix with Pi` quick fix for the diagnostic
+under the cursor
+- **Slash commands** — type `/` in the composer to browse pi's extension
+commands, prompt templates, and skills, grouped by source with live filtering
+- **Tool timeline** — tool calls run inline with file-edit diffs rendered as
+added, removed, and context lines; `path/file.ts:42` references in responses
+open the file at that line
+- **Commands** — rename the current session, export a session to HTML, start a
+new session, restart the runtime, and inspect logs from the command palette
+- **Status bar** — shows the runtime phase and the active model
+- **Native dialogs** — pi extension prompts and trusted-domain confirmation are
+surfaced with native VS Code UI
+- **Security** — gated on Workspace Trust, reads strict JSONL, sanitizes
+Markdown before rendering, and ships a restrictive CSP
 
 ## Editor Selection Shortcut
 
@@ -54,30 +78,7 @@ path such as `/opt/homebrew/bin/pi`.
 
 `piAgentSidebar.sessionDirectory` accepts an absolute path or a path relative
 to the active workspace folder; the same resolved directory is used for pi's
-session storage and the sidebar's history and deletion.
-
-## Development
-
-```bash
-npm install
-npm run verify
-npm run build
-```
-
-`npm test` runs the type check and the hermetic unit suite; it does not require
-an installed `pi`. `npm run verify` additionally rebuilds the tracked-free
-bundles and checks them for drift. Run `npm run test:rpc:live` to exercise a
-real installed `pi` runtime. Generated bundles (`dist/`, `media/main.js`,
-`media/codicons/`) are produced by `npm run build` and are not committed.
-
-Press `F5` in VS Code to launch an Extension Development Host. The view is
-contributed directly to the Secondary Side Bar.
-
-Build a VSIX:
-
-```bash
-npm run package
-```
+session storage and the sidebar's history, rename, and deletion.
 
 ## Security Model
 

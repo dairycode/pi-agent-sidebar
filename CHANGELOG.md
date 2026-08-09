@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.4
+
+- Add session rename: the session header and the active session's row in the
+  history list now offer a rename button that opens an inline prompt. The name
+  is applied through pi's public `set_session_name` RPC, so it stays in sync
+  with pi's own session listings and survives reloads; non-active sessions are
+  not renameable without switching to them first, which the disabled row button
+  explains. Renaming refreshes both the header title and the history list.
+- Refresh the session list after a command-palette rename so history shows the
+  new name immediately, and reject empty names before they reach pi.
+- Rewrite the README Features section to cover the current feature set
+  (streaming, session management, editor integration, slash commands, tool
+  timeline, security model) and drop the Development section.
+
 ## 0.4.3
 
 - Fix streaming output: assistant replies now appear live instead of all at

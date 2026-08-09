@@ -161,6 +161,7 @@ export type WebviewToHostMessage =
 	| { type: "newSession"; actionId: string }
 	| { type: "switchSession"; actionId: string; path: string }
 	| { type: "deleteSession"; actionId: string; path: string }
+	| { type: "renameSession"; actionId: string; name: string }
 	| { type: "setModel"; actionId: string; provider: string; modelId: string }
 	| { type: "setThinking"; actionId: string; level: string }
 	| { type: "compact"; actionId: string }
@@ -178,6 +179,7 @@ export type WebviewToHostMessage =
 
 const MAX_ACTION_ID_LENGTH = 128;
 const MAX_PATH_LENGTH = 32 * 1024;
+const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_MESSAGE_LENGTH = 1_000_000;
 const MAX_PASTED_IMAGE_DATA_LENGTH = 16 * 1024 * 1024 + 16;
 
@@ -236,6 +238,11 @@ export function parseWebviewMessage(
 		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);
 		const level = boundedString(message.level, 128);
 		return actionId && level ? { type, actionId, level } : undefined;
+	}
+	if (type === "renameSession") {
+		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);
+		const name = boundedString(message.name, MAX_SESSION_NAME_LENGTH);
+		return actionId && name ? { type, actionId, name } : undefined;
 	}
 	if (type === "pasteImages") {
 		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);

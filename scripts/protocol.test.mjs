@@ -102,6 +102,46 @@ test("webview protocol rejects malformed action payloads", async () => {
 	}
 });
 
+test("webview protocol accepts bounded renameSession payloads", async () => {
+	const loaded = await loadProtocol();
+	try {
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "renameSession",
+				actionId: "action",
+				name: "My feature work",
+			}),
+			{ type: "renameSession", actionId: "action", name: "My feature work" },
+		);
+		assert.equal(
+			loaded.module.parseWebviewMessage({
+				type: "renameSession",
+				actionId: "action",
+				name: "",
+			}),
+			undefined,
+		);
+		assert.equal(
+			loaded.module.parseWebviewMessage({
+				type: "renameSession",
+				actionId: "action",
+				name: "x".repeat(201),
+			}),
+			undefined,
+		);
+		assert.equal(
+			loaded.module.parseWebviewMessage({
+				type: "renameSession",
+				actionId: "action",
+				name: 42,
+			}),
+			undefined,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("webview protocol accepts argument-free requests", async () => {
 	const loaded = await loadProtocol();
 	try {

@@ -65,18 +65,11 @@ test("attachment IDs are host-owned and temporary images are removed immediately
 	}
 });
 
-test("attachment limits reject the whole selection and image contents are verified", async () => {
+test("file attachments and image limits are tracked independently", async () => {
 	const loaded = await loadAttachmentStore();
 	try {
 		const storage = path.join(loaded.temporaryDirectory, "storage");
 		const store = new loaded.module.AttachmentStore(storage);
-		const files = Array.from({ length: 21 }, (_, index) => ({
-			filePath: path.join(loaded.temporaryDirectory, `file-${index}.txt`),
-			label: `file-${index}.txt`,
-			kind: "file",
-		}));
-		assert.throws(() => store.registerSelected(files), /at most 20/iu);
-		assert.deepEqual(store.list(), []);
 		await assert.rejects(
 			store.storePastedImages([
 				{
@@ -86,6 +79,32 @@ test("attachment limits reject the whole selection and image contents are verifi
 				},
 			]),
 			/invalid contents/iu,
+		);
+		const files = Array.from({ length: 16 }, (_, index) => ({
+			filePath: path.join(loaded.temporaryDirectory, `file-${index}.ts`),
+			label: `file-${index}.ts`,
+			kind: "file",
+		}));
+		const images = Array.from({ length: 4 }, (_, index) => ({
+			filePath: path.join(loaded.temporaryDirectory, `image-${index}.png`),
+			label: `image-${index}.png`,
+			kind: "image",
+			mimeType: "image/png",
+		}));
+		store.registerSelected([...files, ...images]);
+		assert.equal(store.list().filter((item) => item.kind === "file").length, 16);
+		assert.equal(store.list().filter((item) => item.kind === "image").length, 4);
+		assert.throws(
+			() =>
+				store.registerSelected([
+					{
+						filePath: path.join(loaded.temporaryDirectory, "extra.png"),
+						label: "extra.png",
+						kind: "image",
+						mimeType: "image/png",
+					},
+				]),
+			/at most 20|at most 4/iu,
 		);
 		await store.dispose();
 	} finally {

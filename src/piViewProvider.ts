@@ -11,14 +11,16 @@ import {
 } from "./attachmentStore.js";
 import { probePiBinary } from "./binaryProbe.js";
 import {
-	formatCodeReferenceMarker,
+	formatFileReferenceMarker,
+	formatSelectionReferenceMarker,
 	nearestOffset,
 	selectedLineRange,
-	serializeCodeReferencePayload,
+	serializeSelectionReferencePayload,
 	serializeContextValue,
-	uniqueCodeReferenceMarker,
-	type CodeReferencePayload,
-} from "./codeReferences.js";
+	uniqueComposerReferenceMarker,
+	type FileReferencePayload,
+	type SelectionReferencePayload,
+} from "./composerReferences.js";
 import { PiRpcClient } from "./piRpcClient.js";
 import {
 	parseCommandsResponse,
@@ -37,19 +39,21 @@ import {
 } from "./sessionStore.js";
 import {
 	parseWebviewMessage,
-	type CodeReference,
+	MAX_COMPOSER_REFERENCE_COUNT,
+	type ComposerReference,
+	type FileComposerReference,
 	type HostToWebviewMessage,
 	type JsonRecord,
 	type PiModel,
 	type PiState,
 	type PiStats,
+	type SelectionComposerReference,
 } from "./shared/protocol.js";
 import { createWebviewDocument } from "./webviewDocument.js";
 
 const VIEW_TYPE = "piAgentSidebar.chatView";
-const MAX_CODE_REFERENCE_COUNT = 10;
-const MAX_CODE_REFERENCE_BYTES = 64 * 1024;
-const MAX_TOTAL_CODE_REFERENCE_BYTES = 256 * 1024;
+const MAX_COMPOSER_REFERENCE_BYTES = 64 * 1024;
+const MAX_TOTAL_COMPOSER_REFERENCE_BYTES = 256 * 1024;
 const LONG_COMMAND_TIMEOUT_MS = 10 * 60_000;
 const RESERVED_ARGUMENTS = new Set([
 	"--mode",
@@ -61,9 +65,16 @@ const RESERVED_ARGUMENTS = new Set([
 	"-r",
 ]);
 
-interface CapturedCodeReference {
-	summary: CodeReference;
-	payload: CodeReferencePayload;
+interface CapturedFileReference {
+	summary: FileComposerReference;
+	payload: FileReferencePayload;
+	uri: vscode.Uri;
+	key: string;
+}
+
+interface CapturedSelectionReference {
+	summary: SelectionComposerReference;
+	payload: SelectionReferencePayload;
 	uri: vscode.Uri;
 	selection: vscode.Selection;
 	startOffset: number;
@@ -73,8 +84,18 @@ interface CapturedCodeReference {
 	symbol?: string;
 }
 
-interface SubmittedCodeReference {
-	reference: CapturedCodeReference;
+type CapturedComposerReference =
+	| CapturedFileReference
+	| CapturedSelectionReference;
+
+function isCapturedSelectionReference(
+	reference: CapturedComposerReference,
+): reference is CapturedSelectionReference {
+	return reference.summary.kind === "selection";
+}
+
+interface SubmittedComposerReference {
+	reference: CapturedComposerReference;
 	start: number;
 	end: number;
 }
@@ -141,7 +162,7 @@ export class PiViewProvider
 	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
 	private readonly attachmentStore: AttachmentStore;
-	private readonly codeReferences = new Map<string, CapturedCodeReference>();
+	private readonly composerReferences = new Map<string, CapturedComposerReference>();
 
 	public constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -215,7 +236,7 @@ export class PiViewProvider
 		this.missedPostWhileHidden = false;
 		if (!this.client?.isRunning) return;
 		try {
-			await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
 		} catch (error) {
 			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
@@ -227,7 +248,7 @@ export class PiViewProvider
 	): Promise<void> {
 		if (editor && !editor.selection.isEmpty) {
 			try {
-				const id = this.captureCodeReference(editor);
+				const id = this.captureSelectionReference(editor);
 				await this.enrichReferenceWithSymbol(id, editor);
 			} catch (error) {
 				void vscode.window.showWarningMessage(toErrorMessage(error));
@@ -236,7 +257,21 @@ export class PiViewProvider
 		this.composerFocusRequestSequence += 1;
 		this.pendingComposerFocusRequestId = this.composerFocusRequestSequence;
 		await this.reveal();
-		await this.syncCodeReferences();
+		await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
+	}
+
+	public async addExplorerResources(
+		primary: vscode.Uri | undefined,
+		selected: readonly vscode.Uri[] | undefined,
+	): Promise<void> {
+		const uris =
+			selected && selected.length > 0 ? selected : primary ? [primary] : [];
+		if (uris.length === 0) return;
+		await this.registerComposerReferences(uris);
+		this.composerFocusRequestSequence += 1;
+		this.pendingComposerFocusRequestId = this.composerFocusRequestSequence;
+		await this.reveal();
+		await this.syncComposerReferences();
 	}
 
 	public async runPresetPrompt(
@@ -263,15 +298,19 @@ export class PiViewProvider
 			editor.selection = fullRange;
 		}
 		try {
-			const id = this.captureCodeReference(editor);
-			await this.enrichReferenceWithSymbol(id, editor);
+			if (kind === "explainFile") {
+				this.captureFileReference(editor.document.uri);
+			} else {
+				const id = this.captureSelectionReference(editor);
+				await this.enrichReferenceWithSymbol(id, editor);
+			}
 		} catch (error) {
 			void vscode.window.showWarningMessage(toErrorMessage(error));
 		}
 		this.composerFocusRequestSequence += 1;
 		this.pendingComposerFocusRequestId = this.composerFocusRequestSequence;
 		await this.reveal();
-		await this.syncCodeReferences();
+		await this.syncComposerReferences();
 		await this.post({
 			type: "setComposerText",
 			text: PRESET_INSTRUCTIONS[kind],
@@ -392,7 +431,7 @@ export class PiViewProvider
 			);
 			if (choice !== "New Session") return false;
 		}
-		const references = [...this.codeReferences.values()];
+		const references = [...this.composerReferences.values()];
 		const attachments = this.attachmentStore.resolve(
 			this.attachmentStore.list().map((attachment) => attachment.id),
 		);
@@ -403,12 +442,12 @@ export class PiViewProvider
 			);
 			if (result?.cancelled) return false;
 			for (const reference of references) {
-				if (this.codeReferences.get(reference.summary.id) === reference) {
-					this.codeReferences.delete(reference.summary.id);
+				if (this.composerReferences.get(reference.summary.id) === reference) {
+					this.composerReferences.delete(reference.summary.id);
 				}
 			}
 			await this.attachmentStore.removeResolved(attachments);
-			await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
 			return true;
 		});
@@ -436,7 +475,7 @@ export class PiViewProvider
 		this.workspaceFolder = undefined;
 		this.state = {};
 		this.client = undefined;
-		this.codeReferences.clear();
+		this.composerReferences.clear();
 		this.pendingComposerFocusRequestId = undefined;
 		await this.attachmentStore.clear();
 		if (client) await client.stop();
@@ -445,7 +484,7 @@ export class PiViewProvider
 			phase: "starting",
 			detail: "Workspace changed. Starting pi...",
 		});
-		await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+		await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 		if (pendingStart) await pendingStart.catch(() => undefined);
 		if (this.view) {
 			try {
@@ -486,7 +525,7 @@ export class PiViewProvider
 					this.webviewReady = true;
 					await Promise.all([
 						this.syncAttachments(),
-						this.syncCodeReferences(),
+						this.syncComposerReferences(),
 					]);
 					const wasRunning = Boolean(this.client?.isRunning);
 					await this.ensureClient();
@@ -577,6 +616,12 @@ export class PiViewProvider
 					await this.pickAttachments();
 					break;
 				}
+				case "addResources": {
+					await this.respondToAction(message.actionId, () =>
+						this.addResources(message.resources),
+					);
+					break;
+				}
 				case "pasteImages": {
 					await this.respondToAction(message.actionId, async () => {
 						await this.attachmentStore.storePastedImages(message.images);
@@ -589,12 +634,12 @@ export class PiViewProvider
 					await this.syncAttachments();
 					break;
 				}
-				case "removeCodeReference": {
-					await this.removeCodeReference(message.id, message.revision);
+				case "removeComposerReference": {
+					await this.removeComposerReference(message.id, message.revision);
 					break;
 				}
-				case "openCodeReference": {
-					await this.openCodeReference(message.id);
+				case "openComposerReference": {
+					await this.openComposerReference(message.id);
 					break;
 				}
 				case "openExternal": {
@@ -635,7 +680,7 @@ export class PiViewProvider
 		referenceIdentities: unknown,
 	): Promise<void> {
 		const attachments = this.attachmentStore.resolve(attachmentIds);
-		const references = this.resolveCodeReferences(referenceIdentities, text);
+		const references = this.resolveComposerReferences(referenceIdentities, text);
 		const client = await this.ensureClient();
 		const prompt = await this.buildPrompt(text, attachments, references);
 		if (!prompt.message.trim() && prompt.images.length === 0)
@@ -648,12 +693,12 @@ export class PiViewProvider
 		});
 		for (const submitted of references) {
 			const reference = submitted.reference;
-			if (this.codeReferences.get(reference.summary.id) === reference) {
-				this.codeReferences.delete(reference.summary.id);
+			if (this.composerReferences.get(reference.summary.id) === reference) {
+				this.composerReferences.delete(reference.summary.id);
 			}
 		}
 		await this.attachmentStore.removeResolved(attachments);
-		await Promise.all([this.syncAttachments(), this.syncCodeReferences()]);
+		await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 	}
 
 	private async abortPrompt(): Promise<void> {
@@ -1182,13 +1227,13 @@ export class PiViewProvider
 		}
 	}
 
-	private captureCodeReference(editor: vscode.TextEditor): string | undefined {
+	private captureSelectionReference(editor: vscode.TextEditor): string | undefined {
 		const { document, selection } = editor;
 		const text = document.getText(selection);
 		if (!text) return undefined;
 
 		const byteLength = Buffer.byteLength(text, "utf8");
-		if (byteLength > MAX_CODE_REFERENCE_BYTES) {
+		if (byteLength > MAX_COMPOSER_REFERENCE_BYTES) {
 			throw new Error("Select at most 64 KB of code for one reference.");
 		}
 
@@ -1199,21 +1244,27 @@ export class PiViewProvider
 			selection.end.line,
 			selection.end.character,
 		].join(":");
-		const existing = [...this.codeReferences.values()].find(
-			(reference) => reference.key === key,
+		const existing = [...this.composerReferences.values()].find(
+			(reference): reference is CapturedSelectionReference =>
+				reference.summary.kind === "selection" && reference.key === key,
 		);
-		if (!existing && this.codeReferences.size >= MAX_CODE_REFERENCE_COUNT) {
+		if (
+			!existing &&
+			this.composerReferences.size >= MAX_COMPOSER_REFERENCE_COUNT
+		) {
 			throw new Error(
-				`Attach at most ${MAX_CODE_REFERENCE_COUNT} code references per message.`,
+				`Add at most ${MAX_COMPOSER_REFERENCE_COUNT} references per message.`,
 			);
 		}
-		const totalBytes = [...this.codeReferences.values()].reduce(
+		const totalBytes = [...this.composerReferences.values()].reduce(
 			(total, reference) =>
-				reference === existing ? total : total + reference.byteLength,
+				isCapturedSelectionReference(reference) && reference !== existing
+					? total + reference.byteLength
+					: total,
 			0,
 		);
-		if (totalBytes + byteLength > MAX_TOTAL_CODE_REFERENCE_BYTES) {
-			throw new Error("Code references exceed the 256 KB total limit.");
+		if (totalBytes + byteLength > MAX_TOTAL_COMPOSER_REFERENCE_BYTES) {
+			throw new Error("Selection references exceed the 256 KB total limit.");
 		}
 
 		const lines = selectedLineRange(
@@ -1221,38 +1272,49 @@ export class PiViewProvider
 			selection.end.line,
 			selection.end.character,
 		);
-		const displayPath = this.codeReferenceDisplayPath(document);
+		const displayPath = this.composerReferenceDisplayPath(
+			document.uri,
+			document.fileName,
+		);
 		const id = existing?.summary.id ?? randomUUID();
 		const revision = (existing?.summary.revision ?? -1) + 1;
-		const baseMarker = formatCodeReferenceMarker(
+		const baseMarker = formatSelectionReferenceMarker(
 			displayPath,
 			lines.startLine,
 			lines.endLine,
 		);
 		const marker =
 			existing?.summary.marker ??
-			uniqueCodeReferenceMarker(
+			uniqueComposerReferenceMarker(
 				baseMarker,
 				id,
 				new Set(
-					[...this.codeReferences.values()].map(
+					[...this.composerReferences.values()].map(
 						(reference) => reference.summary.marker,
 					),
 				),
 			);
-		const payload: CodeReferencePayload = {
+		const payload: SelectionReferencePayload = {
 			path:
 				document.uri.scheme === "untitled"
 					? document.uri.toString(true)
 					: document.uri.fsPath || document.uri.toString(true),
 			displayPath,
+			marker,
 			languageId: document.languageId,
 			startLine: lines.startLine,
 			endLine: lines.endLine,
 			text,
 		};
-		this.codeReferences.set(id, {
-			summary: { id, revision, marker, displayPath, ...lines },
+		this.composerReferences.set(id, {
+			summary: {
+				kind: "selection",
+				id,
+				revision,
+				marker,
+				displayPath,
+				...lines,
+			},
 			payload,
 			uri: document.uri,
 			selection,
@@ -1261,6 +1323,49 @@ export class PiViewProvider
 			byteLength,
 			diagnostics: collectDiagnostics(document.uri, selection),
 			symbol: existing?.symbol,
+		});
+		return id;
+	}
+
+	private captureFileReference(uri: vscode.Uri): string {
+		const key = `file:${uri.toString()}`;
+		const existing = [...this.composerReferences.values()].find(
+			(reference): reference is CapturedFileReference =>
+				reference.summary.kind === "file" && reference.key === key,
+		);
+		if (existing) return existing.summary.id;
+		if (this.composerReferences.size >= MAX_COMPOSER_REFERENCE_COUNT) {
+			throw new Error(
+				`Add at most ${MAX_COMPOSER_REFERENCE_COUNT} references per message.`,
+			);
+		}
+
+		const displayPath = this.composerReferenceDisplayPath(uri);
+		const id = randomUUID();
+		const marker = uniqueComposerReferenceMarker(
+			formatFileReferenceMarker(displayPath),
+			id,
+			new Set(
+				[...this.composerReferences.values()].map(
+					(reference) => reference.summary.marker,
+				),
+			),
+		);
+		this.composerReferences.set(id, {
+			summary: {
+				kind: "file",
+				id,
+				revision: 0,
+				marker,
+				displayPath,
+			},
+			payload: {
+				path: uri.fsPath || uri.toString(true),
+				displayPath,
+				marker,
+			},
+			uri,
+			key,
 		});
 		return id;
 	}
@@ -1275,39 +1380,42 @@ export class PiViewProvider
 			editor.selection,
 		);
 		if (!symbol) return;
-		const reference = this.codeReferences.get(id);
-		if (!reference) return;
+		const reference = this.composerReferences.get(id);
+		if (!reference || !isCapturedSelectionReference(reference)) return;
 		reference.symbol = symbol;
 	}
 
-	private codeReferenceDisplayPath(document: vscode.TextDocument): string {
-		if (document.uri.scheme === "untitled") {
-			return path.basename(document.fileName) || "Untitled";
+	private composerReferenceDisplayPath(
+		uri: vscode.Uri,
+		fileName = uri.fsPath,
+	): string {
+		if (uri.scheme === "untitled") {
+			return path.basename(fileName) || "Untitled";
 		}
-		const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+		const folder = vscode.workspace.getWorkspaceFolder(uri);
 		if (folder) {
 			const includeWorkspaceFolder =
 				(vscode.workspace.workspaceFolders?.length ?? 0) > 1;
 			return vscode.workspace
-				.asRelativePath(document.uri, includeWorkspaceFolder)
+				.asRelativePath(uri, includeWorkspaceFolder)
 				.split(path.sep)
 				.join("/");
 		}
-		return document.fileName || document.uri.toString(true);
+		return fileName || uri.toString(true);
 	}
 
-	private async syncCodeReferences(): Promise<void> {
+	private async syncComposerReferences(): Promise<void> {
 		if (!this.webviewReady) return;
 		await this.post({
-			type: "codeReferences",
-			references: [...this.codeReferences.values()].map(
+			type: "composerReferences",
+			references: [...this.composerReferences.values()].map(
 				(reference) => reference.summary,
 			),
 			focusRequestId: this.pendingComposerFocusRequestId,
 		});
 	}
 
-	private async removeCodeReference(
+	private async removeComposerReference(
 		id: unknown,
 		revision: unknown,
 	): Promise<void> {
@@ -1317,20 +1425,21 @@ export class PiViewProvider
 			!Number.isInteger(revision)
 		)
 			return;
-		const reference = this.codeReferences.get(id);
+		const reference = this.composerReferences.get(id);
 		if (!reference || reference.summary.revision !== revision) return;
-		this.codeReferences.delete(id);
-		await this.syncCodeReferences();
+		this.composerReferences.delete(id);
+		await this.syncComposerReferences();
 	}
 
-	private async openCodeReference(id: string): Promise<void> {
-		const reference = this.codeReferences.get(id);
+	private async openComposerReference(id: string): Promise<void> {
+		const reference = this.composerReferences.get(id);
 		if (!reference) return;
 		try {
 			const document = await vscode.workspace.openTextDocument(reference.uri);
 			const editor = await vscode.window.showTextDocument(document, {
 				preview: true,
 			});
+			if (!isCapturedSelectionReference(reference)) return;
 			const start = document.validatePosition(reference.selection.start);
 			const end = document.validatePosition(reference.selection.end);
 			let selection = new vscode.Selection(start, end);
@@ -1354,7 +1463,7 @@ export class PiViewProvider
 			);
 		} catch (error) {
 			this.output.appendLine(
-				`[reference] Failed to open code reference: ${toErrorMessage(error)}`,
+					`[reference] Failed to open composer reference: ${toErrorMessage(error)}`,
 			);
 			void vscode.window.showWarningMessage(
 				`Unable to open ${reference.summary.displayPath}.`,
@@ -1362,21 +1471,21 @@ export class PiViewProvider
 		}
 	}
 
-	private resolveCodeReferences(
+	private resolveComposerReferences(
 		values: unknown,
 		text: string,
-	): SubmittedCodeReference[] {
+	): SubmittedComposerReference[] {
 		if (!Array.isArray(values)) return [];
-		if (values.length > MAX_CODE_REFERENCE_COUNT) {
+		if (values.length > MAX_COMPOSER_REFERENCE_COUNT) {
 			throw new Error(
-				`Attach at most ${MAX_CODE_REFERENCE_COUNT} code references per message.`,
+				`Add at most ${MAX_COMPOSER_REFERENCE_COUNT} references per message.`,
 			);
 		}
-		const references: SubmittedCodeReference[] = [];
+		const references: SubmittedComposerReference[] = [];
 		const seen = new Set<string>();
 		for (const value of values) {
 			if (!value || typeof value !== "object") {
-				throw new Error("Invalid code reference.");
+				throw new Error("Invalid composer reference.");
 			}
 			const { id, revision, start, end } = value as {
 				id?: unknown;
@@ -1399,17 +1508,17 @@ export class PiViewProvider
 				end <= start ||
 				end > text.length
 			) {
-				throw new Error("Invalid code reference.");
+				throw new Error("Invalid composer reference.");
 			}
 			const key = `${id}:${revision}`;
-			if (seen.has(key)) throw new Error("Duplicate code reference.");
+			if (seen.has(key)) throw new Error("Duplicate composer reference.");
 			seen.add(key);
-			const reference = this.codeReferences.get(id);
+			const reference = this.composerReferences.get(id);
 			if (!reference || reference.summary.revision !== revision) {
-				throw new Error("A code reference changed. Attach it again.");
+				throw new Error("A composer reference changed. Add it again.");
 			}
 			if (text.slice(start, end) !== reference.summary.marker) {
-				throw new Error("A code reference marker changed. Attach it again.");
+				throw new Error("A composer reference marker changed. Add it again.");
 			}
 			references.push({ reference, start, end });
 		}
@@ -1418,7 +1527,7 @@ export class PiViewProvider
 		);
 		for (let index = 1; index < sorted.length; index += 1) {
 			if ((sorted[index - 1]?.end ?? 0) > (sorted[index]?.start ?? 0)) {
-				throw new Error("Code reference markers overlap.");
+				throw new Error("Composer reference markers overlap.");
 			}
 		}
 		return references;
@@ -1436,12 +1545,13 @@ export class PiViewProvider
 		if (!selected) return;
 
 		try {
+			const uris = await this.validateResourceFiles(selected);
 			this.attachmentStore.registerSelected(
-				selected.map((uri) => {
+				uris.map((uri) => {
 					const mimeType = imageMimeTypeFromPath(uri.fsPath);
 					return {
 						filePath: uri.fsPath,
-						label: path.basename(uri.fsPath),
+						label: path.basename(uri.fsPath) || uri.fsPath,
 						kind: mimeType ? ("image" as const) : ("file" as const),
 						mimeType,
 					};
@@ -1451,6 +1561,86 @@ export class PiViewProvider
 		} catch (error) {
 			void vscode.window.showWarningMessage(toErrorMessage(error));
 		}
+	}
+
+	private async addResources(resources: string[]): Promise<void> {
+		const uris = resources.map((resource) => {
+			if (path.isAbsolute(resource)) return vscode.Uri.file(resource);
+			try {
+				return vscode.Uri.parse(resource, true);
+			} catch {
+				throw new Error("A dropped resource is not a valid file URI.");
+			}
+		});
+		await this.registerComposerReferences(uris);
+		await this.syncComposerReferences();
+	}
+
+	private async registerComposerReferences(
+		uris: readonly vscode.Uri[],
+	): Promise<void> {
+		const fileUris = await this.validateResourceFiles(uris);
+		const pendingFileCount = fileUris.filter((uri) => {
+			const key = `file:${uri.toString()}`;
+			return ![...this.composerReferences.values()].some(
+				(reference) =>
+					reference.summary.kind === "file" && reference.key === key,
+			);
+		}).length;
+		if (
+			this.composerReferences.size + pendingFileCount >
+			MAX_COMPOSER_REFERENCE_COUNT
+		) {
+			throw new Error(
+				`Add at most ${MAX_COMPOSER_REFERENCE_COUNT} references per message.`,
+			);
+		}
+
+		for (const uri of fileUris) this.captureFileReference(uri);
+	}
+
+	private async validateResourceFiles(
+		uris: readonly vscode.Uri[],
+	): Promise<vscode.Uri[]> {
+		await this.requireWorkspaceFolder();
+		const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+		const uniqueUris = [
+			...new Map(
+				uris.map((sourceUri) => {
+					const uri = sourceUri.with({ query: "", fragment: "" });
+					return [uri.toString(), uri] as const;
+				}),
+			).values(),
+		];
+		return Promise.all(
+			uniqueUris.map(async (uri) => {
+				const supported =
+					uri.scheme === "file" ||
+					workspaceFolders.some(
+						(folder) =>
+							folder.uri.scheme === uri.scheme &&
+							folder.uri.authority === uri.authority,
+					);
+				if (!supported || !uri.fsPath) {
+					throw new Error(
+						"Only files available to this VS Code workspace can be added.",
+					);
+				}
+
+				const label = path.basename(uri.fsPath) || uri.fsPath;
+				let fileStat: vscode.FileStat;
+				try {
+					fileStat = await vscode.workspace.fs.stat(uri);
+				} catch (error) {
+					throw new Error(`Unable to add ${label}: ${toErrorMessage(error)}`);
+				}
+				if ((fileStat.type & vscode.FileType.File) === 0) {
+					throw new Error(`${label} is not a regular file.`);
+				}
+
+				return uri;
+			}),
+		);
 	}
 
 	private async syncAttachments(): Promise<void> {
@@ -1464,7 +1654,7 @@ export class PiViewProvider
 	private async buildPrompt(
 		text: string,
 		attachments: ResolvedAttachment[],
-		references: SubmittedCodeReference[],
+		references: SubmittedComposerReference[],
 	): Promise<{
 		message: string;
 		images: Array<{ type: "image"; data: string; mimeType: string }>;
@@ -1477,7 +1667,7 @@ export class PiViewProvider
 		const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
 		let totalImageBytes = 0;
 		for (const attachment of attachments) {
-			if (attachment.summary.kind !== "image") {
+			if (attachment.summary.kind === "file") {
 				await this.attachmentStore.validateRegularFile(attachment);
 				files.push(attachment.filePath);
 				continue;
@@ -1494,13 +1684,26 @@ export class PiViewProvider
 			});
 		}
 
+		const fileReferences = references.filter(
+			(submitted): submitted is SubmittedComposerReference & {
+				reference: CapturedFileReference;
+			} => !isCapturedSelectionReference(submitted.reference),
+		);
+		const selectionReferences = references.filter(
+			(submitted): submitted is SubmittedComposerReference & {
+				reference: CapturedSelectionReference;
+			} => isCapturedSelectionReference(submitted.reference),
+		);
 		const contextLines = [
 			...files.map((file) => `- file: ${serializeContextValue(file)}`),
-			...references.map(
-				({ reference }) =>
-					`- selection: ${serializeCodeReferencePayload(reference.payload)}`,
+			...fileReferences.map(
+				({ reference }) => `- file: ${serializeContextValue(reference.payload)}`,
 			),
-			...references.flatMap(({ reference }) =>
+			...selectionReferences.map(
+				({ reference }) =>
+					`- selection: ${serializeSelectionReferencePayload(reference.payload)}`,
+			),
+			...selectionReferences.flatMap(({ reference }) =>
 				reference.diagnostics.length > 0
 					? [
 							`- diagnostics: ${serializeContextValue({
@@ -1510,7 +1713,7 @@ export class PiViewProvider
 						]
 					: [],
 			),
-			...references.flatMap(({ reference }) =>
+			...selectionReferences.flatMap(({ reference }) =>
 				reference.symbol
 					? [
 							`- symbol: ${serializeContextValue({
@@ -1530,7 +1733,11 @@ export class PiViewProvider
 		// structured <pi-context> block carries the full selection data.
 		let promptText = text;
 		if (!promptText.trim()) {
-			if (references.length > 0) promptText = "Inspect the selected code.";
+			if (files.length > 0) promptText = "Inspect the attached file.";
+			else if (fileReferences.length > 0)
+				promptText = "Inspect the referenced file.";
+			else if (selectionReferences.length > 0)
+				promptText = "Inspect the selected code.";
 			else if (images.length > 0) promptText = "Inspect the attached image.";
 		}
 		const message = `${contextBlock}${promptText}`;

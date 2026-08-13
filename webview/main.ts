@@ -1,10 +1,10 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
-	formatCodeReferenceLocation,
-	formatCodeReferenceMarker,
-	parseCodeReferencePayload,
-} from "../src/codeReferences.js";
+	formatComposerReferenceLocation,
+	parseFileReferencePayload,
+	parseSelectionReferencePayload,
+} from "../src/composerReferences.js";
 import {
 	insertManagedReference,
 	isManagedReferenceValid,
@@ -12,23 +12,29 @@ import {
 	reconcileComposerEdit,
 	referenceAtOffset,
 	removeManagedReferences,
-	type ManagedCodeReference,
+	type ManagedComposerReference,
 } from "./composerModel.js";
 import { applyAssistantMessageDelta } from "./streaming.js";
-import type {
-	AttachmentRef,
-	CodeReference,
-	HostToWebviewMessage,
-	JsonRecord,
-	PiCommand,
-	PiContentBlock,
-	PiMessage,
-	PiModel,
-	PastedImage,
-	PiState,
-	PiStats,
-	SessionSummary,
-	WebviewToHostMessage,
+import {
+	containsDroppedResources,
+	extractDroppedResources,
+} from "./resourceDrop.js";
+import {
+	MAX_COMPOSER_REFERENCE_COUNT,
+	MAX_IMAGE_ATTACHMENT_COUNT,
+	type AttachmentRef,
+	type ComposerReference,
+	type HostToWebviewMessage,
+	type JsonRecord,
+	type PiCommand,
+	type PiContentBlock,
+	type PiMessage,
+	type PiModel,
+	type PastedImage,
+	type PiState,
+	type PiStats,
+	type SessionSummary,
+	type WebviewToHostMessage,
 } from "../src/shared/protocol.js";
 
 declare function acquireVsCodeApi<T = unknown>(): {
@@ -39,7 +45,7 @@ declare function acquireVsCodeApi<T = unknown>(): {
 
 interface PersistedState {
 	draft: string;
-	codeReferences?: ManagedCodeReference[];
+	composerReferences?: ManagedComposerReference[];
 }
 
 interface LiveTool {
@@ -56,7 +62,7 @@ interface PendingAction {
 	type: string;
 	draft?: string;
 	attachmentIds?: string[];
-	referenceSnapshots?: ManagedCodeReference[];
+	referenceSnapshots?: ManagedComposerReference[];
 }
 
 interface ConfirmOptions {
@@ -80,7 +86,7 @@ interface UiState {
 	thinkingLevels: string[];
 	commands: PiCommand[];
 	attachments: AttachmentRef[];
-	codeReferences: ManagedCodeReference[];
+	composerReferences: ManagedComposerReference[];
 	sessions: SessionSummary[];
 	queue: { steering: string[]; followUp: string[] };
 	busy: boolean;
@@ -99,7 +105,7 @@ const ui: UiState = {
 	thinkingLevels: ["off"],
 	commands: [],
 	attachments: [],
-	codeReferences: [],
+	composerReferences: [],
 	sessions: [],
 	queue: { steering: [], followUp: [] },
 	busy: false,
@@ -109,7 +115,7 @@ const liveTools = new Map<string, LiveTool>();
 const pendingActions = new Map<string, PendingAction>();
 const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
-const locallyRemovedCodeReferenceRevisions = new Map<string, number>();
+const locallyRemovedComposerReferenceRevisions = new Map<string, number>();
 let renderQueued = false;
 let pendingSubmit = false;
 let composerFocusRequestId: number | undefined;
@@ -121,6 +127,7 @@ let renderedPromptMarkerSignature: string | undefined;
 let composerTextSnapshot = "";
 let lastComposerCaret = 0;
 let modalReturnFocus: HTMLElement | null = null;
+let resourceDragDepth = 0;
 
 const SUPPORTED_CLIPBOARD_IMAGE_TYPES = new Set([
 	"image/png",
@@ -130,7 +137,6 @@ const SUPPORTED_CLIPBOARD_IMAGE_TYPES = new Set([
 ]);
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
-const MAX_IMAGE_COUNT = 4;
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/gu;
@@ -157,6 +163,7 @@ const elements = {
 	queueStatus: element<HTMLElement>("queue-status"),
 	attachmentList: element<HTMLElement>("attachment-list"),
 	composerShell: element<HTMLElement>("composer-shell"),
+	resourceDropOverlay: element<HTMLElement>("resource-drop-overlay"),
 	composer: element<HTMLFormElement>("composer"),
 	promptEditor: element<HTMLElement>("prompt-editor"),
 	promptHighlights: element<HTMLElement>("prompt-highlights"),
@@ -181,8 +188,8 @@ const elements = {
 
 const persisted = vscode.getState();
 if (persisted?.draft) elements.input.value = persisted.draft;
-const restoredCodeReferences = new Map(
-	parsePersistedReferences(persisted?.codeReferences, elements.input.value).map(
+const restoredComposerReferences = new Map(
+	parsePersistedReferences(persisted?.composerReferences, elements.input.value).map(
 		(reference) => [reference.id, reference],
 	),
 );
@@ -253,7 +260,7 @@ window.addEventListener("blur", () => {
 });
 
 elements.input.addEventListener("input", () => {
-	reconcileCodeReferencesWithComposer();
+	reconcileComposerReferencesWithComposer();
 	rememberComposerCaret();
 	resizeInput();
 	persistComposerState();
@@ -309,10 +316,10 @@ elements.input.addEventListener("keydown", (event) => {
 	// the composer's own send and reference-jump handling.
 	if (handleInlineCommandKeydown(event)) return;
 	if (event.key === "F12") {
-		const reference = codeReferenceAtOffset(elements.input.selectionStart);
+		const reference = composerReferenceAtOffset(elements.input.selectionStart);
 		if (!reference) return;
 		event.preventDefault();
-		post({ type: "openCodeReference", id: reference.id });
+		post({ type: "openComposerReference", id: reference.id });
 		return;
 	}
 	if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
@@ -325,11 +332,62 @@ elements.input.addEventListener("paste", (event) => {
 	void handleImagePaste(event);
 });
 
+window.addEventListener("dragenter", (event) => {
+	if (!isAttachableResourceDrag(event.dataTransfer)) return;
+	event.preventDefault();
+	if (resourceDragDepth === 0) {
+		elements.resourceDropOverlay.hidden = false;
+		elements.app.classList.add("is-resource-drag");
+		announce("Drop files to add as context");
+	}
+	resourceDragDepth += 1;
+});
+
+window.addEventListener("dragover", (event) => {
+	if (!isAttachableResourceDrag(event.dataTransfer)) return;
+	event.preventDefault();
+	if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+
+window.addEventListener("dragleave", () => {
+	if (resourceDragDepth === 0) return;
+	resourceDragDepth -= 1;
+	if (resourceDragDepth === 0) clearResourceDragState();
+});
+
+window.addEventListener("drop", (event) => {
+	const dataTransfer = event.dataTransfer;
+	if (!isAttachableResourceDrag(dataTransfer)) return;
+	event.preventDefault();
+	clearResourceDragState();
+	const resources = extractDroppedResources(dataTransfer);
+	if (resources.length === 0) {
+		showToast("Could not read the dropped VS Code files", "error");
+		return;
+	}
+	const availableReferenceCount = Math.max(
+		0,
+		MAX_COMPOSER_REFERENCE_COUNT - ui.composerReferences.length,
+	);
+	if (resources.length > availableReferenceCount) {
+		showToast(
+			availableReferenceCount === 0
+				? `Remove a reference before adding another (maximum ${MAX_COMPOSER_REFERENCE_COUNT})`
+				: `Add at most ${availableReferenceCount} more ${availableReferenceCount === 1 ? "reference" : "references"}`,
+			"error",
+		);
+		return;
+	}
+	runAction("addResources", { resources });
+});
+
+window.addEventListener("dragend", clearResourceDragState);
+
 elements.input.addEventListener("click", (event) => {
 	if (!event.metaKey && !event.ctrlKey) return;
-	const reference = codeReferenceAtOffset(elements.input.selectionStart);
+	const reference = composerReferenceAtOffset(elements.input.selectionStart);
 	if (!reference) return;
-	post({ type: "openCodeReference", id: reference.id });
+	post({ type: "openComposerReference", id: reference.id });
 });
 
 elements.composer.addEventListener("submit", (event) => {
@@ -538,8 +596,8 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 			scheduleRender();
 			break;
 		}
-		case "codeReferences": {
-			const changedReference = applyIncomingCodeReferences(
+		case "composerReferences": {
+			const changedReference = applyIncomingComposerReferences(
 				message.references,
 			).at(-1);
 			const requestId = message.focusRequestId;
@@ -555,11 +613,11 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 					lastAnnouncedFocusRequestId = requestId;
 					if (changedReference) {
 						announce(
-							`Referenced ${formatCodeReferenceLocation(changedReference.displayPath, changedReference.startLine, changedReference.endLine)}`,
+							`Referenced ${formatComposerReferenceLocation(changedReference)}`,
 						);
-					} else if (ui.codeReferences.length > 0) {
+					} else if (ui.composerReferences.length > 0) {
 						announce(
-							`Pi Agent input focused with ${ui.codeReferences.length} code ${ui.codeReferences.length === 1 ? "reference" : "references"}`,
+							`Pi Agent input focused with ${ui.composerReferences.length} ${ui.composerReferences.length === 1 ? "reference" : "references"}`,
 						);
 					} else {
 						announce("Pi Agent input focused");
@@ -574,13 +632,13 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 			break;
 		}
 		case "setComposerText": {
-			const references = ui.codeReferences.map(
+			const references = ui.composerReferences.map(
 				({ start: _start, end: _end, ...reference }) => reference,
 			);
 			reconcilePendingReferenceEdits(elements.input.value, message.text);
-			ui.codeReferences = [];
+			ui.composerReferences = [];
 			writeComposerDraft(message.text, message.text.length);
-			applyIncomingCodeReferences(references);
+			applyIncomingComposerReferences(references);
 			elements.input.focus();
 			break;
 		}
@@ -671,22 +729,22 @@ function handleActionResult(
 				reference.revision,
 			]),
 		);
-		ui.codeReferences = ui.codeReferences.filter(
+		ui.composerReferences = ui.composerReferences.filter(
 			(reference) =>
 				submittedReferences.get(reference.id) !== reference.revision,
 		);
 		const activeKeys = new Set(
-			ui.codeReferences.map(
+			ui.composerReferences.map(
 				(reference) => `${reference.id}:${reference.revision}`,
 			),
 		);
 		if (draftUnchanged) {
-			const activeReferences = ui.codeReferences.map(
+			const activeReferences = ui.composerReferences.map(
 				({ start: _start, end: _end, ...reference }) => reference,
 			);
-			ui.codeReferences = [];
+			ui.composerReferences = [];
 			writeComposerDraft("", 0);
-			applyIncomingCodeReferences(activeReferences);
+			applyIncomingComposerReferences(activeReferences);
 		} else {
 			removeManagedReferencesFromComposer(
 				(action.referenceSnapshots ?? []).filter(
@@ -699,6 +757,10 @@ function handleActionResult(
 	if (ok && action?.type === "pasteImages") {
 		showToast("Clipboard image attached", "info");
 		announce("Clipboard image attached");
+	}
+	if (ok && action?.type === "addResources") {
+		showToast("Resources added to the input", "info");
+		announce("Resources added to the input");
 	}
 	if (ok && action?.type === "deleteSession") {
 		showToast("Session deleted", "info");
@@ -1211,14 +1273,14 @@ function markerSpanHtml(marker: InlineMarker): string {
 				marker.line ? ` data-workspace-line="${marker.line}"` : ""
 			}`
 		: "";
-	return `<span class="code-reference-highlight"${attrs}>${escapeHtml(marker.label)}</span>`;
+	return `<span class="composer-reference-highlight"${attrs}>${escapeHtml(marker.label)}</span>`;
 }
 
 /**
  * Render the user message body. Reference markers are kept in place within the
  * text (see buildPrompt), so locate each marker where it actually appears and
- * replace it with a highlight span. Markers not found inline (e.g. plain file
- * attachments) are prefixed so their context is still visible.
+ * replace it with a highlight span. Markers not found inline are prefixed so
+ * their context remains visible.
  */
 function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
 	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
@@ -1256,8 +1318,16 @@ interface InlineMarker {
 function contextInlineMarker(line: string): InlineMarker | undefined {
 	const filePrefix = "- file: ";
 	if (line.startsWith(filePrefix)) {
+		const value = line.slice(filePrefix.length);
+		const reference = parseFileReferencePayload(value);
+		if (reference) {
+			return {
+				label: reference.marker,
+				workspacePath: reference.displayPath,
+			};
+		}
 		try {
-			const filePath = JSON.parse(line.slice(filePrefix.length)) as unknown;
+			const filePath = JSON.parse(value) as unknown;
 			if (typeof filePath !== "string") return { label: "@file" };
 			const name = filePath.split(/[/\\]/u).pop() || filePath;
 			return { label: `@${name}` };
@@ -1272,16 +1342,12 @@ function contextInlineMarker(line: string): InlineMarker | undefined {
 	}
 	const selectionPrefix = "- selection: ";
 	if (!line.startsWith(selectionPrefix)) return undefined;
-	const reference = parseCodeReferencePayload(
+	const reference = parseSelectionReferencePayload(
 		line.slice(selectionPrefix.length),
 	);
 	if (!reference) return undefined;
 	return {
-		label: formatCodeReferenceMarker(
-			reference.displayPath,
-			reference.startLine,
-			reference.endLine,
-		),
+		label: reference.marker,
 		workspacePath: reference.displayPath,
 		line: reference.startLine,
 	};
@@ -1444,20 +1510,20 @@ function renderAttachments(): void {
 	}
 }
 
-function acceptIncomingCodeReferences(
-	references: CodeReference[],
-): CodeReference[] {
+function acceptIncomingComposerReferences(
+	references: ComposerReference[],
+): ComposerReference[] {
 	const incomingById = new Map(
 		references.map((reference) => [reference.id, reference]),
 	);
-	for (const [id, removedRevision] of locallyRemovedCodeReferenceRevisions) {
+	for (const [id, removedRevision] of locallyRemovedComposerReferenceRevisions) {
 		const incoming = incomingById.get(id);
 		if (!incoming || incoming.revision > removedRevision) {
-			locallyRemovedCodeReferenceRevisions.delete(id);
+			locallyRemovedComposerReferenceRevisions.delete(id);
 		}
 	}
 	return references.filter((reference) => {
-		const removedRevision = locallyRemovedCodeReferenceRevisions.get(
+		const removedRevision = locallyRemovedComposerReferenceRevisions.get(
 			reference.id,
 		);
 		return (
@@ -1466,9 +1532,9 @@ function acceptIncomingCodeReferences(
 	});
 }
 
-function managedCodeReferences(): ManagedCodeReference[] {
-	const references = new Map<string, ManagedCodeReference>();
-	for (const reference of ui.codeReferences) {
+function managedComposerReferences(): ManagedComposerReference[] {
+	const references = new Map<string, ManagedComposerReference>();
+	for (const reference of ui.composerReferences) {
 		if (isManagedReferenceValid(elements.input.value, reference)) {
 			references.set(`${reference.id}:${reference.revision}`, reference);
 		}
@@ -1480,7 +1546,7 @@ function managedCodeReferences(): ManagedCodeReference[] {
 			}
 		}
 	}
-	for (const reference of restoredCodeReferences.values()) {
+	for (const reference of restoredComposerReferences.values()) {
 		if (isManagedReferenceValid(elements.input.value, reference)) {
 			references.set(`${reference.id}:${reference.revision}`, reference);
 		}
@@ -1507,7 +1573,7 @@ function renderComposerHighlights(): void {
 		syncPromptHighlightScroll();
 		return;
 	}
-	const references = managedCodeReferences().sort(
+	const references = managedComposerReferences().sort(
 		(left, right) => left.start - right.start || left.end - right.end,
 	);
 	const markerSignature = references
@@ -1543,7 +1609,7 @@ function renderComposerHighlights(): void {
 		if (range.start < cursor) continue;
 		fragment.append(document.createTextNode(text.slice(cursor, range.start)));
 		const highlight = document.createElement("mark");
-		highlight.className = "code-reference-highlight";
+		highlight.className = "composer-reference-highlight";
 		highlight.textContent = text.slice(range.start, range.end);
 		fragment.append(highlight);
 		cursor = range.end;
@@ -1557,7 +1623,7 @@ function renderComposerHighlights(): void {
 function persistComposerState(): void {
 	vscode.setState({
 		draft: elements.input.value,
-		codeReferences: ui.codeReferences,
+		composerReferences: ui.composerReferences,
 	});
 }
 
@@ -1592,19 +1658,19 @@ function reconcilePendingReferenceEdits(
 }
 
 function removeManagedReferencesFromComposer(
-	references: ManagedCodeReference[],
+	references: ManagedComposerReference[],
 ): void {
 	if (references.length === 0) return;
 	const previousText = elements.input.value;
 	const originalPrefix = previousText.slice(0, elements.input.selectionStart);
 	const identities = references.map(({ id, revision }) => ({ id, revision }));
 	const activeKeys = new Set(
-		ui.codeReferences.map(
+		ui.composerReferences.map(
 			(reference) => `${reference.id}:${reference.revision}`,
 		),
 	);
 	const working = new Map(
-		[...ui.codeReferences, ...references].map((reference) => [
+		[...ui.composerReferences, ...references].map((reference) => [
 			`${reference.id}:${reference.revision}`,
 			reference,
 		]),
@@ -1620,13 +1686,13 @@ function removeManagedReferencesFromComposer(
 		identities,
 	);
 	reconcilePendingReferenceEdits(previousText, result.text);
-	ui.codeReferences = result.references.filter((reference) =>
+	ui.composerReferences = result.references.filter((reference) =>
 		activeKeys.has(`${reference.id}:${reference.revision}`),
 	);
 	writeComposerDraft(result.text, prefixResult.text.length);
 }
 
-function isPendingCodeReference(reference: CodeReference): boolean {
+function isPendingComposerReference(reference: ComposerReference): boolean {
 	for (const action of pendingActions.values()) {
 		if (
 			action.referenceSnapshots?.some(
@@ -1640,43 +1706,43 @@ function isPendingCodeReference(reference: CodeReference): boolean {
 	return false;
 }
 
-function applyIncomingCodeReferences(
-	incoming: CodeReference[],
-): ManagedCodeReference[] {
-	const references = acceptIncomingCodeReferences(incoming);
+function applyIncomingComposerReferences(
+	incoming: ComposerReference[],
+): ManagedComposerReference[] {
+	const references = acceptIncomingComposerReferences(incoming);
 	const previousById = new Map(
-		ui.codeReferences.map((reference) => [reference.id, reference]),
+		ui.composerReferences.map((reference) => [reference.id, reference]),
 	);
 	const acceptedIds = new Set(references.map((reference) => reference.id));
-	const restoredOrphans = [...restoredCodeReferences.values()].filter(
+	const restoredOrphans = [...restoredComposerReferences.values()].filter(
 		(reference) => !acceptedIds.has(reference.id),
 	);
 	if (restoredOrphans.length > 0) {
-		ui.codeReferences.push(...restoredOrphans);
+		ui.composerReferences.push(...restoredOrphans);
 		removeManagedReferencesFromComposer(restoredOrphans);
 	}
-	const stale = ui.codeReferences.filter(
+	const stale = ui.composerReferences.filter(
 		(reference) =>
-			!acceptedIds.has(reference.id) && !isPendingCodeReference(reference),
+			!acceptedIds.has(reference.id) && !isPendingComposerReference(reference),
 	);
 	removeManagedReferencesFromComposer(stale);
-	ui.codeReferences = ui.codeReferences.filter((reference) =>
+	ui.composerReferences = ui.composerReferences.filter((reference) =>
 		acceptedIds.has(reference.id),
 	);
 
-	const changed: ManagedCodeReference[] = [];
+	const changed: ManagedComposerReference[] = [];
 	for (const summary of references) {
-		const current = ui.codeReferences.find(
+		const current = ui.composerReferences.find(
 			(reference) => reference.id === summary.id,
 		);
-		const restored = restoredCodeReferences.get(summary.id);
-		restoredCodeReferences.delete(summary.id);
-		const pending = managedCodeReferences().find(
+		const restored = restoredComposerReferences.get(summary.id);
+		restoredComposerReferences.delete(summary.id);
+		const pending = managedComposerReferences().find(
 			(reference) =>
 				reference.id === summary.id && reference.marker === summary.marker,
 		);
 		const candidate = [current, restored, pending].find(
-			(reference): reference is ManagedCodeReference =>
+			(reference): reference is ManagedComposerReference =>
 				Boolean(
 					reference &&
 						reference.marker === summary.marker &&
@@ -1689,10 +1755,10 @@ function applyIncomingCodeReferences(
 				start: candidate.start,
 				end: candidate.end,
 			};
-			ui.codeReferences = ui.codeReferences.filter(
+			ui.composerReferences = ui.composerReferences.filter(
 				(reference) => reference.id !== summary.id,
 			);
-			ui.codeReferences.push(updated);
+			ui.composerReferences.push(updated);
 			if (previousById.get(summary.id)?.revision !== summary.revision) {
 				changed.push(updated);
 			}
@@ -1708,35 +1774,35 @@ function applyIncomingCodeReferences(
 			previousText,
 			Math.min(caretSource, previousText.length),
 			summary,
-			ui.codeReferences,
+			ui.composerReferences,
 		);
 		reconcilePendingReferenceEdits(previousText, insertion.text);
-		ui.codeReferences = insertion.references;
+		ui.composerReferences = insertion.references;
 		writeComposerDraft(insertion.text, insertion.caret);
-		const inserted = ui.codeReferences.find(
+		const inserted = ui.composerReferences.find(
 			(reference) => reference.id === summary.id,
 		);
 		if (inserted) changed.push(inserted);
 	}
-	ui.codeReferences.sort((left, right) => left.start - right.start);
+	ui.composerReferences.sort((left, right) => left.start - right.start);
 	persistComposerState();
 	return changed;
 }
 
-function reconcileCodeReferencesWithComposer(): void {
+function reconcileComposerReferencesWithComposer(): void {
 	const nextText = elements.input.value;
 	const result = reconcileComposerEdit(
 		composerTextSnapshot,
 		nextText,
-		ui.codeReferences,
+		ui.composerReferences,
 	);
 	reconcilePendingReferenceEdits(composerTextSnapshot, nextText);
-	ui.codeReferences = result.references;
+	ui.composerReferences = result.references;
 	composerTextSnapshot = nextText;
 	for (const reference of result.removed) {
-		locallyRemovedCodeReferenceRevisions.set(reference.id, reference.revision);
+		locallyRemovedComposerReferenceRevisions.set(reference.id, reference.revision);
 		post({
-			type: "removeCodeReference",
+			type: "removeComposerReference",
 			id: reference.id,
 			revision: reference.revision,
 		});
@@ -1745,21 +1811,17 @@ function reconcileCodeReferencesWithComposer(): void {
 		const first = result.removed[0];
 		const label =
 			result.removed.length === 1 && first
-				? formatCodeReferenceLocation(
-						first.displayPath,
-						first.startLine,
-						first.endLine,
-					)
-				: `${result.removed.length} code references`;
+				? formatComposerReferenceLocation(first)
+				: `${result.removed.length} references`;
 		announce(`Removed ${label}`);
 		scheduleRender();
 	}
 }
 
-function codeReferenceAtOffset(
+function composerReferenceAtOffset(
 	offset: number,
-): ManagedCodeReference | undefined {
-	return referenceAtOffset(ui.codeReferences, offset);
+): ManagedComposerReference | undefined {
+	return referenceAtOffset(ui.composerReferences, offset);
 }
 
 function renderSelectors(): void {
@@ -2234,7 +2296,7 @@ function insertSlashCommand(name: string): void {
 	let end = token ? token.end : start;
 	if (!token) {
 		// Never split a marker: land after it instead.
-		const marker = referenceAtOffset(ui.codeReferences, start);
+		const marker = referenceAtOffset(ui.composerReferences, start);
 		if (marker && start > marker.start && start < marker.end) {
 			start = marker.end;
 			end = marker.end;
@@ -2247,8 +2309,8 @@ function insertSlashCommand(name: string): void {
 	lastComposerCaret = caret;
 	dismissCommandPalette();
 	// Same sequence as the composer's `input` listener: this diffs against the
-	// previous snapshot, posts any lost code references, and refreshes highlights.
-	reconcileCodeReferencesWithComposer();
+	// previous snapshot, posts any lost composer references, and refreshes highlights.
+	reconcileComposerReferencesWithComposer();
 	resizeInput();
 	persistComposerState();
 	renderComposerHighlights();
@@ -2487,8 +2549,11 @@ async function handleImagePaste(event: ClipboardEvent): Promise<void> {
 	const attachedImageCount = ui.attachments.filter(
 		(attachment) => attachment.kind === "image",
 	).length;
-	if (attachedImageCount + files.length > MAX_IMAGE_COUNT) {
-		showToast(`Attach at most ${MAX_IMAGE_COUNT} images per message`, "error");
+	if (attachedImageCount + files.length > MAX_IMAGE_ATTACHMENT_COUNT) {
+		showToast(
+			`Attach at most ${MAX_IMAGE_ATTACHMENT_COUNT} images per message`,
+			"error",
+		);
 		return;
 	}
 
@@ -2529,6 +2594,22 @@ async function handleImagePaste(event: ClipboardEvent): Promise<void> {
 	}
 }
 
+function isAttachableResourceDrag(
+	dataTransfer: DataTransfer | null,
+): dataTransfer is DataTransfer {
+	return Boolean(
+		dataTransfer &&
+			ui.connection === "ready" &&
+			containsDroppedResources(dataTransfer),
+	);
+}
+
+function clearResourceDragState(): void {
+	resourceDragDepth = 0;
+	elements.resourceDropOverlay.hidden = true;
+	elements.app.classList.remove("is-resource-drag");
+}
+
 function readFileAsBase64(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader();
@@ -2557,7 +2638,7 @@ function sendPrompt(): void {
 	if (
 		!text.trim() &&
 		ui.attachments.length === 0 &&
-		ui.codeReferences.length === 0
+		ui.composerReferences.length === 0
 	)
 		return;
 	// The send button can be clicked while the palette is open, and submitting
@@ -2567,7 +2648,7 @@ function sendPrompt(): void {
 	runAction("submit", {
 		text,
 		attachmentIds: ui.attachments.map((attachment) => attachment.id),
-		references: ui.codeReferences.map((reference) => ({
+		references: ui.composerReferences.map((reference) => ({
 			id: reference.id,
 			revision: reference.revision,
 			start: reference.start,
@@ -2594,6 +2675,7 @@ function runAction(
 		| "setThinking"
 		| "compact"
 		| "restart"
+		| "addResources"
 		| "pasteImages",
 	fields: JsonRecord = {},
 ): void {
@@ -2602,7 +2684,7 @@ function runAction(
 	if (type === "submit" || type === "newSession") {
 		action.draft = elements.input.value;
 		action.attachmentIds = ui.attachments.map((attachment) => attachment.id);
-		action.referenceSnapshots = ui.codeReferences.map((reference) => ({
+		action.referenceSnapshots = ui.composerReferences.map((reference) => ({
 			...reference,
 		}));
 	}

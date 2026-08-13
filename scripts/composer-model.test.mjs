@@ -31,6 +31,7 @@ async function loadComposerModel() {
 
 function summary(id, marker) {
 	return {
+		kind: "selection",
 		id,
 		revision: 0,
 		marker,
@@ -110,6 +111,34 @@ test("composer edits shift intact spans and detach only an edited marker", async
 		);
 		assert.equal(detached.references.length, 0);
 		assert.equal(detached.removed[0].id, "reference");
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("file references persist without selection-only fields", async () => {
+	const loaded = await loadComposerModel();
+	try {
+		const reference = {
+			kind: "file",
+			id: "file-reference",
+			revision: 0,
+			marker: "@src/example.ts",
+			displayPath: "src/example.ts",
+		};
+		const inserted = loaded.module.insertManagedReference(
+			"inspect",
+			0,
+			reference,
+			[],
+		);
+		assert.deepEqual(
+			loaded.module.parsePersistedReferences(
+				inserted.references,
+				inserted.text,
+			),
+			inserted.references,
+		);
 	} finally {
 		await loaded.dispose();
 	}

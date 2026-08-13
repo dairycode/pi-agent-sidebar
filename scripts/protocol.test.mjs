@@ -97,6 +97,48 @@ test("webview protocol rejects malformed action payloads", async () => {
 			loaded.module.parseWebviewMessage({ type: "openExternal", href: 42 }),
 			undefined,
 		);
+		assert.equal(
+			loaded.module.parseWebviewMessage({
+				type: "addResources",
+				actionId: "action",
+				resources: [],
+			}),
+			undefined,
+		);
+		assert.equal(
+			loaded.module.parseWebviewMessage({
+				type: "addResources",
+				actionId: "action",
+				resources: Array.from({ length: 11 }, (_, index) => `file-${index}`),
+			}),
+			undefined,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("webview protocol accepts bounded dropped resources", async () => {
+	const loaded = await loadProtocol();
+	try {
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "addResources",
+				actionId: "action",
+				resources: [
+					"file:///workspace/src/main.ts",
+					"/workspace/src/view.ts",
+				],
+			}),
+			{
+				type: "addResources",
+				actionId: "action",
+				resources: [
+					"file:///workspace/src/main.ts",
+					"/workspace/src/view.ts",
+				],
+			},
+		);
 	} finally {
 		await loaded.dispose();
 	}

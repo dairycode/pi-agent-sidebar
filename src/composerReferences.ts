@@ -1,6 +1,15 @@
-export interface CodeReferencePayload {
+import type {
+	FileComposerReference,
+	SelectionComposerReference,
+} from "./shared/protocol.js";
+
+export interface FileReferencePayload {
 	path: string;
 	displayPath: string;
+	marker: string;
+}
+
+export interface SelectionReferencePayload extends FileReferencePayload {
 	languageId: string;
 	startLine: number;
 	endLine: number;
@@ -37,17 +46,25 @@ export function nearestOffset(anchor: number, ...candidates: number[]): number {
 	return nearest;
 }
 
-export function formatCodeReferenceLocation(
-	displayPath: string,
-	startLine: number,
-	endLine: number,
+export function formatComposerReferenceLocation(
+	reference:
+		| Pick<FileComposerReference, "kind" | "displayPath">
+		| Pick<
+				SelectionComposerReference,
+				"kind" | "displayPath" | "startLine" | "endLine"
+		  >,
 ): string {
-	return endLine === startLine
-		? `${displayPath}:${startLine}`
-		: `${displayPath}:${startLine}-${endLine}`;
+	if (reference.kind === "file") return reference.displayPath;
+	return reference.endLine === reference.startLine
+		? `${reference.displayPath}:${reference.startLine}`
+		: `${reference.displayPath}:${reference.startLine}-${reference.endLine}`;
 }
 
-export function formatCodeReferenceMarker(
+export function formatFileReferenceMarker(displayPath: string): string {
+	return `@${displayPath.replace(/[\r\n]+/gu, " ")}`;
+}
+
+export function formatSelectionReferenceMarker(
 	displayPath: string,
 	startLine: number,
 	endLine: number,
@@ -58,7 +75,7 @@ export function formatCodeReferenceMarker(
 		: `@${path}#${startLine}-${endLine}`;
 }
 
-export function uniqueCodeReferenceMarker(
+export function uniqueComposerReferenceMarker(
 	baseMarker: string,
 	id: string,
 	usedMarkers: ReadonlySet<string>,
@@ -74,7 +91,7 @@ export function uniqueCodeReferenceMarker(
 	return candidate;
 }
 
-export function insertCodeReferenceMarker(
+export function insertComposerReferenceMarker(
 	text: string,
 	offset: number,
 	marker: string,
@@ -94,7 +111,7 @@ export function insertCodeReferenceMarker(
 	};
 }
 
-export function findCodeReferenceMarker(
+export function findComposerReferenceMarker(
 	text: string,
 	marker: string,
 	fromIndex = 0,
@@ -113,16 +130,16 @@ export function findCodeReferenceMarker(
 	return -1;
 }
 
-export function hasCodeReferenceMarker(text: string, marker: string): boolean {
-	return findCodeReferenceMarker(text, marker) >= 0;
+export function hasComposerReferenceMarker(text: string, marker: string): boolean {
+	return findComposerReferenceMarker(text, marker) >= 0;
 }
 
-export function removeCodeReferenceMarker(
+export function removeComposerReferenceMarker(
 	text: string,
 	marker: string,
 ): string {
 	let result = text;
-	let index = findCodeReferenceMarker(result, marker);
+	let index = findComposerReferenceMarker(result, marker);
 	while (index >= 0) {
 		let start = index;
 		let end = index + marker.length;
@@ -133,12 +150,12 @@ export function removeCodeReferenceMarker(
 		else if (start === 0 && hasTrailingSpace) end += 1;
 		else if (end === result.length && hasLeadingSpace) start -= 1;
 		result = `${result.slice(0, start)}${result.slice(end)}`;
-		index = findCodeReferenceMarker(result, marker);
+		index = findComposerReferenceMarker(result, marker);
 	}
 	return result;
 }
 
-export function expandCodeReferenceRemovalRange(
+export function expandComposerReferenceRemovalRange(
 	text: string,
 	range: { start: number; end: number },
 ): { start: number; end: number } {
@@ -151,7 +168,7 @@ export function expandCodeReferenceRemovalRange(
 	return { start, end };
 }
 
-export function removeCodeReferenceRanges(
+export function removeComposerReferenceRanges(
 	text: string,
 	ranges: Array<{ start: number; end: number }>,
 ): string {
@@ -167,9 +184,9 @@ export function removeCodeReferenceRanges(
 			range.end > result.length ||
 			range.end > nextStart
 		) {
-			throw new Error("Invalid code reference range.");
+			throw new Error("Invalid composer reference range.");
 		}
-		const removal = expandCodeReferenceRemovalRange(result, range);
+		const removal = expandComposerReferenceRemovalRange(result, range);
 		result = `${result.slice(0, removal.start)}${result.slice(removal.end)}`;
 		nextStart = removal.start;
 	}
@@ -183,15 +200,21 @@ export function serializeContextValue(value: unknown): string {
 		.replaceAll("\u2029", "\\u2029");
 }
 
-export function serializeCodeReferencePayload(
-	reference: CodeReferencePayload,
+export function serializeSelectionReferencePayload(
+	reference: SelectionReferencePayload,
 ): string {
 	return serializeContextValue(reference);
 }
 
-export function parseCodeReferencePayload(
+export function parseFileReferencePayload(
 	value: string,
-): CodeReferencePayload | undefined {
+): FileReferencePayload | undefined {
+	return parseReferencePayloadCandidate(value);
+}
+
+function parseReferencePayloadCandidate(
+	value: string,
+): (FileReferencePayload & Record<string, unknown>) | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(value);
@@ -199,10 +222,28 @@ export function parseCodeReferencePayload(
 		return undefined;
 	}
 	if (!parsed || typeof parsed !== "object") return undefined;
-	const candidate = parsed as Partial<CodeReferencePayload>;
+	const candidate = parsed as Partial<FileReferencePayload>;
 	if (
 		typeof candidate.path !== "string" ||
+		candidate.path.length === 0 ||
 		typeof candidate.displayPath !== "string" ||
+		candidate.displayPath.length === 0 ||
+		typeof candidate.marker !== "string" ||
+		candidate.marker.length === 0
+	) {
+		return undefined;
+	}
+	return candidate as FileReferencePayload & Record<string, unknown>;
+}
+
+export function parseSelectionReferencePayload(
+	value: string,
+): SelectionReferencePayload | undefined {
+	const candidate = parseReferencePayloadCandidate(value) as
+		| (Partial<SelectionReferencePayload> & FileReferencePayload)
+		| undefined;
+	if (!candidate) return undefined;
+	if (
 		typeof candidate.languageId !== "string" ||
 		typeof candidate.startLine !== "number" ||
 		!Number.isInteger(candidate.startLine) ||
@@ -215,5 +256,5 @@ export function parseCodeReferencePayload(
 	) {
 		return undefined;
 	}
-	return candidate as CodeReferencePayload;
+	return candidate as SelectionReferencePayload;
 }

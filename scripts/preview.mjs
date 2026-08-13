@@ -18,6 +18,8 @@
  *   node scripts/preview.mjs                       # default 380px wide
  *   node scripts/preview.mjs --width=200           # narrow sidebar
  *   node scripts/preview.mjs --state=palette       # slash-command panel open
+ *   node scripts/preview.mjs --state=reference     # inline file reference
+ *   node scripts/preview.mjs --state=drop          # resource drop overlay
  *   node scripts/preview.mjs --theme=light
  *   node scripts/preview.mjs --theme=one-dark-pro-darker
  *   node scripts/preview.mjs --out=/tmp/shot.png
@@ -433,6 +435,34 @@ setTimeout(() => setTimeout(() => {
 		const input = document.querySelector("#prompt-input");
 		input.value = "Refactor the composer toolbar so the controls line up";
 		input.dispatchEvent(new Event("input", { bubbles: true }));
+	}
+	if (state === "reference") {
+		post({
+			type: "composerReferences",
+			references: [{
+				kind: "file",
+				id: "preview-file",
+				revision: 0,
+				marker: "@src/piViewProvider.ts",
+				displayPath: "src/piViewProvider.ts",
+			}],
+		});
+	}
+	if (state === "drop") {
+		const transfer = new DataTransfer();
+		transfer.setData(
+			"ResourceURLs",
+			JSON.stringify(["file:///workspace/src/piViewProvider.ts"]),
+		);
+		document.querySelector("#session-header").dispatchEvent(
+			new DragEvent("dragenter", {
+				bubbles: true,
+				dataTransfer: transfer,
+			}),
+		);
+		if (document.querySelector("#resource-drop-overlay").hidden) {
+			throw new Error("Full-sidebar resource drag did not activate the overlay");
+		}
 	}
 	window.__validatePreviewTheme();
 	document.documentElement.dataset.previewReady = "true";

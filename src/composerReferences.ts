@@ -1,5 +1,6 @@
 import type {
 	FileComposerReference,
+	JsonRecord,
 	SelectionComposerReference,
 } from "./shared/protocol.js";
 
@@ -17,6 +18,8 @@ export interface SelectionReferencePayload extends FileReferencePayload {
 }
 
 const MAX_SERIALIZED_TEXT_LENGTH = 1_000_000;
+
+type ReferencePayloadCandidate = FileReferencePayload & JsonRecord;
 
 export function selectedLineRange(
 	startLine: number,
@@ -214,47 +217,54 @@ export function parseFileReferencePayload(
 
 function parseReferencePayloadCandidate(
 	value: string,
-): (FileReferencePayload & Record<string, unknown>) | undefined {
+): ReferencePayloadCandidate | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(value);
 	} catch {
 		return undefined;
 	}
-	if (!parsed || typeof parsed !== "object") return undefined;
-	const candidate = parsed as Partial<FileReferencePayload>;
-	if (
-		typeof candidate.path !== "string" ||
-		candidate.path.length === 0 ||
-		typeof candidate.displayPath !== "string" ||
-		candidate.displayPath.length === 0 ||
-		typeof candidate.marker !== "string" ||
-		candidate.marker.length === 0
-	) {
-		return undefined;
-	}
-	return candidate as FileReferencePayload & Record<string, unknown>;
+	return isReferencePayloadCandidate(parsed) ? parsed : undefined;
 }
 
 export function parseSelectionReferencePayload(
 	value: string,
 ): SelectionReferencePayload | undefined {
-	const candidate = parseReferencePayloadCandidate(value) as
-		| (Partial<SelectionReferencePayload> & FileReferencePayload)
-		| undefined;
-	if (!candidate) return undefined;
-	if (
-		typeof candidate.languageId !== "string" ||
-		typeof candidate.startLine !== "number" ||
-		!Number.isInteger(candidate.startLine) ||
-		candidate.startLine < 1 ||
-		typeof candidate.endLine !== "number" ||
-		!Number.isInteger(candidate.endLine) ||
-		candidate.endLine < candidate.startLine ||
-		typeof candidate.text !== "string" ||
-		candidate.text.length > MAX_SERIALIZED_TEXT_LENGTH
-	) {
-		return undefined;
-	}
-	return candidate as SelectionReferencePayload;
+	const candidate = parseReferencePayloadCandidate(value);
+	return candidate && isSelectionReferencePayload(candidate)
+		? candidate
+		: undefined;
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isReferencePayloadCandidate(
+	value: unknown,
+): value is ReferencePayloadCandidate {
+	return (
+		isJsonRecord(value) &&
+		[value.path, value.displayPath, value.marker].every(
+			(field) => typeof field === "string" && field.length > 0,
+		)
+	);
+}
+
+function isSelectionReferencePayload(
+	value: ReferencePayloadCandidate,
+): value is ReferencePayloadCandidate & SelectionReferencePayload {
+	const { languageId, startLine, endLine, text } = value;
+	return (
+		typeof languageId === "string" &&
+		isPositiveInteger(startLine) &&
+		isPositiveInteger(endLine) &&
+		endLine >= startLine &&
+		typeof text === "string" &&
+		text.length <= MAX_SERIALIZED_TEXT_LENGTH
+	);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value > 0;
 }

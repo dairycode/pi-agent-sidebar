@@ -187,6 +187,7 @@ export type WebviewToHostMessage =
 	| { type: "removeComposerReference"; id: string; revision: number }
 	| { type: "openComposerReference"; id: string }
 	| { type: "openExternal"; href: string }
+	| { type: "openResource"; uri: string; line?: number }
 	| { type: "openWorkspacePath"; path: string; line?: number }
 	| { type: "showLogs" };
 
@@ -293,6 +294,12 @@ export function parseWebviewMessage(
 		const href = boundedString(message.href, 8 * 1024);
 		return href ? { type, href } : undefined;
 	}
+	if (type === "openResource") {
+		const uri = boundedString(message.uri, MAX_PATH_LENGTH);
+		if (!uri) return undefined;
+		const line = nonNegativeInteger(message.line);
+		return line === undefined ? { type, uri } : { type, uri, line };
+	}
 	if (type === "openWorkspacePath") {
 		const workspacePath = boundedString(message.path, MAX_PATH_LENGTH);
 		if (!workspacePath) return undefined;
@@ -312,10 +319,7 @@ function parseReferenceIdentities(value: unknown):
 			end: number;
 	  }>
 	| undefined {
-	if (
-		!Array.isArray(value) ||
-		value.length > MAX_COMPOSER_REFERENCE_COUNT
-	)
+	if (!Array.isArray(value) || value.length > MAX_COMPOSER_REFERENCE_COUNT)
 		return;
 	const references = [];
 	for (const item of value) {

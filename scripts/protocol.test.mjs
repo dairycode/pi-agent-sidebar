@@ -98,6 +98,10 @@ test("webview protocol rejects malformed action payloads", async () => {
 			undefined,
 		);
 		assert.equal(
+			loaded.module.parseWebviewMessage({ type: "openResource", uri: "" }),
+			undefined,
+		);
+		assert.equal(
 			loaded.module.parseWebviewMessage({
 				type: "addResources",
 				actionId: "action",
@@ -125,18 +129,32 @@ test("webview protocol accepts bounded dropped resources", async () => {
 			loaded.module.parseWebviewMessage({
 				type: "addResources",
 				actionId: "action",
-				resources: [
-					"file:///workspace/src/main.ts",
-					"/workspace/src/view.ts",
-				],
+				resources: ["file:///workspace/src/main.ts", "/workspace/src/view.ts"],
 			}),
 			{
 				type: "addResources",
 				actionId: "action",
-				resources: [
-					"file:///workspace/src/main.ts",
-					"/workspace/src/view.ts",
-				],
+				resources: ["file:///workspace/src/main.ts", "/workspace/src/view.ts"],
+			},
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("webview protocol accepts canonical resource navigation", async () => {
+	const loaded = await loadProtocol();
+	try {
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "openResource",
+				uri: "vscode-remote://ssh-remote+host/workspace/src/main.ts",
+				line: 9,
+			}),
+			{
+				type: "openResource",
+				uri: "vscode-remote://ssh-remote+host/workspace/src/main.ts",
+				line: 9,
 			},
 		);
 	} finally {

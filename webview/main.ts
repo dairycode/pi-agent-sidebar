@@ -189,9 +189,10 @@ const elements = {
 const persisted = vscode.getState();
 if (persisted?.draft) elements.input.value = persisted.draft;
 const restoredComposerReferences = new Map(
-	parsePersistedReferences(persisted?.composerReferences, elements.input.value).map(
-		(reference) => [reference.id, reference],
-	),
+	parsePersistedReferences(
+		persisted?.composerReferences,
+		elements.input.value,
+	).map((reference) => [reference.id, reference]),
 );
 composerTextSnapshot = elements.input.value;
 resizeInput();
@@ -526,19 +527,19 @@ elements.messages.addEventListener("click", (event) => {
 			.then(() => showToast("Copied", "info"));
 		return;
 	}
-	const pathLink = target.closest<HTMLElement>("[data-workspace-path]");
+	const pathLink = target.closest<HTMLElement>(
+		"[data-resource-uri], [data-workspace-path]",
+	);
 	if (pathLink) {
 		event.preventDefault();
+		const lineValue = Number(pathLink.dataset.workspaceLine);
+		const line =
+			Number.isInteger(lineValue) && lineValue >= 1 ? { line: lineValue } : {};
+		const resourceUri = pathLink.dataset.resourceUri;
 		const workspacePath = pathLink.dataset.workspacePath;
-		if (workspacePath) {
-			const lineValue = Number(pathLink.dataset.workspaceLine);
-			post({
-				type: "openWorkspacePath",
-				path: workspacePath,
-				...(Number.isInteger(lineValue) && lineValue >= 1
-					? { line: lineValue }
-					: {}),
-			});
+		if (resourceUri) post({ type: "openResource", uri: resourceUri, ...line });
+		else if (workspacePath) {
+			post({ type: "openWorkspacePath", path: workspacePath, ...line });
 		}
 		return;
 	}
@@ -1268,12 +1269,13 @@ function userMessageHtml(message: PiMessage): string {
 }
 
 function markerSpanHtml(marker: InlineMarker): string {
-	const attrs = marker.workspacePath
-		? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"${
-				marker.line ? ` data-workspace-line="${marker.line}"` : ""
-			}`
-		: "";
-	return `<span class="composer-reference-highlight"${attrs}>${escapeHtml(marker.label)}</span>`;
+	const resourceAttr = marker.resourceUri
+		? ` data-resource-uri="${escapeHtml(marker.resourceUri)}"`
+		: marker.workspacePath
+			? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"`
+			: "";
+	const lineAttr = marker.line ? ` data-workspace-line="${marker.line}"` : "";
+	return `<span class="composer-reference-highlight"${resourceAttr}${lineAttr}>${escapeHtml(marker.label)}</span>`;
 }
 
 /**
@@ -1311,6 +1313,7 @@ function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
 
 interface InlineMarker {
 	label: string;
+	resourceUri?: string;
 	workspacePath?: string;
 	line?: number;
 }
@@ -1323,6 +1326,7 @@ function contextInlineMarker(line: string): InlineMarker | undefined {
 		if (reference) {
 			return {
 				label: reference.marker,
+				resourceUri: reference.uri,
 				workspacePath: reference.displayPath,
 			};
 		}
@@ -1348,6 +1352,7 @@ function contextInlineMarker(line: string): InlineMarker | undefined {
 	if (!reference) return undefined;
 	return {
 		label: reference.marker,
+		resourceUri: reference.uri,
 		workspacePath: reference.displayPath,
 		line: reference.startLine,
 	};
@@ -1516,7 +1521,10 @@ function acceptIncomingComposerReferences(
 	const incomingById = new Map(
 		references.map((reference) => [reference.id, reference]),
 	);
-	for (const [id, removedRevision] of locallyRemovedComposerReferenceRevisions) {
+	for (const [
+		id,
+		removedRevision,
+	] of locallyRemovedComposerReferenceRevisions) {
 		const incoming = incomingById.get(id);
 		if (!incoming || incoming.revision > removedRevision) {
 			locallyRemovedComposerReferenceRevisions.delete(id);
@@ -1800,7 +1808,10 @@ function reconcileComposerReferencesWithComposer(): void {
 	ui.composerReferences = result.references;
 	composerTextSnapshot = nextText;
 	for (const reference of result.removed) {
-		locallyRemovedComposerReferenceRevisions.set(reference.id, reference.revision);
+		locallyRemovedComposerReferenceRevisions.set(
+			reference.id,
+			reference.revision,
+		);
 		post({
 			type: "removeComposerReference",
 			id: reference.id,
@@ -2475,10 +2486,10 @@ function positionSelectPopup(trigger: HTMLElement): void {
 function positionPopupAbove(
 	trigger: HTMLElement,
 	popup: HTMLElement,
-	anchor: HTMLElement = trigger,
+	anchor?: HTMLElement,
 ): void {
 	const appRect = elements.app.getBoundingClientRect();
-	const rect = anchor.getBoundingClientRect();
+	const rect = (anchor ?? trigger).getBoundingClientRect();
 	popup.style.bottom = `${Math.round(appRect.bottom - rect.top + 4)}px`;
 	popup.style.maxHeight = `${Math.max(
 		120,

@@ -8,6 +8,8 @@ export interface FileReferencePayload {
 	path: string;
 	displayPath: string;
 	marker: string;
+	/** Canonical source URI used to reopen references from submitted messages. */
+	uri?: string;
 }
 
 export interface SelectionReferencePayload extends FileReferencePayload {
@@ -20,6 +22,34 @@ export interface SelectionReferencePayload extends FileReferencePayload {
 const MAX_SERIALIZED_TEXT_LENGTH = 1_000_000;
 
 type ReferencePayloadCandidate = FileReferencePayload & JsonRecord;
+
+interface WorkspaceReferencePath {
+	workspaceFolderName: string;
+	relativePath: string;
+}
+
+export function splitWorkspaceReferencePath(
+	displayPath: string,
+	workspaceFolderNames: readonly string[],
+): WorkspaceReferencePath | undefined {
+	for (const workspaceFolderName of workspaceFolderNames) {
+		const prefix = `${workspaceFolderName}/`;
+		if (displayPath.startsWith(prefix) && displayPath.length > prefix.length) {
+			return {
+				workspaceFolderName,
+				relativePath: displayPath.slice(prefix.length),
+			};
+		}
+	}
+	return undefined;
+}
+
+export function shouldSnapshotFileReference(
+	scheme: string,
+	isDirty: boolean,
+): boolean {
+	return scheme === "untitled" || isDirty;
+}
 
 export function selectedLineRange(
 	startLine: number,
@@ -133,7 +163,10 @@ export function findComposerReferenceMarker(
 	return -1;
 }
 
-export function hasComposerReferenceMarker(text: string, marker: string): boolean {
+export function hasComposerReferenceMarker(
+	text: string,
+	marker: string,
+): boolean {
 	return findComposerReferenceMarker(text, marker) >= 0;
 }
 
@@ -247,7 +280,9 @@ function isReferencePayloadCandidate(
 		isJsonRecord(value) &&
 		[value.path, value.displayPath, value.marker].every(
 			(field) => typeof field === "string" && field.length > 0,
-		)
+		) &&
+		(value.uri === undefined ||
+			(typeof value.uri === "string" && value.uri.length > 0))
 	);
 }
 

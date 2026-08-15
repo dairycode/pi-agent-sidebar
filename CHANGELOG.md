@@ -1,20 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
 
+- Preserve the current in-memory contents when **Explain This File** targets an
+ unsaved or untitled editor, and reopen submitted references by their canonical
+ URI so files in other multi-root workspace folders navigate correctly.
 - Add workspace files to the composer as clickable inline `@path` references
-	through an Explorer context-menu action or by holding `Shift` and dragging
-	from VS Code Explorer. File and selection references share the same composer
-	lifecycle and open with `Cmd`/`Ctrl`-click or `F12`.
+ through an Explorer context-menu action or by holding `Shift` and dragging
+ from VS Code Explorer. File and selection references share the same composer
+ lifecycle and open with `Cmd`/`Ctrl`-click or `F12`.
 - Keep the `+` picker distinct from drag-and-drop: picked files and images render
-	as removable attachment chips, while dropped files enter the text composer as
-	inline references.
+ as removable attachment chips, while dropped files enter the text composer as
+ inline references.
 - Make the entire Pi sidebar a file drop target and show a compact,
-	Codex-inspired full-surface overlay with a subtle accent tint and an
-	edge-to-edge, square dashed drop boundary that reuses the sidebar's accent.
+ Codex-inspired full-surface overlay with a subtle accent tint and an
+ edge-to-edge, square dashed drop boundary that reuses the sidebar's accent.
 - Expose **Pi Agent: Focus Input with Selection** above **Explain Selection**
-	in the editor context submenu, reusing the existing inline `@path#line`
-	selection flow without inserting a preset instruction.
+ in the editor context submenu, reusing the existing inline `@path#line`
+ selection flow without inserting a preset instruction.
 
 ## 0.4.4
 

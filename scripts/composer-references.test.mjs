@@ -12,7 +12,11 @@ async function loadComposerReferences() {
 	const temporaryDirectory = await mkdtemp(
 		path.join(os.tmpdir(), "pi-agent-composer-reference-test-"),
 	);
-	const output = path.join(temporaryDirectory, "bundle", "composer-references.mjs");
+	const output = path.join(
+		temporaryDirectory,
+		"bundle",
+		"composer-references.mjs",
+	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
 		entryPoints: [path.join(root, "src", "composerReferences.ts")],
@@ -74,6 +78,29 @@ test("composer references format file and selection markers", async () => {
 		);
 		assert.equal(loaded.module.nearestOffset(50, 12, 58), 58);
 		assert.equal(loaded.module.nearestOffset(50, -1, -1), -1);
+		assert.equal(
+			loaded.module.shouldSnapshotFileReference("file", false),
+			false,
+		);
+		assert.equal(loaded.module.shouldSnapshotFileReference("file", true), true);
+		assert.equal(
+			loaded.module.shouldSnapshotFileReference("untitled", false),
+			true,
+		);
+		assert.deepEqual(
+			loaded.module.splitWorkspaceReferencePath("docs/src/guide.md", [
+				"app",
+				"docs",
+			]),
+			{
+				workspaceFolderName: "docs",
+				relativePath: "src/guide.md",
+			},
+		);
+		assert.equal(
+			loaded.module.splitWorkspaceReferencePath("src/guide.md", ["app"]),
+			undefined,
+		);
 	} finally {
 		await loaded.dispose();
 	}
@@ -145,6 +172,7 @@ test("composer reference payloads safely round-trip context", async () => {
 	try {
 		const reference = {
 			path: "/workspace/src/example.ts",
+			uri: "file:///workspace/src/example.ts",
 			displayPath: "src/example.ts",
 			marker: "@src/example.ts#9-10",
 			languageId: "typescript",
@@ -152,7 +180,8 @@ test("composer reference payloads safely round-trip context", async () => {
 			endLine: 10,
 			text: "const marker = '</pi-context>';\nconsole.log(marker);\u2028\u2029",
 		};
-		const serialized = loaded.module.serializeSelectionReferencePayload(reference);
+		const serialized =
+			loaded.module.serializeSelectionReferencePayload(reference);
 		assert.equal(serialized.includes("</pi-context>"), false);
 		assert.equal(serialized.includes("\u2028"), false);
 		assert.equal(serialized.includes("\u2029"), false);
@@ -172,12 +201,28 @@ test("composer reference payloads safely round-trip context", async () => {
 		);
 		const file = {
 			path: "/workspace/src/example.ts",
+			uri: "file:///workspace/src/example.ts",
 			displayPath: "src/example.ts",
 			marker: "@src/example.ts",
 		};
 		assert.deepEqual(
 			loaded.module.parseFileReferencePayload(JSON.stringify(file)),
 			file,
+		);
+		const legacyFile = { ...file, uri: undefined };
+		assert.deepEqual(
+			loaded.module.parseFileReferencePayload(JSON.stringify(legacyFile)),
+			{
+				path: legacyFile.path,
+				displayPath: legacyFile.displayPath,
+				marker: legacyFile.marker,
+			},
+		);
+		assert.equal(
+			loaded.module.parseFileReferencePayload(
+				JSON.stringify({ ...file, uri: 42 }),
+			),
+			undefined,
 		);
 	} finally {
 		await loaded.dispose();

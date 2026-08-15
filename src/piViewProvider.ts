@@ -17,6 +17,8 @@ import {
 	selectedLineRange,
 	serializeSelectionReferencePayload,
 	serializeContextValue,
+	shouldSnapshotFileReference,
+	splitWorkspaceReferencePath,
 	uniqueComposerReferenceMarker,
 	type FileReferencePayload,
 	type SelectionReferencePayload,
@@ -40,7 +42,6 @@ import {
 import {
 	parseWebviewMessage,
 	MAX_COMPOSER_REFERENCE_COUNT,
-	type ComposerReference,
 	type FileComposerReference,
 	type HostToWebviewMessage,
 	type JsonRecord,
@@ -162,7 +163,10 @@ export class PiViewProvider
 	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
 	private readonly attachmentStore: AttachmentStore;
-	private readonly composerReferences = new Map<string, CapturedComposerReference>();
+	private readonly composerReferences = new Map<
+		string,
+		CapturedComposerReference
+	>();
 
 	public constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -236,7 +240,10 @@ export class PiViewProvider
 		this.missedPostWhileHidden = false;
 		if (!this.client?.isRunning) return;
 		try {
-			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
+			await Promise.all([
+				this.syncAttachments(),
+				this.syncComposerReferences(),
+			]);
 			await this.refreshSnapshot();
 		} catch (error) {
 			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
@@ -299,7 +306,22 @@ export class PiViewProvider
 		}
 		try {
 			if (kind === "explainFile") {
-				this.captureFileReference(editor.document.uri);
+				const { document } = editor;
+				if (
+					shouldSnapshotFileReference(document.uri.scheme, document.isDirty)
+				) {
+					const fullRange = new vscode.Selection(
+						document.positionAt(0),
+						document.positionAt(document.getText().length),
+					);
+					this.captureSelectionReference(
+						editor,
+						fullRange,
+						MAX_TOTAL_COMPOSER_REFERENCE_BYTES,
+					);
+				} else {
+					this.captureFileReference(document.uri);
+				}
 			} else {
 				const id = this.captureSelectionReference(editor);
 				await this.enrichReferenceWithSymbol(id, editor);
@@ -447,7 +469,10 @@ export class PiViewProvider
 				}
 			}
 			await this.attachmentStore.removeResolved(attachments);
-			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
+			await Promise.all([
+				this.syncAttachments(),
+				this.syncComposerReferences(),
+			]);
 			await this.refreshSnapshot();
 			return true;
 		});
@@ -646,6 +671,10 @@ export class PiViewProvider
 					await this.openExternal(message.href);
 					break;
 				}
+				case "openResource": {
+					await this.openResource(message.uri, message.line);
+					break;
+				}
 				case "openWorkspacePath": {
 					await this.openWorkspacePath(message.path, message.line);
 					break;
@@ -680,7 +709,10 @@ export class PiViewProvider
 		referenceIdentities: unknown,
 	): Promise<void> {
 		const attachments = this.attachmentStore.resolve(attachmentIds);
-		const references = this.resolveComposerReferences(referenceIdentities, text);
+		const references = this.resolveComposerReferences(
+			referenceIdentities,
+			text,
+		);
 		const client = await this.ensureClient();
 		const prompt = await this.buildPrompt(text, attachments, references);
 		if (!prompt.message.trim() && prompt.images.length === 0)
@@ -1227,14 +1259,22 @@ export class PiViewProvider
 		}
 	}
 
-	private captureSelectionReference(editor: vscode.TextEditor): string | undefined {
-		const { document, selection } = editor;
+	private captureSelectionReference(
+		editor: vscode.TextEditor,
+		selection = editor.selection,
+		maxByteLength = MAX_COMPOSER_REFERENCE_BYTES,
+	): string | undefined {
+		const { document } = editor;
 		const text = document.getText(selection);
 		if (!text) return undefined;
 
 		const byteLength = Buffer.byteLength(text, "utf8");
-		if (byteLength > MAX_COMPOSER_REFERENCE_BYTES) {
-			throw new Error("Select at most 64 KB of code for one reference.");
+		if (byteLength > maxByteLength) {
+			throw new Error(
+				maxByteLength === MAX_COMPOSER_REFERENCE_BYTES
+					? "Select at most 64 KB of code for one reference."
+					: "Unsaved file content exceeds the 256 KB reference limit.",
+			);
 		}
 
 		const key = [
@@ -1299,6 +1339,7 @@ export class PiViewProvider
 				document.uri.scheme === "untitled"
 					? document.uri.toString(true)
 					: document.uri.fsPath || document.uri.toString(true),
+			uri: document.uri.toString(),
 			displayPath,
 			marker,
 			languageId: document.languageId,
@@ -1361,6 +1402,7 @@ export class PiViewProvider
 			},
 			payload: {
 				path: uri.fsPath || uri.toString(true),
+				uri: uri.toString(),
 				displayPath,
 				marker,
 			},
@@ -1463,7 +1505,7 @@ export class PiViewProvider
 			);
 		} catch (error) {
 			this.output.appendLine(
-					`[reference] Failed to open composer reference: ${toErrorMessage(error)}`,
+				`[reference] Failed to open composer reference: ${toErrorMessage(error)}`,
 			);
 			void vscode.window.showWarningMessage(
 				`Unable to open ${reference.summary.displayPath}.`,
@@ -1685,19 +1727,24 @@ export class PiViewProvider
 		}
 
 		const fileReferences = references.filter(
-			(submitted): submitted is SubmittedComposerReference & {
+			(
+				submitted,
+			): submitted is SubmittedComposerReference & {
 				reference: CapturedFileReference;
 			} => !isCapturedSelectionReference(submitted.reference),
 		);
 		const selectionReferences = references.filter(
-			(submitted): submitted is SubmittedComposerReference & {
+			(
+				submitted,
+			): submitted is SubmittedComposerReference & {
 				reference: CapturedSelectionReference;
 			} => isCapturedSelectionReference(submitted.reference),
 		);
 		const contextLines = [
 			...files.map((file) => `- file: ${serializeContextValue(file)}`),
 			...fileReferences.map(
-				({ reference }) => `- file: ${serializeContextValue(reference.payload)}`,
+				({ reference }) =>
+					`- file: ${serializeContextValue(reference.payload)}`,
 			),
 			...selectionReferences.map(
 				({ reference }) =>
@@ -1822,15 +1869,57 @@ export class PiViewProvider
 		await vscode.env.openExternal(uri);
 	}
 
+	private async openResource(uriValue: string, line?: number): Promise<void> {
+		let resource: vscode.Uri;
+		try {
+			resource = vscode.Uri.parse(uriValue, true);
+		} catch {
+			void vscode.window.showWarningMessage(
+				"Unable to open an invalid reference URI.",
+			);
+			return;
+		}
+		if (
+			resource.scheme === "untitled"
+				? !vscode.workspace.textDocuments.some(
+						(document) => document.uri.toString() === resource.toString(),
+					)
+				: !vscode.workspace.getWorkspaceFolder(resource)
+		) {
+			void vscode.window.showWarningMessage(
+				"Unable to open a reference outside the current workspace.",
+			);
+			return;
+		}
+		try {
+			await this.showTextResource(resource, line);
+		} catch {
+			void vscode.window.showWarningMessage(
+				`Unable to open ${resource.toString(true)}.`,
+			);
+		}
+	}
+
 	private async openWorkspacePath(
 		relativePath: string,
 		line?: number,
 	): Promise<void> {
-		const folder = this.workspaceFolder ?? (await this.selectWorkspaceFolder());
-		if (!folder) return;
 		const normalized = relativePath.replace(/^[./]+/u, "").replace(/\\/gu, "/");
 		if (!normalized || normalized.includes("..")) return;
-		const target = vscode.Uri.joinPath(folder.uri, normalized);
+
+		const folders = vscode.workspace.workspaceFolders ?? [];
+		const qualified = splitWorkspaceReferencePath(
+			normalized,
+			folders.map((folder) => folder.name),
+		);
+		const folder = qualified
+			? folders.find(
+					(candidate) => candidate.name === qualified.workspaceFolderName,
+				)
+			: (this.workspaceFolder ?? (await this.selectWorkspaceFolder()));
+		if (!folder) return;
+		const pathWithinFolder = qualified?.relativePath ?? normalized;
+		const target = vscode.Uri.joinPath(folder.uri, pathWithinFolder);
 		const relativeToFolder = path
 			.relative(folder.uri.fsPath, target.fsPath)
 			.split(path.sep)
@@ -1842,24 +1931,30 @@ export class PiViewProvider
 			return;
 		}
 		try {
-			const document = await vscode.workspace.openTextDocument(target);
-			const editor = await vscode.window.showTextDocument(document, {
-				preview: true,
-			});
-			if (typeof line === "number" && line >= 1) {
-				const position = new vscode.Position(
-					Math.min(line - 1, Math.max(0, document.lineCount - 1)),
-					0,
-				);
-				editor.selection = new vscode.Selection(position, position);
-				editor.revealRange(
-					new vscode.Range(position, position),
-					vscode.TextEditorRevealType.InCenterIfOutsideViewport,
-				);
-			}
+			await this.showTextResource(target, line);
 		} catch {
 			void vscode.window.showWarningMessage(`Unable to open ${normalized}.`);
 		}
+	}
+
+	private async showTextResource(
+		resource: vscode.Uri,
+		line?: number,
+	): Promise<void> {
+		const document = await vscode.workspace.openTextDocument(resource);
+		const editor = await vscode.window.showTextDocument(document, {
+			preview: true,
+		});
+		if (typeof line !== "number" || line < 1) return;
+		const position = new vscode.Position(
+			Math.min(line - 1, Math.max(0, document.lineCount - 1)),
+			0,
+		);
+		editor.selection = new vscode.Selection(position, position);
+		editor.revealRange(
+			new vscode.Range(position, position),
+			vscode.TextEditorRevealType.InCenterIfOutsideViewport,
+		);
 	}
 
 	private configuredSessionDirectory(

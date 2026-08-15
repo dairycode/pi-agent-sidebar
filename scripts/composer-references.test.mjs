@@ -87,20 +87,6 @@ test("composer references format file and selection markers", async () => {
 			loaded.module.shouldSnapshotFileReference("untitled", false),
 			true,
 		);
-		assert.deepEqual(
-			loaded.module.splitWorkspaceReferencePath("docs/src/guide.md", [
-				"app",
-				"docs",
-			]),
-			{
-				workspaceFolderName: "docs",
-				relativePath: "src/guide.md",
-			},
-		);
-		assert.equal(
-			loaded.module.splitWorkspaceReferencePath("src/guide.md", ["app"]),
-			undefined,
-		);
 	} finally {
 		await loaded.dispose();
 	}

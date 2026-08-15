@@ -23,27 +23,6 @@ const MAX_SERIALIZED_TEXT_LENGTH = 1_000_000;
 
 type ReferencePayloadCandidate = FileReferencePayload & JsonRecord;
 
-interface WorkspaceReferencePath {
-	workspaceFolderName: string;
-	relativePath: string;
-}
-
-export function splitWorkspaceReferencePath(
-	displayPath: string,
-	workspaceFolderNames: readonly string[],
-): WorkspaceReferencePath | undefined {
-	for (const workspaceFolderName of workspaceFolderNames) {
-		const prefix = `${workspaceFolderName}/`;
-		if (displayPath.startsWith(prefix) && displayPath.length > prefix.length) {
-			return {
-				workspaceFolderName,
-				relativePath: displayPath.slice(prefix.length),
-			};
-		}
-	}
-	return undefined;
-}
-
 export function shouldSnapshotFileReference(
 	scheme: string,
 	isDirty: boolean,

@@ -18,7 +18,6 @@ import {
 	serializeSelectionReferencePayload,
 	serializeContextValue,
 	shouldSnapshotFileReference,
-	splitWorkspaceReferencePath,
 	uniqueComposerReferenceMarker,
 	type FileReferencePayload,
 	type SelectionReferencePayload,
@@ -51,6 +50,10 @@ import {
 	type SelectionComposerReference,
 } from "./shared/protocol.js";
 import { createWebviewDocument } from "./webviewDocument.js";
+import {
+	parseDroppedResource,
+	WorkspaceResources,
+} from "./workspaceResources.js";
 
 const VIEW_TYPE = "piAgentSidebar.chatView";
 const MAX_COMPOSER_REFERENCE_BYTES = 64 * 1024;
@@ -163,6 +166,7 @@ export class PiViewProvider
 	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
 	private readonly attachmentStore: AttachmentStore;
+	private readonly workspaceResources: WorkspaceResources;
 	private readonly composerReferences = new Map<
 		string,
 		CapturedComposerReference
@@ -173,6 +177,9 @@ export class PiViewProvider
 		private readonly output: vscode.OutputChannel,
 	) {
 		this.attachmentStore = new AttachmentStore(context.globalStorageUri.fsPath);
+		this.workspaceResources = new WorkspaceResources(() =>
+			this.selectWorkspaceFolder(),
+		);
 		void this.attachmentStore.initialize().catch((error: unknown) => {
 			this.output.appendLine(`[attachments] ${toErrorMessage(error)}`);
 		});
@@ -672,11 +679,14 @@ export class PiViewProvider
 					break;
 				}
 				case "openResource": {
-					await this.openResource(message.uri, message.line);
+					await this.workspaceResources.openResource(message.uri, message.line);
 					break;
 				}
 				case "openWorkspacePath": {
-					await this.openWorkspacePath(message.path, message.line);
+					await this.workspaceResources.openWorkspacePath(
+						message.path,
+						message.line,
+					);
 					break;
 				}
 				case "showLogs": {
@@ -741,7 +751,8 @@ export class PiViewProvider
 	private switchSession(sessionPath: string): Promise<void> {
 		return this.sessionMutations.enqueue(async () => {
 			const client = await this.ensureClient();
-			const folder = await this.requireWorkspaceFolder();
+			const folder =
+				await this.workspaceResources.requireWorkspaceFolder();
 			const sessions = await listProjectSessions(
 				folder.uri.fsPath,
 				this.state.sessionFile,
@@ -762,7 +773,8 @@ export class PiViewProvider
 
 	private deleteSession(sessionPath: string): Promise<void> {
 		return this.sessionMutations.enqueue(async () => {
-			const folder = await this.requireWorkspaceFolder();
+			const folder =
+				await this.workspaceResources.requireWorkspaceFolder();
 			const client = await this.ensureClient();
 			const freshState = parsePiState(
 				await client.request({ type: "get_state" }),
@@ -1229,7 +1241,7 @@ export class PiViewProvider
 	}
 
 	private async sendSessionList(): Promise<void> {
-		const folder = await this.requireWorkspaceFolder();
+		const folder = await this.workspaceResources.requireWorkspaceFolder();
 		const sessions = await listProjectSessions(
 			folder.uri.fsPath,
 			this.state.sessionFile,
@@ -1576,7 +1588,7 @@ export class PiViewProvider
 	}
 
 	private async pickAttachments(): Promise<void> {
-		const folder = await this.requireWorkspaceFolder();
+		const folder = await this.workspaceResources.requireWorkspaceFolder();
 		const selected = await vscode.window.showOpenDialog({
 			defaultUri: folder.uri,
 			canSelectFiles: true,
@@ -1587,7 +1599,7 @@ export class PiViewProvider
 		if (!selected) return;
 
 		try {
-			const uris = await this.validateResourceFiles(selected);
+			const uris = await this.workspaceResources.validateFiles(selected);
 			this.attachmentStore.registerSelected(
 				uris.map((uri) => {
 					const mimeType = imageMimeTypeFromPath(uri.fsPath);
@@ -1606,14 +1618,7 @@ export class PiViewProvider
 	}
 
 	private async addResources(resources: string[]): Promise<void> {
-		const uris = resources.map((resource) => {
-			if (path.isAbsolute(resource)) return vscode.Uri.file(resource);
-			try {
-				return vscode.Uri.parse(resource, true);
-			} catch {
-				throw new Error("A dropped resource is not a valid file URI.");
-			}
-		});
+		const uris = resources.map(parseDroppedResource);
 		await this.registerComposerReferences(uris);
 		await this.syncComposerReferences();
 	}
@@ -1621,7 +1626,7 @@ export class PiViewProvider
 	private async registerComposerReferences(
 		uris: readonly vscode.Uri[],
 	): Promise<void> {
-		const fileUris = await this.validateResourceFiles(uris);
+		const fileUris = await this.workspaceResources.validateFiles(uris);
 		const pendingFileCount = fileUris.filter((uri) => {
 			const key = `file:${uri.toString()}`;
 			return ![...this.composerReferences.values()].some(
@@ -1639,50 +1644,6 @@ export class PiViewProvider
 		}
 
 		for (const uri of fileUris) this.captureFileReference(uri);
-	}
-
-	private async validateResourceFiles(
-		uris: readonly vscode.Uri[],
-	): Promise<vscode.Uri[]> {
-		await this.requireWorkspaceFolder();
-		const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
-		const uniqueUris = [
-			...new Map(
-				uris.map((sourceUri) => {
-					const uri = sourceUri.with({ query: "", fragment: "" });
-					return [uri.toString(), uri] as const;
-				}),
-			).values(),
-		];
-		return Promise.all(
-			uniqueUris.map(async (uri) => {
-				const supported =
-					uri.scheme === "file" ||
-					workspaceFolders.some(
-						(folder) =>
-							folder.uri.scheme === uri.scheme &&
-							folder.uri.authority === uri.authority,
-					);
-				if (!supported || !uri.fsPath) {
-					throw new Error(
-						"Only files available to this VS Code workspace can be added.",
-					);
-				}
-
-				const label = path.basename(uri.fsPath) || uri.fsPath;
-				let fileStat: vscode.FileStat;
-				try {
-					fileStat = await vscode.workspace.fs.stat(uri);
-				} catch (error) {
-					throw new Error(`Unable to add ${label}: ${toErrorMessage(error)}`);
-				}
-				if ((fileStat.type & vscode.FileType.File) === 0) {
-					throw new Error(`${label} is not a regular file.`);
-				}
-
-				return uri;
-			}),
-		);
 	}
 
 	private async syncAttachments(): Promise<void> {
@@ -1833,12 +1794,6 @@ export class PiViewProvider
 		return selected;
 	}
 
-	private async requireWorkspaceFolder(): Promise<vscode.WorkspaceFolder> {
-		const folder = await this.selectWorkspaceFolder();
-		if (!folder) throw new Error("Open a workspace folder first.");
-		return folder;
-	}
-
 	private validateAdditionalArguments(args: string[]): void {
 		for (const argument of args) {
 			const key = argument.split("=")[0];
@@ -1867,94 +1822,6 @@ export class PiViewProvider
 		if (uri.scheme !== "https" && uri.scheme !== "http")
 			throw new Error("Only HTTP and HTTPS links can be opened.");
 		await vscode.env.openExternal(uri);
-	}
-
-	private async openResource(uriValue: string, line?: number): Promise<void> {
-		let resource: vscode.Uri;
-		try {
-			resource = vscode.Uri.parse(uriValue, true);
-		} catch {
-			void vscode.window.showWarningMessage(
-				"Unable to open an invalid reference URI.",
-			);
-			return;
-		}
-		if (
-			resource.scheme === "untitled"
-				? !vscode.workspace.textDocuments.some(
-						(document) => document.uri.toString() === resource.toString(),
-					)
-				: !vscode.workspace.getWorkspaceFolder(resource)
-		) {
-			void vscode.window.showWarningMessage(
-				"Unable to open a reference outside the current workspace.",
-			);
-			return;
-		}
-		try {
-			await this.showTextResource(resource, line);
-		} catch {
-			void vscode.window.showWarningMessage(
-				`Unable to open ${resource.toString(true)}.`,
-			);
-		}
-	}
-
-	private async openWorkspacePath(
-		relativePath: string,
-		line?: number,
-	): Promise<void> {
-		const normalized = relativePath.replace(/^[./]+/u, "").replace(/\\/gu, "/");
-		if (!normalized || normalized.includes("..")) return;
-
-		const folders = vscode.workspace.workspaceFolders ?? [];
-		const qualified = splitWorkspaceReferencePath(
-			normalized,
-			folders.map((folder) => folder.name),
-		);
-		const folder = qualified
-			? folders.find(
-					(candidate) => candidate.name === qualified.workspaceFolderName,
-				)
-			: (this.workspaceFolder ?? (await this.selectWorkspaceFolder()));
-		if (!folder) return;
-		const pathWithinFolder = qualified?.relativePath ?? normalized;
-		const target = vscode.Uri.joinPath(folder.uri, pathWithinFolder);
-		const relativeToFolder = path
-			.relative(folder.uri.fsPath, target.fsPath)
-			.split(path.sep)
-			.join("/");
-		if (
-			relativeToFolder.startsWith("..") ||
-			path.isAbsolute(relativeToFolder)
-		) {
-			return;
-		}
-		try {
-			await this.showTextResource(target, line);
-		} catch {
-			void vscode.window.showWarningMessage(`Unable to open ${normalized}.`);
-		}
-	}
-
-	private async showTextResource(
-		resource: vscode.Uri,
-		line?: number,
-	): Promise<void> {
-		const document = await vscode.workspace.openTextDocument(resource);
-		const editor = await vscode.window.showTextDocument(document, {
-			preview: true,
-		});
-		if (typeof line !== "number" || line < 1) return;
-		const position = new vscode.Position(
-			Math.min(line - 1, Math.max(0, document.lineCount - 1)),
-			0,
-		);
-		editor.selection = new vscode.Selection(position, position);
-		editor.revealRange(
-			new vscode.Range(position, position),
-			vscode.TextEditorRevealType.InCenterIfOutsideViewport,
-		);
 	}
 
 	private configuredSessionDirectory(

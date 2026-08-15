@@ -236,7 +236,9 @@ export class ComposerController {
 		return caret;
 	}
 
-	public referenceAtOffset(offset: number): ManagedComposerReference | undefined {
+	public referenceAtOffset(
+		offset: number,
+	): ManagedComposerReference | undefined {
 		return referenceAtOffset(this.activeReferences, offset);
 	}
 

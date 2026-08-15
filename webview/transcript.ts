@@ -95,9 +95,7 @@ function markerSpanHtml(marker: InlineMarker): string {
 		: marker.workspacePath
 			? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"`
 			: "";
-	const lineAttr = marker.line
-		? ` data-workspace-line="${marker.line}"`
-		: "";
+	const lineAttr = marker.line ? ` data-workspace-line="${marker.line}"` : "";
 	return `<span class="composer-reference-highlight"${resourceAttr}${lineAttr}>${escapeHtml(marker.label)}</span>`;
 }
 

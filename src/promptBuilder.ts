@@ -32,9 +32,7 @@ export interface PromptSelectionReference {
 	symbol?: string;
 }
 
-export type PromptReference =
-	| PromptFileReference
-	| PromptSelectionReference;
+export type PromptReference = PromptFileReference | PromptSelectionReference;
 
 export interface BuiltPrompt {
 	message: string;
@@ -45,10 +43,7 @@ export async function buildPrompt(
 	text: string,
 	attachments: ResolvedAttachment[],
 	references: PromptReference[],
-	attachmentStore: Pick<
-		AttachmentStore,
-		"validateRegularFile" | "readImage"
-	>,
+	attachmentStore: Pick<AttachmentStore, "validateRegularFile" | "readImage">,
 ): Promise<BuiltPrompt> {
 	if (typeof text !== "string" || text.length > MAX_MESSAGE_LENGTH) {
 		throw new Error("Message is too large.");
@@ -131,6 +126,7 @@ export async function buildPrompt(
 		else if (images.length > 0) promptText = "Inspect the attached image.";
 	}
 	const message = `${contextBlock}${promptText}`;
-	if (message.length > MAX_MESSAGE_LENGTH) throw new Error("Message is too large.");
+	if (message.length > MAX_MESSAGE_LENGTH)
+		throw new Error("Message is too large.");
 	return { message, images };
 }

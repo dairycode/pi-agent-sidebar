@@ -103,7 +103,10 @@ test("user transcript markers retain canonical URI and selection line", async ()
 			html,
 			/data-resource-uri="file:\/\/\/workspace\/src\/selected\.ts" data-workspace-line="4"/u,
 		);
-		assert.match(html, /Compare .*@src\/file\.ts.* with .*@src\/selected\.ts#4/u);
+		assert.match(
+			html,
+			/Compare .*@src\/file\.ts.* with .*@src\/selected\.ts#4/u,
+		);
 	} finally {
 		await loaded.dispose();
 	}

@@ -3,10 +3,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
 import { AsyncQueue } from "./asyncQueue.js";
-import {
-	AttachmentStore,
-	imageMimeTypeFromPath,
-} from "./attachmentStore.js";
+import { AttachmentStore, imageMimeTypeFromPath } from "./attachmentStore.js";
 import { probePiBinary } from "./binaryProbe.js";
 import {
 	formatFileReferenceMarker,
@@ -753,8 +750,7 @@ export class PiViewProvider
 	private switchSession(sessionPath: string): Promise<void> {
 		return this.sessionMutations.enqueue(async () => {
 			const client = await this.ensureClient();
-			const folder =
-				await this.workspaceResources.requireWorkspaceFolder();
+			const folder = await this.workspaceResources.requireWorkspaceFolder();
 			const sessions = await listProjectSessions(
 				folder.uri.fsPath,
 				this.state.sessionFile,
@@ -775,8 +771,7 @@ export class PiViewProvider
 
 	private deleteSession(sessionPath: string): Promise<void> {
 		return this.sessionMutations.enqueue(async () => {
-			const folder =
-				await this.workspaceResources.requireWorkspaceFolder();
+			const folder = await this.workspaceResources.requireWorkspaceFolder();
 			const client = await this.ensureClient();
 			const freshState = parsePiState(
 				await client.request({ type: "get_state" }),

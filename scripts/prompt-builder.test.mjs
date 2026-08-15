@@ -31,7 +31,12 @@ async function loadPromptBuilder() {
 
 function attachment(kind, filePath) {
 	return {
-		summary: { id: `${kind}-id`, path: filePath, label: path.basename(filePath), kind },
+		summary: {
+			id: `${kind}-id`,
+			path: filePath,
+			label: path.basename(filePath),
+			kind,
+		},
 		filePath,
 		temporary: false,
 		...(kind === "image" ? { mimeType: "image/png" } : {}),
@@ -101,7 +106,9 @@ test("prompt builder preserves structured context order and prompt text", async 
 		);
 		assert.ok(
 			result.message.indexOf('- file: {"path":"/workspace/src/file.ts"') <
-				result.message.indexOf('- selection: {"path":"/workspace/src/selected.ts"'),
+				result.message.indexOf(
+					'- selection: {"path":"/workspace/src/selected.ts"',
+				),
 		);
 		assert.match(result.message, /- diagnostics: .*Example warning/u);
 		assert.match(result.message, /- symbol: .*selected/u);
@@ -126,7 +133,11 @@ test("prompt builder supplies context-specific defaults and encodes images", asy
 		);
 		assert.equal(imageResult.message, "Inspect the attached image.");
 		assert.deepEqual(imageResult.images, [
-			{ type: "image", data: Buffer.from("png").toString("base64"), mimeType: "image/png" },
+			{
+				type: "image",
+				data: Buffer.from("png").toString("base64"),
+				mimeType: "image/png",
+			},
 		]);
 
 		const referenceResult = await loaded.module.buildPrompt(

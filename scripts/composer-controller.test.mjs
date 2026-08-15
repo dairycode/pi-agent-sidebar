@@ -33,7 +33,11 @@ async function loadComposerController() {
 	};
 }
 
-function createHarness(ComposerController, initialText = "", persistedReferences) {
+function createHarness(
+	ComposerController,
+	initialText = "",
+	persistedReferences,
+) {
 	const posts = [];
 	const announcements = [];
 	const persisted = [];
@@ -194,10 +198,7 @@ test("successful completion preserves edits made while submit was pending", asyn
 		assert.equal(harness.editor.value, "keep this edit");
 		assert.equal(harness.controller.references.length, 0);
 		assert.ok(harness.refreshes > 0);
-		assert.equal(
-			harness.persisted.at(-1).draft,
-			"keep this edit",
-		);
+		assert.equal(harness.persisted.at(-1).draft, "keep this edit");
 	} finally {
 		await loaded.dispose();
 	}

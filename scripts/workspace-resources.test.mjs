@@ -12,7 +12,11 @@ async function loadWorkspaceResources() {
 	const temporaryDirectory = await mkdtemp(
 		path.join(os.tmpdir(), "pi-agent-workspace-resources-test-"),
 	);
-	const output = path.join(temporaryDirectory, "bundle", "workspace-resources.mjs");
+	const output = path.join(
+		temporaryDirectory,
+		"bundle",
+		"workspace-resources.mjs",
+	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
 		entryPoints: [path.join(root, "src", "workspaceResources.ts")],
@@ -30,11 +34,9 @@ async function loadWorkspaceResources() {
 						path: "vscode",
 						namespace: "mock-vscode",
 					}));
-					buildApi.onLoad(
-						{ filter: /.*/, namespace: "mock-vscode" },
-						() => ({
-							loader: "js",
-							contents: `
+					buildApi.onLoad({ filter: /.*/, namespace: "mock-vscode" }, () => ({
+						loader: "js",
+						contents: `
 								export const Uri = {
 									file: (value) => ({ scheme: "file", fsPath: value, value }),
 									parse: (value) => {
@@ -51,8 +53,7 @@ async function loadWorkspaceResources() {
 								export class Range {}
 								export const TextEditorRevealType = { InCenterIfOutsideViewport: 0 };
 							`,
-						}),
-					);
+					}));
 				},
 			},
 		],
@@ -94,7 +95,9 @@ test("dropped resources accept absolute paths and strict URIs", async () => {
 			value: "/workspace/main.ts",
 		});
 		assert.deepEqual(
-			loaded.module.parseDroppedResource("vscode-remote://host/workspace/main.ts"),
+			loaded.module.parseDroppedResource(
+				"vscode-remote://host/workspace/main.ts",
+			),
 			{
 				scheme: "vscode-remote",
 				value: "vscode-remote://host/workspace/main.ts",

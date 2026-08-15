@@ -280,7 +280,9 @@ elements.input.addEventListener("pointerup", () => {
 elements.input.addEventListener("select", () =>
 	composerController.rememberCaret(),
 );
-elements.input.addEventListener("blur", () => composerController.rememberCaret());
+elements.input.addEventListener("blur", () =>
+	composerController.rememberCaret(),
+);
 
 elements.input.addEventListener("scroll", syncPromptHighlightScroll);
 window.addEventListener("resize", syncPromptHighlightScroll);
@@ -1227,9 +1229,9 @@ function renderComposerHighlights(): void {
 		syncPromptHighlightScroll();
 		return;
 	}
-	const references = composerController.managedReferences().sort(
-		(left, right) => left.start - right.start || left.end - right.end,
-	);
+	const references = composerController
+		.managedReferences()
+		.sort((left, right) => left.start - right.start || left.end - right.end);
 	const markerSignature = references
 		.map(
 			(reference) =>
@@ -2090,7 +2092,6 @@ function sendPrompt(): void {
 		text,
 		attachmentIds: ui.attachments.map((attachment) => attachment.id),
 		references: composerController.references.map((reference) => ({
-
 			id: reference.id,
 			revision: reference.revision,
 			start: reference.start,

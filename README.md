@@ -23,15 +23,18 @@ thinking levels from themed pickers in the composer
 - **Conversation control** — queue follow-up prompts while pi is working, or
 abort the active run; transient provider errors (overload, rate limit, 5xx,
 interrupted streams) are retried automatically
-- **Attachments** — attach project files by path and paste clipboard images to
-send to the model
-- **Code references** — select code and press `Cmd+Esc` / `Ctrl+Esc` to insert
-an inline `@path#line` reference at the caret, then jump back to the source
-with `Cmd`/`Ctrl`-click or `F12`
+- **Composer references** — use Explorer's **Pi Agent: Add Files to Input**
+	action, or hold `Shift` and drag files from VS Code Explorer anywhere over
+	the Pi sidebar, to insert clickable inline `@path` references
+- **Selection references** — select code and press `Cmd+Esc` / `Ctrl+Esc` to
+	insert an inline `@path#line` reference at the caret; `Cmd`/`Ctrl`-click or
+	`F12` jumps back to either kind of source reference
+- **Attachments** — use the composer's `+` button to attach files or images as
+	chips; pasted PNG, JPEG, GIF, and WebP images use the same attachment flow
 - **Editor integration** — a right-click `Pi Agent` submenu explains the
-selection, refactors it, generates tests, explains reported problems, or
-explains the whole file, plus a `Fix with Pi` quick fix for the diagnostic
-under the cursor
+	selection, adds it to the composer without a preset instruction, refactors
+	it, generates tests, explains reported problems, or explains the whole file,
+	plus a `Fix with Pi` quick fix for the diagnostic under the cursor
 - **Slash commands** — type `/` in the composer to browse pi's extension
 commands, prompt templates, and skills, grouped by source with live filtering
 - **Tool timeline** — tool calls run inline with file-edit diffs rendered as

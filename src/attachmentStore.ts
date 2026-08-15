@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AttachmentRef, PastedImage } from "./shared/protocol.js";
+import {
+	MAX_ATTACHMENT_COUNT,
+	MAX_IMAGE_ATTACHMENT_COUNT,
+	type AttachmentRef,
+	type PastedImage,
+} from "./shared/protocol.js";
 
-export const MAX_ATTACHMENT_COUNT = 20;
-export const MAX_IMAGE_COUNT = 4;
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 
@@ -84,8 +87,10 @@ export class AttachmentStore {
 		const addedImageCount = additions.filter(
 			(attachment) => attachment.kind === "image",
 		).length;
-		if (imageCount + addedImageCount > MAX_IMAGE_COUNT) {
-			throw new Error(`Attach at most ${MAX_IMAGE_COUNT} images per message.`);
+		if (imageCount + addedImageCount > MAX_IMAGE_ATTACHMENT_COUNT) {
+			throw new Error(
+				`Attach at most ${MAX_IMAGE_ATTACHMENT_COUNT} images per message.`,
+			);
 		}
 		for (const file of additions) {
 			const id = randomUUID();
@@ -108,14 +113,18 @@ export class AttachmentStore {
 		if (!Array.isArray(images) || images.length === 0) {
 			throw new Error("No clipboard image was provided.");
 		}
-		if (images.length > MAX_IMAGE_COUNT) {
-			throw new Error(`Paste at most ${MAX_IMAGE_COUNT} images at once.`);
+		if (images.length > MAX_IMAGE_ATTACHMENT_COUNT) {
+			throw new Error(
+				`Paste at most ${MAX_IMAGE_ATTACHMENT_COUNT} images at once.`,
+			);
 		}
 		const currentImageCount = [...this.attachments.values()].filter(
 			(attachment) => attachment.summary.kind === "image",
 		).length;
-		if (currentImageCount + images.length > MAX_IMAGE_COUNT) {
-			throw new Error(`Attach at most ${MAX_IMAGE_COUNT} images per message.`);
+		if (currentImageCount + images.length > MAX_IMAGE_ATTACHMENT_COUNT) {
+			throw new Error(
+				`Attach at most ${MAX_IMAGE_ATTACHMENT_COUNT} images per message.`,
+			);
 		}
 		if (this.attachments.size + images.length > MAX_ATTACHMENT_COUNT) {
 			throw new Error(
@@ -230,8 +239,9 @@ export class AttachmentStore {
 		const handle = await open(attachment.filePath, "r");
 		try {
 			const fileStat = await handle.stat();
-			if (!fileStat.isFile())
+			if (!fileStat.isFile()) {
 				throw new Error("Attachment is not a regular file.");
+			}
 		} finally {
 			await handle.close();
 		}

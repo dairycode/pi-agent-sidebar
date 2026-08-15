@@ -1,6 +1,16 @@
-export interface CodeReferencePayload {
+import type {
+	FileComposerReference,
+	JsonRecord,
+	SelectionComposerReference,
+} from "./shared/protocol.js";
+
+export interface FileReferencePayload {
 	path: string;
 	displayPath: string;
+	marker: string;
+}
+
+export interface SelectionReferencePayload extends FileReferencePayload {
 	languageId: string;
 	startLine: number;
 	endLine: number;
@@ -8,6 +18,8 @@ export interface CodeReferencePayload {
 }
 
 const MAX_SERIALIZED_TEXT_LENGTH = 1_000_000;
+
+type ReferencePayloadCandidate = FileReferencePayload & JsonRecord;
 
 export function selectedLineRange(
 	startLine: number,
@@ -37,17 +49,25 @@ export function nearestOffset(anchor: number, ...candidates: number[]): number {
 	return nearest;
 }
 
-export function formatCodeReferenceLocation(
-	displayPath: string,
-	startLine: number,
-	endLine: number,
+export function formatComposerReferenceLocation(
+	reference:
+		| Pick<FileComposerReference, "kind" | "displayPath">
+		| Pick<
+				SelectionComposerReference,
+				"kind" | "displayPath" | "startLine" | "endLine"
+		  >,
 ): string {
-	return endLine === startLine
-		? `${displayPath}:${startLine}`
-		: `${displayPath}:${startLine}-${endLine}`;
+	if (reference.kind === "file") return reference.displayPath;
+	return reference.endLine === reference.startLine
+		? `${reference.displayPath}:${reference.startLine}`
+		: `${reference.displayPath}:${reference.startLine}-${reference.endLine}`;
 }
 
-export function formatCodeReferenceMarker(
+export function formatFileReferenceMarker(displayPath: string): string {
+	return `@${displayPath.replace(/[\r\n]+/gu, " ")}`;
+}
+
+export function formatSelectionReferenceMarker(
 	displayPath: string,
 	startLine: number,
 	endLine: number,
@@ -58,7 +78,7 @@ export function formatCodeReferenceMarker(
 		: `@${path}#${startLine}-${endLine}`;
 }
 
-export function uniqueCodeReferenceMarker(
+export function uniqueComposerReferenceMarker(
 	baseMarker: string,
 	id: string,
 	usedMarkers: ReadonlySet<string>,
@@ -74,7 +94,7 @@ export function uniqueCodeReferenceMarker(
 	return candidate;
 }
 
-export function insertCodeReferenceMarker(
+export function insertComposerReferenceMarker(
 	text: string,
 	offset: number,
 	marker: string,
@@ -94,7 +114,7 @@ export function insertCodeReferenceMarker(
 	};
 }
 
-export function findCodeReferenceMarker(
+export function findComposerReferenceMarker(
 	text: string,
 	marker: string,
 	fromIndex = 0,
@@ -113,16 +133,16 @@ export function findCodeReferenceMarker(
 	return -1;
 }
 
-export function hasCodeReferenceMarker(text: string, marker: string): boolean {
-	return findCodeReferenceMarker(text, marker) >= 0;
+export function hasComposerReferenceMarker(text: string, marker: string): boolean {
+	return findComposerReferenceMarker(text, marker) >= 0;
 }
 
-export function removeCodeReferenceMarker(
+export function removeComposerReferenceMarker(
 	text: string,
 	marker: string,
 ): string {
 	let result = text;
-	let index = findCodeReferenceMarker(result, marker);
+	let index = findComposerReferenceMarker(result, marker);
 	while (index >= 0) {
 		let start = index;
 		let end = index + marker.length;
@@ -133,12 +153,12 @@ export function removeCodeReferenceMarker(
 		else if (start === 0 && hasTrailingSpace) end += 1;
 		else if (end === result.length && hasLeadingSpace) start -= 1;
 		result = `${result.slice(0, start)}${result.slice(end)}`;
-		index = findCodeReferenceMarker(result, marker);
+		index = findComposerReferenceMarker(result, marker);
 	}
 	return result;
 }
 
-export function expandCodeReferenceRemovalRange(
+export function expandComposerReferenceRemovalRange(
 	text: string,
 	range: { start: number; end: number },
 ): { start: number; end: number } {
@@ -151,7 +171,7 @@ export function expandCodeReferenceRemovalRange(
 	return { start, end };
 }
 
-export function removeCodeReferenceRanges(
+export function removeComposerReferenceRanges(
 	text: string,
 	ranges: Array<{ start: number; end: number }>,
 ): string {
@@ -167,9 +187,9 @@ export function removeCodeReferenceRanges(
 			range.end > result.length ||
 			range.end > nextStart
 		) {
-			throw new Error("Invalid code reference range.");
+			throw new Error("Invalid composer reference range.");
 		}
-		const removal = expandCodeReferenceRemovalRange(result, range);
+		const removal = expandComposerReferenceRemovalRange(result, range);
 		result = `${result.slice(0, removal.start)}${result.slice(removal.end)}`;
 		nextStart = removal.start;
 	}
@@ -183,37 +203,68 @@ export function serializeContextValue(value: unknown): string {
 		.replaceAll("\u2029", "\\u2029");
 }
 
-export function serializeCodeReferencePayload(
-	reference: CodeReferencePayload,
+export function serializeSelectionReferencePayload(
+	reference: SelectionReferencePayload,
 ): string {
 	return serializeContextValue(reference);
 }
 
-export function parseCodeReferencePayload(
+export function parseFileReferencePayload(
 	value: string,
-): CodeReferencePayload | undefined {
+): FileReferencePayload | undefined {
+	return parseReferencePayloadCandidate(value);
+}
+
+function parseReferencePayloadCandidate(
+	value: string,
+): ReferencePayloadCandidate | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(value);
 	} catch {
 		return undefined;
 	}
-	if (!parsed || typeof parsed !== "object") return undefined;
-	const candidate = parsed as Partial<CodeReferencePayload>;
-	if (
-		typeof candidate.path !== "string" ||
-		typeof candidate.displayPath !== "string" ||
-		typeof candidate.languageId !== "string" ||
-		typeof candidate.startLine !== "number" ||
-		!Number.isInteger(candidate.startLine) ||
-		candidate.startLine < 1 ||
-		typeof candidate.endLine !== "number" ||
-		!Number.isInteger(candidate.endLine) ||
-		candidate.endLine < candidate.startLine ||
-		typeof candidate.text !== "string" ||
-		candidate.text.length > MAX_SERIALIZED_TEXT_LENGTH
-	) {
-		return undefined;
-	}
-	return candidate as CodeReferencePayload;
+	return isReferencePayloadCandidate(parsed) ? parsed : undefined;
+}
+
+export function parseSelectionReferencePayload(
+	value: string,
+): SelectionReferencePayload | undefined {
+	const candidate = parseReferencePayloadCandidate(value);
+	return candidate && isSelectionReferencePayload(candidate)
+		? candidate
+		: undefined;
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isReferencePayloadCandidate(
+	value: unknown,
+): value is ReferencePayloadCandidate {
+	return (
+		isJsonRecord(value) &&
+		[value.path, value.displayPath, value.marker].every(
+			(field) => typeof field === "string" && field.length > 0,
+		)
+	);
+}
+
+function isSelectionReferencePayload(
+	value: ReferencePayloadCandidate,
+): value is ReferencePayloadCandidate & SelectionReferencePayload {
+	const { languageId, startLine, endLine, text } = value;
+	return (
+		typeof languageId === "string" &&
+		isPositiveInteger(startLine) &&
+		isPositiveInteger(endLine) &&
+		endLine >= startLine &&
+		typeof text === "string" &&
+		text.length <= MAX_SERIALIZED_TEXT_LENGTH
+	);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value > 0;
 }

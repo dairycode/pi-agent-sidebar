@@ -85,14 +85,26 @@ export interface AttachmentRef {
 	kind: "file" | "image";
 }
 
-export interface CodeReference {
+interface ComposerReferenceBase {
 	id: string;
 	revision: number;
 	marker: string;
 	displayPath: string;
+}
+
+export interface FileComposerReference extends ComposerReferenceBase {
+	kind: "file";
+}
+
+export interface SelectionComposerReference extends ComposerReferenceBase {
+	kind: "selection";
 	startLine: number;
 	endLine: number;
 }
+
+export type ComposerReference =
+	| FileComposerReference
+	| SelectionComposerReference;
 
 export interface PastedImage {
 	name: string;
@@ -131,8 +143,8 @@ export type HostToWebviewMessage =
 	| { type: "commandList"; commands: PiCommand[] }
 	| { type: "attachments"; attachments: AttachmentRef[] }
 	| {
-			type: "codeReferences";
-			references: CodeReference[];
+			type: "composerReferences";
+			references: ComposerReference[];
 			focusRequestId?: number;
 	  }
 	| {
@@ -169,10 +181,11 @@ export type WebviewToHostMessage =
 	| { type: "listSessions" }
 	| { type: "listCommands" }
 	| { type: "pickAttachments" }
+	| { type: "addResources"; actionId: string; resources: string[] }
 	| { type: "pasteImages"; actionId: string; images: PastedImage[] }
 	| { type: "removeAttachment"; id: string }
-	| { type: "removeCodeReference"; id: string; revision: number }
-	| { type: "openCodeReference"; id: string }
+	| { type: "removeComposerReference"; id: string; revision: number }
+	| { type: "openComposerReference"; id: string }
 	| { type: "openExternal"; href: string }
 	| { type: "openWorkspacePath"; path: string; line?: number }
 	| { type: "showLogs" };
@@ -182,6 +195,9 @@ const MAX_PATH_LENGTH = 32 * 1024;
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_MESSAGE_LENGTH = 1_000_000;
 const MAX_PASTED_IMAGE_DATA_LENGTH = 16 * 1024 * 1024 + 16;
+export const MAX_IMAGE_ATTACHMENT_COUNT = 4;
+export const MAX_ATTACHMENT_COUNT = 20;
+export const MAX_COMPOSER_REFERENCE_COUNT = 10;
 
 export function parseWebviewMessage(
 	value: unknown,
@@ -213,7 +229,11 @@ export function parseWebviewMessage(
 	if (type === "submit") {
 		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);
 		const text = boundedString(message.text, MAX_MESSAGE_LENGTH, true);
-		const attachmentIds = boundedStringArray(message.attachmentIds, 20, 128);
+		const attachmentIds = boundedStringArray(
+			message.attachmentIds,
+			MAX_ATTACHMENT_COUNT,
+			128,
+		);
 		const references = parseReferenceIdentities(message.references);
 		if (!actionId || text === undefined || !attachmentIds || !references)
 			return;
@@ -249,11 +269,22 @@ export function parseWebviewMessage(
 		const images = parsePastedImages(message.images);
 		return actionId && images ? { type, actionId, images } : undefined;
 	}
-	if (type === "removeAttachment" || type === "openCodeReference") {
+	if (type === "addResources") {
+		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);
+		const resources = boundedStringArray(
+			message.resources,
+			MAX_COMPOSER_REFERENCE_COUNT,
+			MAX_PATH_LENGTH,
+		);
+		return actionId && resources && resources.length > 0
+			? { type, actionId, resources }
+			: undefined;
+	}
+	if (type === "removeAttachment" || type === "openComposerReference") {
 		const id = boundedString(message.id, 128);
 		return id ? { type, id } : undefined;
 	}
-	if (type === "removeCodeReference") {
+	if (type === "removeComposerReference") {
 		const id = boundedString(message.id, 128);
 		const revision = nonNegativeInteger(message.revision);
 		return id && revision !== undefined ? { type, id, revision } : undefined;
@@ -281,7 +312,11 @@ function parseReferenceIdentities(value: unknown):
 			end: number;
 	  }>
 	| undefined {
-	if (!Array.isArray(value) || value.length > 10) return;
+	if (
+		!Array.isArray(value) ||
+		value.length > MAX_COMPOSER_REFERENCE_COUNT
+	)
+		return;
 	const references = [];
 	for (const item of value) {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return;
@@ -305,7 +340,12 @@ function parseReferenceIdentities(value: unknown):
 }
 
 function parsePastedImages(value: unknown): PastedImage[] | undefined {
-	if (!Array.isArray(value) || value.length === 0 || value.length > 4) return;
+	if (
+		!Array.isArray(value) ||
+		value.length === 0 ||
+		value.length > MAX_IMAGE_ATTACHMENT_COUNT
+	)
+		return;
 	const images: PastedImage[] = [];
 	let totalDataLength = 0;
 	for (const item of value) {

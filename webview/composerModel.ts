@@ -1,45 +1,96 @@
 import {
-	expandCodeReferenceRemovalRange,
-	insertCodeReferenceMarker,
-} from "../src/codeReferences.js";
-import type { CodeReference } from "../src/shared/protocol.js";
+	expandComposerReferenceRemovalRange,
+	insertComposerReferenceMarker,
+} from "../src/composerReferences.js";
+import {
+	MAX_COMPOSER_REFERENCE_COUNT,
+	type ComposerReference,
+} from "../src/shared/protocol.js";
 
-export interface ManagedCodeReference extends CodeReference {
+export type ManagedComposerReference = ComposerReference & {
 	start: number;
 	end: number;
+};
+
+interface PersistedReferenceCandidate {
+	id?: unknown;
+	revision?: unknown;
+	marker?: unknown;
+	displayPath?: unknown;
+	kind?: unknown;
+	startLine?: unknown;
+	endLine?: unknown;
+	start?: unknown;
+	end?: unknown;
 }
 
 export interface ComposerEditResult {
-	references: ManagedCodeReference[];
-	removed: ManagedCodeReference[];
+	references: ManagedComposerReference[];
+	removed: ManagedComposerReference[];
 }
 
 export function parsePersistedReferences(
 	value: unknown,
 	text: string,
-): ManagedCodeReference[] {
-	if (!Array.isArray(value) || value.length > 10) return [];
-	const references: ManagedCodeReference[] = [];
+): ManagedComposerReference[] {
+	if (
+		!Array.isArray(value) ||
+		value.length > MAX_COMPOSER_REFERENCE_COUNT
+	)
+		return [];
+	const references: ManagedComposerReference[] = [];
 	const seen = new Set<string>();
 	for (const item of value) {
 		if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-		const candidate = item as Partial<ManagedCodeReference>;
+		const candidate = item as PersistedReferenceCandidate;
 		if (
 			typeof candidate.id !== "string" ||
 			candidate.id.length === 0 ||
 			typeof candidate.revision !== "number" ||
 			!Number.isSafeInteger(candidate.revision) ||
+			candidate.revision < 0 ||
 			typeof candidate.marker !== "string" ||
 			candidate.marker.length === 0 ||
 			typeof candidate.displayPath !== "string" ||
-			typeof candidate.startLine !== "number" ||
-			typeof candidate.endLine !== "number" ||
+			(candidate.kind !== "file" && candidate.kind !== "selection") ||
 			typeof candidate.start !== "number" ||
 			typeof candidate.end !== "number"
 		) {
 			return [];
 		}
-		const reference = candidate as ManagedCodeReference;
+		let reference: ManagedComposerReference;
+		if (candidate.kind === "file") {
+			reference = {
+				kind: "file",
+				id: candidate.id,
+				revision: candidate.revision,
+				marker: candidate.marker,
+				displayPath: candidate.displayPath,
+				start: candidate.start,
+				end: candidate.end,
+			};
+		} else {
+			if (
+				typeof candidate.startLine !== "number" ||
+				!Number.isSafeInteger(candidate.startLine) ||
+				candidate.startLine < 1 ||
+				typeof candidate.endLine !== "number" ||
+				!Number.isSafeInteger(candidate.endLine) ||
+				candidate.endLine < candidate.startLine
+			)
+				return [];
+			reference = {
+				kind: "selection",
+				id: candidate.id,
+				revision: candidate.revision,
+				marker: candidate.marker,
+				displayPath: candidate.displayPath,
+				startLine: candidate.startLine,
+				endLine: candidate.endLine,
+				start: candidate.start,
+				end: candidate.end,
+			};
+		}
 		const key = `${reference.id}:${reference.revision}`;
 		if (seen.has(key) || !isManagedReferenceValid(text, reference)) return [];
 		seen.add(key);
@@ -50,7 +101,7 @@ export function parsePersistedReferences(
 
 export function isManagedReferenceValid(
 	text: string,
-	reference: ManagedCodeReference,
+	reference: ManagedComposerReference,
 ): boolean {
 	return (
 		Number.isInteger(reference.start) &&
@@ -65,7 +116,7 @@ export function isManagedReferenceValid(
 export function reconcileComposerEdit(
 	previousText: string,
 	nextText: string,
-	references: ManagedCodeReference[],
+	references: ManagedComposerReference[],
 ): ComposerEditResult {
 	if (previousText === nextText) return { references, removed: [] };
 
@@ -92,8 +143,8 @@ export function reconcileComposerEdit(
 	const newEnd = nextText.length - suffixLength;
 	const delta = newEnd - oldEnd;
 	const insertion = oldEnd === prefixLength;
-	const kept: ManagedCodeReference[] = [];
-	const removed: ManagedCodeReference[] = [];
+	const kept: ManagedComposerReference[] = [];
+	const removed: ManagedComposerReference[] = [];
 
 	for (const reference of references) {
 		let adjusted = reference;
@@ -129,9 +180,9 @@ export function reconcileComposerEdit(
 export function insertManagedReference(
 	text: string,
 	caret: number,
-	reference: CodeReference,
-	references: ManagedCodeReference[],
-): { text: string; caret: number; references: ManagedCodeReference[] } {
+	reference: ComposerReference,
+	references: ManagedComposerReference[],
+): { text: string; caret: number; references: ManagedComposerReference[] } {
 	let insertionOffset = Math.max(0, Math.min(caret, text.length));
 	for (const existing of references) {
 		if (insertionOffset > existing.start && insertionOffset <= existing.end) {
@@ -139,7 +190,7 @@ export function insertManagedReference(
 			break;
 		}
 	}
-	const insertion = insertCodeReferenceMarker(
+	const insertion = insertComposerReferenceMarker(
 		text,
 		insertionOffset,
 		reference.marker,
@@ -161,9 +212,9 @@ export function insertManagedReference(
 
 export function removeManagedReferences(
 	text: string,
-	references: ManagedCodeReference[],
+	references: ManagedComposerReference[],
 	identities: Array<{ id: string; revision: number }>,
-): { text: string; references: ManagedCodeReference[] } {
+): { text: string; references: ManagedComposerReference[] } {
 	const removedKeys = new Set(
 		identities.map((identity) => `${identity.id}:${identity.revision}`),
 	);
@@ -175,7 +226,7 @@ export function removeManagedReferences(
 	let currentText = text;
 	let currentReferences = references;
 	for (const target of targets) {
-		const removal = expandCodeReferenceRemovalRange(currentText, target);
+		const removal = expandComposerReferenceRemovalRange(currentText, target);
 		const delta = removal.start - removal.end;
 		currentReferences = currentReferences.flatMap((reference) => {
 			if (
@@ -202,9 +253,9 @@ export function removeManagedReferences(
 }
 
 export function referenceAtOffset(
-	references: ManagedCodeReference[],
+	references: ManagedComposerReference[],
 	offset: number,
-): ManagedCodeReference | undefined {
+): ManagedComposerReference | undefined {
 	return references.find(
 		(reference) => offset >= reference.start && offset <= reference.end,
 	);

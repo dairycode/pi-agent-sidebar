@@ -37,6 +37,7 @@
     "onCommand:piAgentSidebar.refactorSelection",
     "onCommand:piAgentSidebar.generateTests",
     "onCommand:piAgentSidebar.explainDiagnostics",
+    "onCommand:piAgentSidebar.addFilesToInput",
     "onCommand:piAgentSidebar.renameSession",
     "onCommand:piAgentSidebar.exportHtml"
   ],
@@ -104,6 +105,10 @@
       {
         "command": "piAgentSidebar.explainDiagnostics",
         "title": "Pi Agent: Explain Problems in Selection"
+      },
+      {
+        "command": "piAgentSidebar.addFilesToInput",
+        "title": "Pi Agent: Add Files to Input"
       }
     ],
     "submenus": [
@@ -120,7 +125,25 @@
           "group": "navigation@100"
         }
       ],
+      "explorer/context": [
+        {
+          "command": "piAgentSidebar.addFilesToInput",
+          "when": "!explorerResourceIsFolder && (resourceScheme == file || resourceScheme == vscode-remote)",
+          "group": "navigation@100"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "piAgentSidebar.addFilesToInput",
+          "when": "false"
+        }
+      ],
       "piAgentSidebar.editorContext": [
+        {
+          "command": "piAgentSidebar.focusInput",
+          "when": "editorHasSelection",
+          "group": "1_ask@0"
+        },
         {
           "command": "piAgentSidebar.explainSelection",
           "when": "editorHasSelection",

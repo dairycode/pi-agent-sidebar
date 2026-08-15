@@ -15,6 +15,7 @@ const expectedCommands = [
 	"piAgentSidebar.refactorSelection",
 	"piAgentSidebar.generateTests",
 	"piAgentSidebar.explainDiagnostics",
+	"piAgentSidebar.addFilesToInput",
 ];
 
 test("manifest preserves public command IDs and selection keybindings", async () => {
@@ -32,12 +33,30 @@ test("manifest preserves public command IDs and selection keybindings", async ()
 		mac: "cmd+escape",
 		when: "editorTextFocus",
 	});
+	assert.deepEqual(manifest.contributes.menus["explorer/context"], [
+		{
+			command: "piAgentSidebar.addFilesToInput",
+			when: "!explorerResourceIsFolder && (resourceScheme == file || resourceScheme == vscode-remote)",
+			group: "navigation@100",
+		},
+	]);
+	assert.deepEqual(manifest.contributes.menus.commandPalette, [
+		{ command: "piAgentSidebar.addFilesToInput", when: "false" },
+	]);
+	assert.deepEqual(
+		manifest.contributes.menus["piAgentSidebar.editorContext"][0],
+		{
+			command: "piAgentSidebar.focusInput",
+			when: "editorHasSelection",
+			group: "1_ask@0",
+		},
+	);
 });
 
-test("inline code references use font color without decoration", async () => {
+test("inline composer references use font color without decoration", async () => {
 	const css = await readFile("media/main.css", "utf8");
-	const match = css.match(/\.code-reference-highlight\s*\{([^}]+)\}/u);
-	assert.ok(match, "code-reference-highlight rule is missing");
+	const match = css.match(/\.composer-reference-highlight\s*\{([^}]+)\}/u);
+	assert.ok(match, "composer-reference-highlight rule is missing");
 	const rule = match[1];
 	assert.match(rule, /color:\s*var\(--vscode-textLink-foreground/iu);
 	assert.match(rule, /background:\s*transparent/iu);

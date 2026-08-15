@@ -8,14 +8,14 @@ import { build } from "esbuild";
 
 const root = process.cwd();
 
-async function loadCodeReferences() {
+async function loadComposerReferences() {
 	const temporaryDirectory = await mkdtemp(
-		path.join(os.tmpdir(), "pi-agent-code-reference-test-"),
+		path.join(os.tmpdir(), "pi-agent-composer-reference-test-"),
 	);
-	const output = path.join(temporaryDirectory, "bundle", "code-references.mjs");
+	const output = path.join(temporaryDirectory, "bundle", "composer-references.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "codeReferences.ts")],
+		entryPoints: [path.join(root, "src", "composerReferences.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",
@@ -29,8 +29,8 @@ async function loadCodeReferences() {
 	};
 }
 
-test("code reference ranges use inclusive display lines", async () => {
-	const loaded = await loadCodeReferences();
+test("composer references format file and selection markers", async () => {
+	const loaded = await loadComposerReferences();
 	try {
 		assert.deepEqual(loaded.module.selectedLineRange(4, 5, 0), {
 			startLine: 5,
@@ -41,15 +41,31 @@ test("code reference ranges use inclusive display lines", async () => {
 			endLine: 6,
 		});
 		assert.equal(
-			loaded.module.formatCodeReferenceLocation("src/example.ts", 5, 5),
+			loaded.module.formatComposerReferenceLocation({
+				kind: "selection",
+				displayPath: "src/example.ts",
+				startLine: 5,
+				endLine: 5,
+			}),
 			"src/example.ts:5",
 		);
 		assert.equal(
-			loaded.module.formatCodeReferenceMarker("src/example.ts", 5, 7),
+			loaded.module.formatComposerReferenceLocation({
+				kind: "file",
+				displayPath: "src/example.ts",
+			}),
+			"src/example.ts",
+		);
+		assert.equal(
+			loaded.module.formatFileReferenceMarker("src/example.ts"),
+			"@src/example.ts",
+		);
+		assert.equal(
+			loaded.module.formatSelectionReferenceMarker("src/example.ts", 5, 7),
 			"@src/example.ts#5-7",
 		);
 		assert.equal(
-			loaded.module.uniqueCodeReferenceMarker(
+			loaded.module.uniqueComposerReferenceMarker(
 				"@src/example.ts#5",
 				"abcdef12-3456",
 				new Set(["@src/example.ts#5"]),
@@ -63,12 +79,12 @@ test("code reference ranges use inclusive display lines", async () => {
 	}
 });
 
-test("code reference markers preserve and clean up composer text", async () => {
-	const loaded = await loadCodeReferences();
+test("composer reference markers preserve and clean up composer text", async () => {
+	const loaded = await loadComposerReferences();
 	try {
 		const marker = "@package.json#47-49";
 		assert.deepEqual(
-			loaded.module.insertCodeReferenceMarker("selected", 0, marker),
+			loaded.module.insertComposerReferenceMarker("selected", 0, marker),
 			{
 				text: `${marker} selected`,
 				caret: marker.length + 1,
@@ -77,7 +93,7 @@ test("code reference markers preserve and clean up composer text", async () => {
 			},
 		);
 		assert.deepEqual(
-			loaded.module.insertCodeReferenceMarker("explain this", 7, marker),
+			loaded.module.insertComposerReferenceMarker("explain this", 7, marker),
 			{
 				text: `explain ${marker} this`,
 				caret: 8 + marker.length,
@@ -86,7 +102,7 @@ test("code reference markers preserve and clean up composer text", async () => {
 			},
 		);
 		assert.equal(
-			loaded.module.removeCodeReferenceMarker(
+			loaded.module.removeComposerReferenceMarker(
 				`${marker} explain ${marker} please`,
 				marker,
 			),
@@ -94,26 +110,26 @@ test("code reference markers preserve and clean up composer text", async () => {
 		);
 		const shortMarker = "@foo.ts#1";
 		assert.equal(
-			loaded.module.findCodeReferenceMarker("@foo.ts#10", shortMarker),
+			loaded.module.findComposerReferenceMarker("@foo.ts#10", shortMarker),
 			-1,
 		);
 		assert.equal(
-			loaded.module.hasCodeReferenceMarker("@foo.ts#1-2", shortMarker),
+			loaded.module.hasComposerReferenceMarker("@foo.ts#1-2", shortMarker),
 			false,
 		);
 		assert.equal(
-			loaded.module.removeCodeReferenceMarker("@foo.ts#10", shortMarker),
+			loaded.module.removeComposerReferenceMarker("@foo.ts#10", shortMarker),
 			"@foo.ts#10",
 		);
 		assert.equal(
-			loaded.module.findCodeReferenceMarker(
+			loaded.module.findComposerReferenceMarker(
 				`before ${shortMarker} after`,
 				shortMarker,
 			),
 			7,
 		);
 		assert.equal(
-			loaded.module.removeCodeReferenceRanges(
+			loaded.module.removeComposerReferenceRanges(
 				`literal ${marker} managed ${marker} tail`,
 				[{ start: 8, end: 8 + marker.length }],
 			),
@@ -124,28 +140,44 @@ test("code reference markers preserve and clean up composer text", async () => {
 	}
 });
 
-test("code reference payloads safely round-trip selected source", async () => {
-	const loaded = await loadCodeReferences();
+test("composer reference payloads safely round-trip context", async () => {
+	const loaded = await loadComposerReferences();
 	try {
 		const reference = {
 			path: "/workspace/src/example.ts",
 			displayPath: "src/example.ts",
+			marker: "@src/example.ts#9-10",
 			languageId: "typescript",
 			startLine: 9,
 			endLine: 10,
 			text: "const marker = '</pi-context>';\nconsole.log(marker);\u2028\u2029",
 		};
-		const serialized = loaded.module.serializeCodeReferencePayload(reference);
+		const serialized = loaded.module.serializeSelectionReferencePayload(reference);
 		assert.equal(serialized.includes("</pi-context>"), false);
 		assert.equal(serialized.includes("\u2028"), false);
 		assert.equal(serialized.includes("\u2029"), false);
 		assert.deepEqual(
-			loaded.module.parseCodeReferencePayload(serialized),
+			loaded.module.parseSelectionReferencePayload(serialized),
 			reference,
 		);
 		assert.equal(
-			loaded.module.parseCodeReferencePayload('{"startLine": 0}'),
+			loaded.module.parseSelectionReferencePayload('{"startLine": 0}'),
 			undefined,
+		);
+		assert.equal(
+			loaded.module.parseSelectionReferencePayload(
+				JSON.stringify({ ...reference, path: "" }),
+			),
+			undefined,
+		);
+		const file = {
+			path: "/workspace/src/example.ts",
+			displayPath: "src/example.ts",
+			marker: "@src/example.ts",
+		};
+		assert.deepEqual(
+			loaded.module.parseFileReferencePayload(JSON.stringify(file)),
+			file,
 		);
 	} finally {
 		await loaded.dispose();

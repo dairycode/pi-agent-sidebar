@@ -6,8 +6,6 @@ import { AsyncQueue } from "./asyncQueue.js";
 import {
 	AttachmentStore,
 	imageMimeTypeFromPath,
-	MAX_TOTAL_IMAGE_BYTES,
-	type ResolvedAttachment,
 } from "./attachmentStore.js";
 import { probePiBinary } from "./binaryProbe.js";
 import {
@@ -15,14 +13,13 @@ import {
 	formatSelectionReferenceMarker,
 	nearestOffset,
 	selectedLineRange,
-	serializeSelectionReferencePayload,
-	serializeContextValue,
 	shouldSnapshotFileReference,
 	uniqueComposerReferenceMarker,
 	type FileReferencePayload,
 	type SelectionReferencePayload,
 } from "./composerReferences.js";
 import { PiRpcClient } from "./piRpcClient.js";
+import { buildPrompt } from "./promptBuilder.js";
 import {
 	parseCommandsResponse,
 	parseMessagesResponse,
@@ -724,7 +721,12 @@ export class PiViewProvider
 			text,
 		);
 		const client = await this.ensureClient();
-		const prompt = await this.buildPrompt(text, attachments, references);
+		const prompt = await buildPrompt(
+			text,
+			attachments,
+			references.map(({ reference }) => reference),
+			this.attachmentStore,
+		);
 		if (!prompt.message.trim() && prompt.images.length === 0)
 			throw new Error("Enter a message or attach context.");
 		await client.request({
@@ -1652,105 +1654,6 @@ export class PiViewProvider
 			type: "attachments",
 			attachments: this.attachmentStore.list(),
 		});
-	}
-
-	private async buildPrompt(
-		text: string,
-		attachments: ResolvedAttachment[],
-		references: SubmittedComposerReference[],
-	): Promise<{
-		message: string;
-		images: Array<{ type: "image"; data: string; mimeType: string }>;
-	}> {
-		if (typeof text !== "string" || text.length > 1_000_000) {
-			throw new Error("Message is too large.");
-		}
-
-		const files: string[] = [];
-		const images: Array<{ type: "image"; data: string; mimeType: string }> = [];
-		let totalImageBytes = 0;
-		for (const attachment of attachments) {
-			if (attachment.summary.kind === "file") {
-				await this.attachmentStore.validateRegularFile(attachment);
-				files.push(attachment.filePath);
-				continue;
-			}
-			const image = await this.attachmentStore.readImage(attachment);
-			totalImageBytes += image.data.byteLength;
-			if (totalImageBytes > MAX_TOTAL_IMAGE_BYTES) {
-				throw new Error("Attached images exceed the 12 MB total limit.");
-			}
-			images.push({
-				type: "image",
-				data: image.data.toString("base64"),
-				mimeType: image.mimeType,
-			});
-		}
-
-		const fileReferences = references.filter(
-			(
-				submitted,
-			): submitted is SubmittedComposerReference & {
-				reference: CapturedFileReference;
-			} => !isCapturedSelectionReference(submitted.reference),
-		);
-		const selectionReferences = references.filter(
-			(
-				submitted,
-			): submitted is SubmittedComposerReference & {
-				reference: CapturedSelectionReference;
-			} => isCapturedSelectionReference(submitted.reference),
-		);
-		const contextLines = [
-			...files.map((file) => `- file: ${serializeContextValue(file)}`),
-			...fileReferences.map(
-				({ reference }) =>
-					`- file: ${serializeContextValue(reference.payload)}`,
-			),
-			...selectionReferences.map(
-				({ reference }) =>
-					`- selection: ${serializeSelectionReferencePayload(reference.payload)}`,
-			),
-			...selectionReferences.flatMap(({ reference }) =>
-				reference.diagnostics.length > 0
-					? [
-							`- diagnostics: ${serializeContextValue({
-								path: reference.payload.displayPath,
-								items: reference.diagnostics,
-							})}`,
-						]
-					: [],
-			),
-			...selectionReferences.flatMap(({ reference }) =>
-				reference.symbol
-					? [
-							`- symbol: ${serializeContextValue({
-								path: reference.payload.displayPath,
-								name: reference.symbol,
-							})}`,
-						]
-					: [],
-			),
-		];
-		const contextBlock =
-			contextLines.length > 0
-				? `<pi-context>\n${contextLines.join("\n")}\n</pi-context>\n\n`
-				: "";
-		// Keep the reference markers in place so their position in the sentence
-		// is preserved for pi and for the rendered message bubble. The
-		// structured <pi-context> block carries the full selection data.
-		let promptText = text;
-		if (!promptText.trim()) {
-			if (files.length > 0) promptText = "Inspect the attached file.";
-			else if (fileReferences.length > 0)
-				promptText = "Inspect the referenced file.";
-			else if (selectionReferences.length > 0)
-				promptText = "Inspect the selected code.";
-			else if (images.length > 0) promptText = "Inspect the attached image.";
-		}
-		const message = `${contextBlock}${promptText}`;
-		if (message.length > 1_000_000) throw new Error("Message is too large.");
-		return { message, images };
 	}
 
 	private async selectWorkspaceFolder(): Promise<

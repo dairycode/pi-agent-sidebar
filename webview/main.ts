@@ -1,10 +1,5 @@
 import DOMPurify from "dompurify";
-import { marked } from "marked";
-import {
-	formatComposerReferenceLocation,
-	parseFileReferencePayload,
-	parseSelectionReferencePayload,
-} from "../src/composerReferences.js";
+import { formatComposerReferenceLocation } from "../src/composerReferences.js";
 import {
 	insertManagedReference,
 	isManagedReferenceValid,
@@ -15,6 +10,12 @@ import {
 	type ManagedComposerReference,
 } from "./composerModel.js";
 import { applyAssistantMessageDelta } from "./streaming.js";
+import {
+	contentText,
+	extractResultDiff,
+	friendlyToolName,
+	messageHtml,
+} from "./transcript.js";
 import {
 	containsDroppedResources,
 	extractDroppedResources,
@@ -27,7 +28,6 @@ import {
 	type HostToWebviewMessage,
 	type JsonRecord,
 	type PiCommand,
-	type PiContentBlock,
 	type PiMessage,
 	type PiModel,
 	type PastedImage,
@@ -93,7 +93,6 @@ interface UiState {
 }
 
 const vscode = acquireVsCodeApi<PersistedState>();
-marked.setOptions({ gfm: true, breaks: true });
 
 const ui: UiState = {
 	connection: "starting",
@@ -1101,6 +1100,7 @@ function renderMessages(): void {
 		html += messageHtml(
 			message,
 			resultMap,
+			liveTools,
 			message === ui.streamingMessage,
 			`message-${omitted + index}`,
 		);
@@ -1207,275 +1207,6 @@ function linkifyWorkspacePaths(): void {
 		if (lastIndex < text.length) fragment.append(text.slice(lastIndex));
 		textNode.parentNode?.replaceChild(fragment, textNode);
 	}
-}
-
-function messageHtml(
-	message: PiMessage,
-	results: Map<string, PiMessage>,
-	streaming: boolean,
-	messageKey: string,
-): string {
-	if (message.role === "toolResult") return "";
-	if (message.role === "user") return userMessageHtml(message);
-	if (message.role === "assistant")
-		return assistantMessageHtml(message, results, streaming, messageKey);
-	if (message.role === "bashExecution") {
-		return `<div class="message system-message">${toolDisclosureHtml(
-			"bash-execution",
-			"bash",
-			{ command: message.command },
-			undefined,
-			{
-				id: "bash-execution",
-				name: "bash",
-				args: { command: message.command },
-				status: message.exitCode === 0 ? "success" : "error",
-				output: stringValue(message.output),
-				startedAt: 0,
-			},
-		)}</div>`;
-	}
-	if (
-		message.role === "compactionSummary" ||
-		message.role === "branchSummary"
-	) {
-		return `<div class="context-divider"><i class="codicon codicon-fold"></i> Context summarized</div>`;
-	}
-	if (message.role === "custom" && message.display !== false) {
-		return `<div class="message system-message custom-message">${markdown(contentText(message.content))}</div>`;
-	}
-	return "";
-}
-
-function userMessageHtml(message: PiMessage): string {
-	const rawText = contentText(message.content);
-	const contextMatch = rawText.match(
-		/^<pi-context>\n([\s\S]*?)\n<\/pi-context>\n\n/u,
-	);
-	const context = contextMatch?.[1] ?? "";
-	const text = contextMatch ? rawText.slice(contextMatch[0].length) : rawText;
-	const markers = context
-		.split("\n")
-		.map(contextInlineMarker)
-		.filter((marker): marker is InlineMarker => Boolean(marker));
-	const bodyHtml = renderUserBodyHtml(text, markers);
-	const imageHtml = contentImages(message.content)
-		.map(
-			(image) =>
-				`<img class="message-image" src="data:${escapeHtml(image.mimeType ?? "image/png")};base64,${image.data ?? ""}" alt="Attached image">`,
-		)
-		.join("");
-	return `<article class="message user-message"><div class="user-message-text">${bodyHtml}</div>${imageHtml}</article>`;
-}
-
-function markerSpanHtml(marker: InlineMarker): string {
-	const resourceAttr = marker.resourceUri
-		? ` data-resource-uri="${escapeHtml(marker.resourceUri)}"`
-		: marker.workspacePath
-			? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"`
-			: "";
-	const lineAttr = marker.line ? ` data-workspace-line="${marker.line}"` : "";
-	return `<span class="composer-reference-highlight"${resourceAttr}${lineAttr}>${escapeHtml(marker.label)}</span>`;
-}
-
-/**
- * Render the user message body. Reference markers are kept in place within the
- * text (see buildPrompt), so locate each marker where it actually appears and
- * replace it with a highlight span. Markers not found inline are prefixed so
- * their context remains visible.
- */
-function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
-	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
-		[];
-	const leftover: InlineMarker[] = [];
-	let searchFrom = 0;
-	for (const marker of markers) {
-		const index = text.indexOf(marker.label, searchFrom);
-		if (index >= 0) {
-			inline.push({ start: index, end: index + marker.label.length, marker });
-			searchFrom = index + marker.label.length;
-		} else {
-			leftover.push(marker);
-		}
-	}
-	let body = "";
-	let cursor = 0;
-	for (const { start, end, marker } of inline) {
-		body += escapeHtml(text.slice(cursor, start));
-		body += markerSpanHtml(marker);
-		cursor = end;
-	}
-	body += escapeHtml(text.slice(cursor));
-	const prefix = leftover.map(markerSpanHtml).join(" ");
-	if (!prefix) return body;
-	return body ? `${prefix} ${body}` : prefix;
-}
-
-interface InlineMarker {
-	label: string;
-	resourceUri?: string;
-	workspacePath?: string;
-	line?: number;
-}
-
-function contextInlineMarker(line: string): InlineMarker | undefined {
-	const filePrefix = "- file: ";
-	if (line.startsWith(filePrefix)) {
-		const value = line.slice(filePrefix.length);
-		const reference = parseFileReferencePayload(value);
-		if (reference) {
-			return {
-				label: reference.marker,
-				resourceUri: reference.uri,
-				workspacePath: reference.displayPath,
-			};
-		}
-		try {
-			const filePath = JSON.parse(value) as unknown;
-			if (typeof filePath !== "string") return { label: "@file" };
-			const name = filePath.split(/[/\\]/u).pop() || filePath;
-			return { label: `@${name}` };
-		} catch {
-			return { label: "@file" };
-		}
-	}
-	// symbol/diagnostics are supplemental data for a selection; keep them in the
-	// payload sent to pi but do not render an inline marker.
-	if (line.startsWith("- symbol: ") || line.startsWith("- diagnostics: ")) {
-		return undefined;
-	}
-	const selectionPrefix = "- selection: ";
-	if (!line.startsWith(selectionPrefix)) return undefined;
-	const reference = parseSelectionReferencePayload(
-		line.slice(selectionPrefix.length),
-	);
-	if (!reference) return undefined;
-	return {
-		label: reference.marker,
-		resourceUri: reference.uri,
-		workspacePath: reference.displayPath,
-		line: reference.startLine,
-	};
-}
-
-function assistantMessageHtml(
-	message: PiMessage,
-	results: Map<string, PiMessage>,
-	streaming: boolean,
-	messageKey: string,
-): string {
-	const blocks = Array.isArray(message.content) ? message.content : [];
-	const sections: string[] = [];
-	let activity: string[] = [];
-	let thinkingIndex = 0;
-	const isActivityBlock = (type: string | undefined): boolean =>
-		type === "thinking" || type === "toolCall";
-	const startsWithActivity = isActivityBlock(blocks[0]?.type);
-	const endsWithActivity = isActivityBlock(blocks.at(-1)?.type);
-	const flushActivity = (): void => {
-		if (activity.length === 0) return;
-		sections.push(`<div class="activity-timeline">${activity.join("")}</div>`);
-		activity = [];
-	};
-
-	for (const block of blocks) {
-		if (block.type === "text") {
-			flushActivity();
-			sections.push(
-				`<div class="assistant-text">${markdown(block.text ?? "")}</div>`,
-			);
-		}
-		if (block.type === "thinking") {
-			const thinkingKey = `${messageKey}-thinking-${thinkingIndex}`;
-			const streamingState = streaming ? " streaming" : "";
-			const openState = streaming ? " open" : "";
-			thinkingIndex += 1;
-			activity.push(
-				`<details class="activity-item thinking-block${streamingState}" data-thinking-key="${escapeHtml(thinkingKey)}"${openState}><summary class="thinking-summary"><span class="activity-marker"><i class="codicon codicon-lightbulb" aria-hidden="true"></i></span><span class="thinking-summary-content"><span class="thinking-label">Reasoning</span><i class="codicon codicon-chevron-right thinking-chevron" aria-hidden="true"></i></span></summary><div class="thinking-content">${markdown(block.thinking ?? "")}</div></details>`,
-			);
-		}
-		if (block.type === "toolCall" && block.id && block.name) {
-			activity.push(
-				toolDisclosureHtml(
-					block.id,
-					block.name,
-					block.arguments ?? {},
-					results.get(block.id),
-					liveTools.get(block.id),
-				),
-			);
-		}
-	}
-	flushActivity();
-	if (message.errorMessage)
-		sections.push(
-			`<div class="message-error">${escapeHtml(message.errorMessage)}</div>`,
-		);
-	if (message.stopReason === "aborted")
-		sections.push('<div class="cancelled-note">Cancelled</div>');
-	const activityClasses = `${startsWithActivity ? " starts-with-activity" : ""}${endsWithActivity ? " ends-with-activity" : ""}`;
-	return `<article class="message assistant-message${activityClasses}">${sections.join("")}</article>`;
-}
-
-function toolDisclosureHtml(
-	id: string,
-	name: string,
-	args: JsonRecord,
-	result?: PiMessage,
-	live?: LiveTool,
-): string {
-	const status = resolveToolStatus(result, live);
-	const output = live?.output || (result ? contentText(result.content) : "");
-	const { label: statusLabel, icon } = toolStatusPresentation(status);
-	const target = summarizeTool(name, args);
-	const diff = live?.diff ?? (result ? extractResultDiff(result) : "");
-	const diffHtml = status === "success" && diff ? renderDiffBlock(diff) : "";
-	// For file edits the diff replaces the noisy "Successfully replaced..."
-	// output, so only show tool output when there is no diff to display.
-	const outputHtml =
-		output && !diffHtml
-			? `<div class="tool-output"><pre>${escapeHtml(truncate(output, 20_000))}</pre></div>`
-			: "";
-	return `<details class="activity-item tool-call ${status}" data-tool-key="${escapeHtml(id)}" ${status === "error" ? "open" : ""}>
-    <summary>
-      <span class="activity-marker"><i class="codicon codicon-${icon}" aria-hidden="true"></i></span>
-      <span class="tool-summary-content"><span class="tool-summary-main"><span class="tool-name">${escapeHtml(friendlyToolName(name))}</span><span class="tool-target">${escapeHtml(target)}</span></span><span class="tool-status">${statusLabel}</span></span>
-    </summary>
-    ${outputHtml}
-    ${diffHtml}
-  </details>`;
-}
-
-const MAX_DIFF_LINES = 400;
-
-/**
- * Render a diff string produced by pi (the `result.details.diff` field of a
- * file-editing tool). Each line already begins with `+`, `-`, or a leading
- * space for context; the client only classifies and colorizes it, and never
- * recomputes the diff itself.
- */
-function renderDiffBlock(diff: string): string {
-	const lines = diff.replace(/\n$/u, "").split("\n");
-	const truncated = lines.length > MAX_DIFF_LINES;
-	const shown = truncated ? lines.slice(0, MAX_DIFF_LINES) : lines;
-	const rows = shown
-		.map((line) => {
-			const marker = line.charAt(0);
-			const kind =
-				marker === "+" ? "add" : marker === "-" ? "remove" : "context";
-			return `<div class="diff-line diff-${kind}"><span class="diff-text">${escapeHtml(line) || "&nbsp;"}</span></div>`;
-		})
-		.join("");
-	const more = truncated
-		? `<div class="diff-line diff-context"><span class="diff-text">\u2026 ${lines.length - MAX_DIFF_LINES} more lines</span></div>`
-		: "";
-	return `<div class="tool-diff">${rows}${more}</div>`;
-}
-
-function extractResultDiff(result: unknown): string {
-	const record = objectValue(result);
-	const details = objectValue(record.details);
-	return stringValue(details.diff);
 }
 
 function buildToolResultMap(): Map<string, PiMessage> {
@@ -2917,32 +2648,6 @@ function connectionLabel(): string {
 	return ui.connectionDetail || "Pi is disconnected";
 }
 
-function contentText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const value of content) {
-		if (!value || typeof value !== "object") continue;
-		const block = value as PiContentBlock;
-		if (block.type === "text" && block.text) parts.push(block.text);
-	}
-	return parts.join("\n");
-}
-
-function contentImages(content: unknown): PiContentBlock[] {
-	if (!Array.isArray(content)) return [];
-	return content.filter((block): block is PiContentBlock =>
-		Boolean(block && typeof block === "object" && block.type === "image"),
-	);
-}
-
-function markdown(text: string): string {
-	return DOMPurify.sanitize(marked.parse(text) as string, {
-		USE_PROFILES: { html: true },
-		ADD_ATTR: ["target", "rel"],
-	});
-}
-
 function extractResultText(value: unknown): string {
 	const result = objectValue(value);
 	const content = result.content;
@@ -2954,49 +2659,6 @@ function extractResultText(value: unknown): string {
 		if (text) parts.push(text);
 	}
 	return parts.join("\n");
-}
-
-function summarizeTool(name: string, args: JsonRecord): string {
-	const value =
-		name === "bash"
-			? stringValue(args.command)
-			: stringValue(args.path) ||
-				stringValue(args.file_path) ||
-				stringValue(args.pattern) ||
-				stringValue(args.query);
-	return truncate(value || "", 88);
-}
-
-function resolveToolStatus(
-	result?: PiMessage,
-	live?: LiveTool,
-): LiveTool["status"] {
-	if (live) return live.status;
-	if (!result) return "running";
-	return result.isError ? "error" : "success";
-}
-
-function toolStatusPresentation(status: LiveTool["status"]): {
-	label: string;
-	icon: string;
-} {
-	if (status === "running")
-		return { label: "Running", icon: "loading codicon-modifier-spin" };
-	if (status === "error") return { label: "Failed", icon: "error" };
-	return { label: "Done", icon: "check" };
-}
-
-function friendlyToolName(name: string): string {
-	const labels: Record<string, string> = {
-		bash: "Run command",
-		read: "Read file",
-		write: "Write file",
-		edit: "Edit file",
-		grep: "Search text",
-		find: "Find files",
-		ls: "List files",
-	};
-	return labels[name] ?? name.replaceAll("_", " ");
 }
 
 function hasEquivalentTail(
@@ -3041,20 +2703,6 @@ function stringArray(value: unknown): string[] {
 	return Array.isArray(value)
 		? value.filter((item): item is string => typeof item === "string")
 		: [];
-}
-
-function escapeHtml(value: string): string {
-	return value.replace(
-		/[&<>"']/gu,
-		(character) =>
-			({
-				"&": "&amp;",
-				"<": "&lt;",
-				">": "&gt;",
-				'"': "&quot;",
-				"'": "&#39;",
-			})[character] ?? character,
-	);
 }
 
 function truncate(value: string, length: number): string {

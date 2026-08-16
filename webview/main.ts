@@ -14,6 +14,10 @@ import {
 	containsDroppedResources,
 	extractDroppedResources,
 } from "./resourceDrop.js";
+import {
+	ModalController,
+	type ConfirmDialogOptions,
+} from "./ui/modalController.js";
 import { positionPopupAbove } from "./ui/popupPosition.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
@@ -57,12 +61,7 @@ interface PendingAction {
 	referenceSnapshots?: ManagedComposerReference[];
 }
 
-interface ConfirmOptions {
-	title: string;
-	message: string;
-	confirmLabel: string;
-	onConfirm: () => void;
-	destructive?: boolean;
+interface ConfirmOptions extends ConfirmDialogOptions {
 	dismissHistory?: boolean;
 }
 
@@ -112,7 +111,6 @@ let lastAnnouncedFocusRequestId = 0;
 let lastCompletedFocusRequestId = 0;
 let renderedPromptText: string | undefined;
 let renderedPromptMarkerSignature: string | undefined;
-let modalReturnFocus: HTMLElement | null = null;
 let resourceDragDepth = 0;
 
 const MAX_SESSION_NAME_LENGTH = 200;
@@ -164,6 +162,17 @@ const elements = {
 	modalBackdrop: element<HTMLElement>("modal-backdrop"),
 };
 
+const modalController = new ModalController({
+	backdrop: elements.modalBackdrop,
+	inertRoots: [
+		elements.sessionHeader,
+		elements.historyPanel,
+		elements.transcript,
+		elements.widgetArea,
+		elements.composerShell,
+	],
+});
+
 const persisted = vscode.getState();
 if (persisted?.draft) elements.input.value = persisted.draft;
 const composerController = new ComposerController(
@@ -194,8 +203,8 @@ window.addEventListener(
 );
 
 window.addEventListener("keydown", (event) => {
-	if (!elements.modalBackdrop.hidden) {
-		handleModalKeydown(event);
+	if (modalController.isOpen) {
+		modalController.handleKeydown(event);
 		return;
 	}
 	if (event.key !== "Escape") return;
@@ -230,7 +239,7 @@ window.addEventListener("pointerdown", (event) => {
 		dismissCommandPalette();
 	}
 	if (
-		!elements.modalBackdrop.hidden ||
+		modalController.isOpen ||
 		elements.historyPanel.hidden ||
 		elements.historyPanel.contains(event.target) ||
 		elements.historyButton.contains(event.target)
@@ -506,10 +515,6 @@ elements.selectPopup.addEventListener("keydown", (event) => {
 
 window.addEventListener("resize", () => {
 	if (activeSelect) positionSelectPopup(selectTrigger(activeSelect));
-});
-
-elements.modalBackdrop.addEventListener("click", (event) => {
-	if (event.target === elements.modalBackdrop) closeModal();
 });
 
 elements.messages.addEventListener("click", (event) => {
@@ -2023,49 +2028,13 @@ function post(message: WebviewToHostMessage): void {
 
 function openConfirm(options: ConfirmOptions): void {
 	if (options.dismissHistory) dismissHistory();
-	elements.modalBackdrop.replaceChildren();
-	const dialog = document.createElement("section");
-	dialog.className = "modal";
-	dialog.setAttribute("role", "dialog");
-	dialog.setAttribute("aria-modal", "true");
-	dialog.setAttribute("aria-label", options.title);
-	const heading = document.createElement("h2");
-	heading.textContent = options.title;
-	const detail = document.createElement("p");
-	detail.textContent = options.message;
-	const actions = document.createElement("div");
-	actions.className = "modal-actions";
-	const cancel = document.createElement("button");
-	cancel.type = "button";
-	cancel.className = "secondary-button";
-	cancel.textContent = "Cancel";
-	cancel.addEventListener("click", closeModal);
-	const confirm = document.createElement("button");
-	confirm.type = "button";
-	confirm.className = options.destructive ? "danger-button" : "primary-button";
-	confirm.textContent = options.confirmLabel;
-	confirm.addEventListener("click", () => {
-		closeModal();
-		options.onConfirm();
+	modalController.openConfirm({
+		title: options.title,
+		message: options.message,
+		confirmLabel: options.confirmLabel,
+		destructive: options.destructive,
+		onConfirm: options.onConfirm,
 	});
-	actions.append(cancel, confirm);
-	dialog.append(heading, detail, actions);
-	modalReturnFocus =
-		document.activeElement instanceof HTMLElement
-			? document.activeElement
-			: null;
-	elements.modalBackdrop.append(dialog);
-	elements.modalBackdrop.hidden = false;
-	setBackgroundInert(true);
-	cancel.focus();
-}
-
-function closeModal(): void {
-	elements.modalBackdrop.hidden = true;
-	elements.modalBackdrop.replaceChildren();
-	setBackgroundInert(false);
-	modalReturnFocus?.focus();
-	modalReturnFocus = null;
 }
 
 /**
@@ -2075,91 +2044,14 @@ function closeModal(): void {
  * editing target.
  */
 function openRenamePrompt(): void {
-	const dialog = document.createElement("section");
-	dialog.className = "modal";
-	dialog.setAttribute("role", "dialog");
-	dialog.setAttribute("aria-modal", "true");
-	dialog.setAttribute("aria-label", "Rename session");
-	const heading = document.createElement("h2");
-	heading.textContent = "Rename session";
-	const input = document.createElement("input");
-	input.type = "text";
-	input.className = "modal-input";
-	input.maxLength = MAX_SESSION_NAME_LENGTH;
-	input.value = ui.state.sessionName ?? "";
-	input.setAttribute("aria-label", "Session name");
-	input.setAttribute("autocomplete", "off");
-	const actions = document.createElement("div");
-	actions.className = "modal-actions";
-	const cancel = document.createElement("button");
-	cancel.type = "button";
-	cancel.className = "secondary-button";
-	cancel.textContent = "Cancel";
-	cancel.addEventListener("click", closeModal);
-	const confirm = document.createElement("button");
-	confirm.type = "button";
-	confirm.className = "primary-button";
-	confirm.textContent = "Rename";
-	const submit = () => {
-		const name = input.value.trim();
-		if (!name || confirm.disabled) return;
-		closeModal();
-		runAction("renameSession", { name });
-	};
-	const updateConfirm = () => {
-		confirm.disabled = input.value.trim().length === 0;
-	};
-	confirm.addEventListener("click", submit);
-	input.addEventListener("input", updateConfirm);
-	input.addEventListener("keydown", (event) => {
-		if (event.key === "Enter") submit();
+	modalController.openTextPrompt({
+		title: "Rename session",
+		label: "Session name",
+		initialValue: ui.state.sessionName ?? "",
+		confirmLabel: "Rename",
+		maxLength: MAX_SESSION_NAME_LENGTH,
+		onSubmit: (name) => runAction("renameSession", { name }),
 	});
-	updateConfirm();
-	actions.append(cancel, confirm);
-	dialog.append(heading, input, actions);
-	modalReturnFocus =
-		document.activeElement instanceof HTMLElement
-			? document.activeElement
-			: null;
-	elements.modalBackdrop.replaceChildren();
-	elements.modalBackdrop.append(dialog);
-	elements.modalBackdrop.hidden = false;
-	setBackgroundInert(true);
-	input.focus();
-	input.select();
-}
-
-function handleModalKeydown(event: KeyboardEvent): void {
-	if (event.key === "Escape") {
-		event.preventDefault();
-		closeModal();
-		return;
-	}
-	if (event.key !== "Tab") return;
-	const focusable = [
-		...elements.modalBackdrop.querySelectorAll<HTMLElement>(
-			"button, [href], input, textarea, select, [tabindex]:not([tabindex='-1'])",
-		),
-	].filter((item) => !item.hasAttribute("disabled"));
-	if (focusable.length === 0) return;
-	const first = focusable[0];
-	const last = focusable.at(-1);
-	if (!first || !last) return;
-	if (event.shiftKey && document.activeElement === first) {
-		event.preventDefault();
-		last.focus();
-	} else if (!event.shiftKey && document.activeElement === last) {
-		event.preventDefault();
-		first.focus();
-	}
-}
-
-function setBackgroundInert(inert: boolean): void {
-	elements.sessionHeader.inert = inert;
-	elements.historyPanel.inert = inert;
-	elements.transcript.inert = inert;
-	elements.widgetArea.inert = inert;
-	elements.composerShell.inert = inert;
 }
 
 function announce(message: string): void {

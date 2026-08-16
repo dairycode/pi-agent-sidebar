@@ -19,6 +19,7 @@ import {
 	type ConfirmDialogOptions,
 } from "./ui/modalController.js";
 import { positionPopupAbove } from "./ui/popupPosition.js";
+import { SelectController } from "./ui/selectController.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	type AttachmentRef,
@@ -173,6 +174,42 @@ const modalController = new ModalController({
 	],
 });
 
+const selectorController = new SelectController({
+	popup: elements.selectPopup,
+	triggers: {
+		model: elements.modelSelect,
+		thinking: elements.thinkingSelect,
+	},
+	getOptions: (kind) =>
+		kind === "thinking"
+			? ui.thinkingLevels.map((level) => ({ value: level, label: level }))
+			: ui.models.map((model) => ({
+					value: `${model.provider}/${model.id}`,
+					label: model.name || model.id,
+				})),
+	getSelectedValue: (kind) => {
+		if (kind === "thinking") return ui.state.thinkingLevel ?? "";
+		return ui.state.model
+			? `${ui.state.model.provider}/${ui.state.model.id}`
+			: "";
+	},
+	onCommit: (kind, value) => {
+		if (kind === "thinking") {
+			runAction("setThinking", { level: value });
+			return;
+		}
+		const [provider, ...idParts] = value.split("/");
+		const modelId = idParts.join("/");
+		if (provider && modelId) runAction("setModel", { provider, modelId });
+	},
+	beforeOpen: () => {
+		dismissHistory();
+		dismissCommandPalette();
+	},
+	position: (trigger, popup) =>
+		positionPopupAbove({ container: elements.app, popup, anchor: trigger }),
+});
+
 const persisted = vscode.getState();
 if (persisted?.draft) elements.input.value = persisted.draft;
 const composerController = new ComposerController(
@@ -208,8 +245,8 @@ window.addEventListener("keydown", (event) => {
 		return;
 	}
 	if (event.key !== "Escape") return;
-	if (activeSelect) {
-		closeSelect(true);
+	if (selectorController.activeKind) {
+		selectorController.close(true);
 		return;
 	}
 	if (!elements.commandPanel.hidden) {
@@ -221,12 +258,13 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("pointerdown", (event) => {
 	if (!(event.target instanceof Node)) return;
+	const activeSelect = selectorController.activeKind;
 	if (
 		activeSelect &&
 		!elements.selectPopup.contains(event.target) &&
-		!selectTrigger(activeSelect).contains(event.target)
+		!selectorController.trigger(activeSelect).contains(event.target)
 	) {
-		closeSelect(false);
+		selectorController.close(false);
 	}
 	if (
 		!elements.commandPanel.hidden &&
@@ -252,7 +290,7 @@ window.addEventListener("pointerdown", (event) => {
 // when focus moves to the editor or another VS Code surface, without restoring
 // focus to their triggers and pulling it back into the sidebar.
 window.addEventListener("blur", () => {
-	if (activeSelect) closeSelect(false);
+	if (selectorController.activeKind) selectorController.close(false);
 	if (!elements.commandPanel.hidden) dismissCommandPalette();
 	if (!elements.historyPanel.hidden) dismissHistory();
 });
@@ -296,7 +334,7 @@ promptHighlightResizeObserver.observe(elements.input);
 // change, so the label stages have to be re-measured here as well as in render().
 const composerToolsResizeObserver = new ResizeObserver(() => {
 	reflowComposerTools();
-	if (activeSelect) positionSelectPopup(selectTrigger(activeSelect));
+	selectorController.reposition();
 	if (!elements.commandPanel.hidden) positionCommandPanel();
 });
 composerToolsResizeObserver.observe(elements.composerTools);
@@ -465,57 +503,7 @@ elements.renameSessionButton.addEventListener("click", () =>
 	openRenamePrompt(),
 );
 
-elements.modelSelect.addEventListener("click", () => toggleSelect("model"));
-elements.thinkingSelect.addEventListener("click", () =>
-	toggleSelect("thinking"),
-);
-for (const kind of ["model", "thinking"] as const) {
-	selectTrigger(kind).addEventListener("keydown", (event) => {
-		if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-		event.preventDefault();
-		if (activeSelect !== kind) openSelect(kind);
-	});
-}
-
-elements.selectPopup.addEventListener("click", (event) => {
-	if (!activeSelect || !(event.target instanceof HTMLElement)) return;
-	const value =
-		event.target.closest<HTMLElement>(".select-option")?.dataset.value;
-	if (value !== undefined) commitSelect(activeSelect, value);
-});
-
-elements.selectPopup.addEventListener("keydown", (event) => {
-	const kind = activeSelect;
-	if (!kind) return;
-	const rows = [
-		...elements.selectPopup.querySelectorAll<HTMLElement>(".select-option"),
-	];
-	if (rows.length === 0) return;
-	const index = rows.findIndex((row) => row === document.activeElement);
-	if (event.key === "Escape" || event.key === "Tab") {
-		event.preventDefault();
-		closeSelect(true);
-		return;
-	}
-	if (event.key === "Enter" || event.key === " ") {
-		event.preventDefault();
-		const value = rows[index]?.dataset.value;
-		if (value !== undefined) commitSelect(kind, value);
-		return;
-	}
-	let next = -1;
-	if (event.key === "ArrowDown") next = Math.min(rows.length - 1, index + 1);
-	else if (event.key === "ArrowUp") next = Math.max(0, index - 1);
-	else if (event.key === "Home") next = 0;
-	else if (event.key === "End") next = rows.length - 1;
-	if (next < 0) return;
-	event.preventDefault();
-	focusSelectOption(rows[next]);
-});
-
-window.addEventListener("resize", () => {
-	if (activeSelect) positionSelectPopup(selectTrigger(activeSelect));
-});
+window.addEventListener("resize", () => selectorController.reposition());
 
 elements.messages.addEventListener("click", (event) => {
 	const target = event.target as HTMLElement;
@@ -935,7 +923,10 @@ function render(): void {
 	elements.renameSessionButton.disabled = !enabled;
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
 	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
-	if (activeSelect && selectTrigger(activeSelect).disabled) closeSelect(false);
+	const activeSelect = selectorController.activeKind;
+	if (activeSelect && selectorController.trigger(activeSelect).disabled) {
+		selectorController.close(false);
+	}
 	if (!enabled) dismissCommandPalette();
 	reflowComposerTools();
 	focusComposerIfRequested();
@@ -1290,19 +1281,8 @@ function renderSelectors(): void {
 	elements.thinkingSelectValue.textContent = ui.state.thinkingLevel || "off";
 	elements.thinkingSelect.title = ui.state.thinkingLevel || "Thinking level";
 
-	// A re-render mid-selection (streaming keeps them coming) must not rebuild the
-	// open list and drop focus; only the checkmarks are refreshed in place.
-	if (!activeSelect) return;
-	const current = selectedValue(activeSelect);
-	for (const row of elements.selectPopup.querySelectorAll<HTMLElement>(
-		".select-option",
-	)) {
-		const selected = row.dataset.value === current;
-		row.setAttribute("aria-selected", String(selected));
-		row
-			.querySelector(".select-option-check")
-			?.classList.toggle("is-hidden", !selected);
-	}
+	// Preserve focus while streaming renders update the selected value.
+	selectorController.syncSelected();
 }
 
 function renderQueue(): void {
@@ -1687,7 +1667,7 @@ function moveActiveCommand(delta: number): void {
 
 function openCommandPalette(mode: CommandPaletteMode): void {
 	if (ui.connection !== "ready") return;
-	closeSelect(false);
+	selectorController.close(false);
 	dismissHistory();
 	commandPaletteMode = mode;
 	activeCommandName = undefined;
@@ -1820,96 +1800,6 @@ function handleInlineCommandKeydown(event: KeyboardEvent): boolean {
 }
 
 /**
- * The model and thinking pickers are custom popups rather than native
- * `<select>` elements: a native dropdown's list is drawn by the OS, so it
- * cannot follow the VS Code theme or this view's styling. The popup lives under
- * `#app` because both `.composer` and `#app` clip their overflow.
- */
-type SelectKind = "model" | "thinking";
-
-let activeSelect: SelectKind | undefined;
-
-function selectTrigger(kind: SelectKind): HTMLButtonElement {
-	return kind === "model" ? elements.modelSelect : elements.thinkingSelect;
-}
-
-function selectOptions(kind: SelectKind): { value: string; label: string }[] {
-	if (kind === "thinking")
-		return ui.thinkingLevels.map((level) => ({ value: level, label: level }));
-	return ui.models.map((model) => ({
-		value: `${model.provider}/${model.id}`,
-		label: model.name || model.id,
-	}));
-}
-
-function selectedValue(kind: SelectKind): string {
-	if (kind === "thinking") return ui.state.thinkingLevel ?? "";
-	return ui.state.model
-		? `${ui.state.model.provider}/${ui.state.model.id}`
-		: "";
-}
-
-function toggleSelect(kind: SelectKind): void {
-	if (activeSelect === kind) closeSelect(true);
-	else openSelect(kind);
-}
-
-function openSelect(kind: SelectKind): void {
-	const trigger = selectTrigger(kind);
-	if (trigger.disabled) return;
-	const options = selectOptions(kind);
-	if (options.length === 0) return;
-	if (activeSelect) closeSelect(false);
-	dismissHistory();
-	dismissCommandPalette();
-	activeSelect = kind;
-
-	const current = selectedValue(kind);
-	const rows = options.map((option) => {
-		const row = document.createElement("div");
-		row.className = "select-option";
-		row.setAttribute("role", "option");
-		row.tabIndex = -1;
-		row.dataset.value = option.value;
-		const selected = option.value === current;
-		row.setAttribute("aria-selected", String(selected));
-		const check = document.createElement("i");
-		check.className = `codicon codicon-check select-option-check${
-			selected ? "" : " is-hidden"
-		}`;
-		check.setAttribute("aria-hidden", "true");
-		const label = document.createElement("span");
-		label.className = "select-option-label";
-		label.textContent = option.label;
-		row.append(check, label);
-		return row;
-	});
-
-	elements.selectPopup.replaceChildren(...rows);
-	elements.selectPopup.classList.toggle("is-thinking", kind === "thinking");
-	elements.selectPopup.hidden = false;
-	trigger.setAttribute("aria-expanded", "true");
-	positionSelectPopup(trigger);
-	focusSelectOption(
-		rows.find((row) => row.getAttribute("aria-selected") === "true") ?? rows[0],
-	);
-}
-
-function focusSelectOption(row: HTMLElement | undefined): void {
-	if (!row) return;
-	row.focus();
-	row.scrollIntoView({ block: "nearest" });
-}
-
-function positionSelectPopup(trigger: HTMLElement): void {
-	positionPopupAbove({
-		container: elements.app,
-		popup: elements.selectPopup,
-		anchor: trigger,
-	});
-}
-
-/**
  * Positions the command palette above the composer and matches its width, so the
  * list lines up with the input it writes into.
  */
@@ -1922,30 +1812,6 @@ function positionCommandPanel(): void {
 		popup: elements.commandPanel,
 		anchor: elements.composer,
 	});
-}
-
-function closeSelect(restoreFocus: boolean): void {
-	const kind = activeSelect;
-	activeSelect = undefined;
-	elements.selectPopup.hidden = true;
-	elements.selectPopup.replaceChildren();
-	if (!kind) return;
-	const trigger = selectTrigger(kind);
-	trigger.setAttribute("aria-expanded", "false");
-	if (restoreFocus) trigger.focus();
-}
-
-function commitSelect(kind: SelectKind, value: string): void {
-	const unchanged = value === selectedValue(kind);
-	closeSelect(true);
-	if (unchanged) return;
-	if (kind === "thinking") {
-		runAction("setThinking", { level: value });
-		return;
-	}
-	const [provider, ...idParts] = value.split("/");
-	const modelId = idParts.join("/");
-	if (provider && modelId) runAction("setModel", { provider, modelId });
 }
 
 function isAttachableResourceDrag(

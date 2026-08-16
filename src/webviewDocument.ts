@@ -79,7 +79,7 @@ export function createWebviewDocument(
       <div id="attachment-list" class="attachment-list" aria-label="Attachments"></div>
       <form id="composer" class="composer">
         <label class="sr-only" for="prompt-input">Message pi</label>
-        <span id="prompt-input-help" class="sr-only">File and selection references begin with an at sign. Move the caret inside one and press F12 to open its source. Hold Shift to drag files from VS Code Explorer into this input.</span>
+        <span id="prompt-input-help" class="sr-only">File and selection references begin with an at sign. Type an at sign to search workspace files, then use the arrow keys and Enter to add one. Move the caret inside a reference and press F12 to open its source. Hold Shift to drag files from VS Code Explorer into this input.</span>
         <div id="prompt-editor" class="prompt-editor">
           <div class="prompt-highlight-backdrop" aria-hidden="true"><div id="prompt-highlights" class="prompt-highlights"></div></div>
           <textarea id="prompt-input" rows="1" placeholder="Ask pi to build, fix, or explain..." aria-label="Message pi" aria-describedby="prompt-input-help"></textarea>
@@ -113,6 +113,9 @@ export function createWebviewDocument(
         <svg class="slash-icon is-search" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M11 2.59L5 13.35" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
         <input id="command-search" type="search" placeholder="Search commands..." aria-label="Search commands" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="command-list">
       </div>
+    </div>
+    <div id="mention-panel" class="command-panel mention-panel" role="region" aria-label="Workspace files" hidden>
+      <div id="mention-list" class="command-list mention-list" role="listbox" aria-label="Workspace files"></div>
     </div>
     <div id="modal-backdrop" class="modal-backdrop" hidden></div>
   </div>

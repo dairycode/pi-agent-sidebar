@@ -48,6 +48,32 @@ export interface PiCommand extends JsonRecord {
 	path?: string;
 }
 
+/**
+ * One entry offered by the `@` mention popup at the level currently browsed.
+ *
+ * The popup shows a single directory level at a time, so an entry is either a
+ * file that can be referenced or a directory the user descends into.
+ * `displayPath` is the workspace-relative path from the root, which doubles as
+ * the text the composer writes when descending.
+ *
+ * Only files carry a `uri`: a directory is never registered as a reference, it
+ * just rewrites the query.
+ */
+export interface WorkspaceFileSuggestion {
+	kind: "file";
+	displayPath: string;
+	uri: string;
+}
+
+export interface WorkspaceDirectorySuggestion {
+	kind: "directory";
+	displayPath: string;
+}
+
+export type WorkspaceEntrySuggestion =
+	| WorkspaceFileSuggestion
+	| WorkspaceDirectorySuggestion;
+
 export interface PiState extends JsonRecord {
 	model?: PiModel | null;
 	thinkingLevel?: string;
@@ -141,6 +167,12 @@ export type HostToWebviewMessage =
 	| { type: "actionResult"; actionId: string; ok: boolean; error?: string }
 	| { type: "sessionList"; sessions: SessionSummary[] }
 	| { type: "commandList"; commands: PiCommand[] }
+	| {
+			type: "workspaceFileList";
+			requestId: number;
+			query: string;
+			entries: WorkspaceEntrySuggestion[];
+	  }
 	| { type: "attachments"; attachments: AttachmentRef[] }
 	| {
 			type: "composerReferences";
@@ -180,6 +212,7 @@ export type WebviewToHostMessage =
 	| { type: "restart"; actionId: string }
 	| { type: "listSessions" }
 	| { type: "listCommands" }
+	| { type: "listWorkspaceFiles"; requestId: number; query: string }
 	| { type: "pickAttachments" }
 	| { type: "addResources"; actionId: string; resources: string[] }
 	| { type: "pasteImages"; actionId: string; images: PastedImage[] }
@@ -195,6 +228,8 @@ const MAX_ACTION_ID_LENGTH = 128;
 const MAX_PATH_LENGTH = 32 * 1024;
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_MESSAGE_LENGTH = 1_000_000;
+const MAX_MENTION_QUERY_LENGTH = 512;
+export const MAX_WORKSPACE_ENTRY_SUGGESTIONS = 200;
 const MAX_PASTED_IMAGE_DATA_LENGTH = 16 * 1024 * 1024 + 16;
 export const MAX_IMAGE_ATTACHMENT_COUNT = 4;
 export const MAX_ATTACHMENT_COUNT = 20;
@@ -222,6 +257,13 @@ export function parseWebviewMessage(
 	if (type === "composerFocused") {
 		const requestId = nonNegativeInteger(message.requestId);
 		return requestId === undefined ? undefined : { type, requestId };
+	}
+	if (type === "listWorkspaceFiles") {
+		const requestId = nonNegativeInteger(message.requestId);
+		const query = boundedString(message.query, MAX_MENTION_QUERY_LENGTH, true);
+		return requestId === undefined || query === undefined
+			? undefined
+			: { type, requestId, query };
 	}
 	if (["abort", "newSession", "compact", "restart"].includes(type)) {
 		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);

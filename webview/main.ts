@@ -3,6 +3,7 @@ import { formatComposerReferenceLocation } from "../shared/composerReferences.js
 import { handleImagePaste } from "./attachments/imagePaste.js";
 import type { ManagedComposerReference } from "./composer/model.js";
 import { ComposerController } from "./composer/controller.js";
+import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
 import {
 	contentText,
@@ -32,6 +33,7 @@ import {
 	type PiStats,
 	type SessionSummary,
 	type WebviewToHostMessage,
+	type WorkspaceFileSuggestion,
 } from "../shared/protocol.js";
 
 declare function acquireVsCodeApi<T = unknown>(): {
@@ -150,6 +152,8 @@ const elements = {
 	commandPanel: element<HTMLElement>("command-panel"),
 	commandSearch: element<HTMLInputElement>("command-search"),
 	commandList: element<HTMLElement>("command-list"),
+	mentionPanel: element<HTMLElement>("mention-panel"),
+	mentionList: element<HTMLElement>("mention-list"),
 	composerTools: element<HTMLElement>("composer-tools"),
 	modelSelect: element<HTMLButtonElement>("model-select"),
 	modelSelectValue: element<HTMLElement>("model-select-value"),
@@ -205,6 +209,7 @@ const selectorController = new SelectController({
 	beforeOpen: () => {
 		dismissHistory();
 		dismissCommandPalette();
+		mentionController.dismiss();
 	},
 	position: (trigger, popup) =>
 		positionPopupAbove({ container: elements.app, popup, anchor: trigger }),
@@ -229,6 +234,34 @@ const composerController = new ComposerController(
 	},
 	persisted?.composerReferences,
 );
+
+/**
+ * `@` mention popup for workspace files.
+ *
+ * Picking a row goes through `addResources`, the same host path the Explorer drag
+ * and drop uses, so the host stays the single owner of reference identity,
+ * revisions, and marker text. The webview only removes the typed `@query` — the
+ * marker itself arrives back as a `composerReferences` update.
+ */
+const mentionController = new MentionController({
+	panel: elements.mentionPanel,
+	list: elements.mentionList,
+	editor: elements.input,
+	requestFiles: (requestId, query) =>
+		post({ type: "listWorkspaceFiles", requestId, query }),
+	commit: (file, token) => addMentionReference(file, token),
+	navigate: (directoryPath, token) =>
+		composerController.replaceRange(
+			token.start,
+			token.end,
+			`@${directoryPath}/`,
+		),
+	announce,
+	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
+	position: positionMentionPanel,
+	isProtectedOffset: (offset) =>
+		Boolean(composerController.referenceAtOffset(offset)),
+});
 resizeInput();
 renderComposerHighlights();
 
@@ -247,6 +280,10 @@ window.addEventListener("keydown", (event) => {
 	if (event.key !== "Escape") return;
 	if (selectorController.activeKind) {
 		selectorController.close(true);
+		return;
+	}
+	if (mentionController.isOpen) {
+		mentionController.dismiss();
 		return;
 	}
 	if (!elements.commandPanel.hidden) {
@@ -277,6 +314,15 @@ window.addEventListener("pointerdown", (event) => {
 		dismissCommandPalette();
 	}
 	if (
+		mentionController.isOpen &&
+		!elements.mentionPanel.contains(event.target) &&
+		// Same reasoning as the inline palette: the composer is the mention popup's
+		// search field, so a click inside it is handled by the caret checks.
+		!elements.input.contains(event.target)
+	) {
+		mentionController.dismiss();
+	}
+	if (
 		modalController.isOpen ||
 		elements.historyPanel.hidden ||
 		elements.historyPanel.contains(event.target) ||
@@ -292,12 +338,14 @@ window.addEventListener("pointerdown", (event) => {
 window.addEventListener("blur", () => {
 	if (selectorController.activeKind) selectorController.close(false);
 	if (!elements.commandPanel.hidden) dismissCommandPalette();
+	mentionController.dismiss();
 	if (!elements.historyPanel.hidden) dismissHistory();
 });
 
 elements.input.addEventListener("input", () => {
 	composerController.handleInput();
 	syncInlineCommandPalette();
+	mentionController.sync();
 });
 
 elements.input.addEventListener("keyup", (event) => {
@@ -310,11 +358,13 @@ elements.input.addEventListener("keyup", (event) => {
 		event.key === "End"
 	) {
 		syncInlineCommandPalette();
+		mentionController.sync();
 	}
 });
 elements.input.addEventListener("pointerup", () => {
 	composerController.rememberCaret();
 	syncInlineCommandPalette();
+	mentionController.sync();
 });
 elements.input.addEventListener("select", () =>
 	composerController.rememberCaret(),
@@ -336,6 +386,7 @@ const composerToolsResizeObserver = new ResizeObserver(() => {
 	reflowComposerTools();
 	selectorController.reposition();
 	if (!elements.commandPanel.hidden) positionCommandPanel();
+	mentionController.reposition();
 });
 composerToolsResizeObserver.observe(elements.composerTools);
 
@@ -349,7 +400,10 @@ updateComposerOverlayOffset();
 
 elements.input.addEventListener("keydown", (event) => {
 	// The palette claims Enter/Tab/arrows while it is open, so this runs before
-	// the composer's own send and reference-jump handling.
+	// the composer's own send and reference-jump handling. The mention popup is
+	// checked first for the same reason; only one of the two can be open, because
+	// a `/` token and an `@` token cannot share a caret.
+	if (mentionController.handleKeydown(event)) return;
 	if (handleInlineCommandKeydown(event)) return;
 	if (event.key === "F12") {
 		const reference = composerController.referenceAtOffset(
@@ -580,6 +634,14 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 		case "commandList": {
 			ui.commands = message.commands;
 			if (!elements.commandPanel.hidden) renderCommands();
+			break;
+		}
+		case "workspaceFileList": {
+			mentionController.applyResults(
+				message.requestId,
+				message.query,
+				message.entries,
+			);
 			break;
 		}
 		case "attachments": {
@@ -927,7 +989,10 @@ function render(): void {
 	if (activeSelect && selectorController.trigger(activeSelect).disabled) {
 		selectorController.close(false);
 	}
-	if (!enabled) dismissCommandPalette();
+	if (!enabled) {
+		dismissCommandPalette();
+		mentionController.dismiss();
+	}
 	reflowComposerTools();
 	focusComposerIfRequested();
 
@@ -1669,6 +1734,7 @@ function openCommandPalette(mode: CommandPaletteMode): void {
 	if (ui.connection !== "ready") return;
 	selectorController.close(false);
 	dismissHistory();
+	mentionController.dismiss();
 	commandPaletteMode = mode;
 	activeCommandName = undefined;
 	elements.commandPanel.classList.toggle("is-inline", mode === "inline");
@@ -1814,6 +1880,55 @@ function positionCommandPanel(): void {
 	});
 }
 
+/**
+ * Positions the mention popup on the same anchor as the command palette so both
+ * lists occupy the same place above the composer.
+ */
+function positionMentionPanel(): void {
+	elements.mentionPanel.style.width = `${Math.round(
+		elements.composer.getBoundingClientRect().width,
+	)}px`;
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.mentionPanel,
+		anchor: elements.composer,
+	});
+}
+
+/**
+ * Turns a picked mention into a real composer reference.
+ *
+ * The typed `@query` is removed first and the host is then asked to register the
+ * file, which comes back as a `composerReferences` update carrying the marker.
+ * The order matters: the host-owned marker is inserted at the caret, so the caret
+ * has to already sit where the query was for the marker to land there.
+ *
+ * Local removal also covers the duplicate case. Picking a file that is already
+ * referenced produces no new reference from the host, so leaving the query behind
+ * would strand `@src/main.ts` as plain prose beside the real marker.
+ */
+function addMentionReference(
+	file: WorkspaceFileSuggestion,
+	token: { start: number; end: number },
+): void {
+	const alreadyReferenced = composerController.references.some(
+		(reference) => reference.displayPath === file.displayPath,
+	);
+	if (
+		!alreadyReferenced &&
+		composerController.references.length >= MAX_COMPOSER_REFERENCE_COUNT
+	) {
+		showToast(
+			`Remove a reference before adding another (maximum ${MAX_COMPOSER_REFERENCE_COUNT})`,
+			"error",
+		);
+		return;
+	}
+	composerController.replaceRange(token.start, token.end, "");
+	elements.input.focus();
+	runAction("addResources", { resources: [file.uri] });
+}
+
 function isAttachableResourceDrag(
 	dataTransfer: DataTransfer | null,
 ): dataTransfer is DataTransfer {
@@ -1842,6 +1957,7 @@ function sendPrompt(): void {
 	// The send button can be clicked while the palette is open, and submitting
 	// clears the text the palette was filtering on.
 	dismissCommandPalette();
+	mentionController.dismiss();
 	pendingSubmit = true;
 	runAction("submit", {
 		text,

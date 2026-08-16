@@ -37,6 +37,9 @@ interrupted streams) are retried automatically
 	plus a `Fix with Pi` quick fix for the diagnostic under the cursor
 - **Slash commands** — type `/` in the composer to browse pi's extension
 commands, prompt templates, and skills, grouped by source with live filtering
+- **File mentions** — type `@` to browse one workspace level at a time; pick
+a folder to enter it, then select a file with the arrow keys and `Enter` to
+insert the same inline `@path` reference Explorer and drag-and-drop produce
 - **Tool timeline** — tool calls run inline with file-edit diffs rendered as
 added, removed, and context lines; `path/file.ts:42` references in responses
 open the file at that line

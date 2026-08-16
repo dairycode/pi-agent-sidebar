@@ -2,6 +2,11 @@
 
 ## 0.5.0
 
+- Add a level-by-level `@` workspace browser to the composer: each view shows
+ only the current directory's immediate files and folders, selecting a folder
+ descends into it, and `Enter` or `Tab` inserts the selected file as the same
+ inline `@path` reference Explorer and drag-and-drop already produce. VS Code's
+ `files.exclude` and `search.exclude` settings apply.
 - Preserve the current in-memory contents when **Explain This File** targets an
  unsaved or untitled editor, and reopen submitted references by their canonical
  URI so files in other multi-root workspace folders navigate correctly.

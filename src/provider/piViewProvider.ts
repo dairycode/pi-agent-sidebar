@@ -32,6 +32,7 @@ import {
 	type PiModel,
 	type PiState,
 	type PiStats,
+	type WorkspaceEntrySuggestion,
 } from "../../shared/protocol.js";
 import {
 	ComposerReferenceStore,
@@ -42,6 +43,7 @@ import {
 	parseDroppedResource,
 	WorkspaceResources,
 } from "../services/workspaceResources.js";
+import { WorkspaceFileSearch } from "../services/workspaceFileSearch.js";
 
 const VIEW_TYPE = "piAgentSidebar.chatView";
 const LONG_COMMAND_TIMEOUT_MS = 10 * 60_000;
@@ -111,6 +113,7 @@ export class PiViewProvider
 	private readonly attachmentStore: AttachmentStore;
 	private readonly workspaceResources: WorkspaceResources;
 	private readonly composerReferenceStore: ComposerReferenceStore;
+	private readonly workspaceFileSearch = new WorkspaceFileSearch();
 
 	public constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -445,6 +448,7 @@ export class PiViewProvider
 		this.state = {};
 		this.client = undefined;
 		this.composerReferenceStore.clear();
+		this.workspaceFileSearch.invalidate();
 		this.pendingComposerFocusRequestId = undefined;
 		await this.attachmentStore.clear();
 		if (client) await client.stop();
@@ -474,6 +478,7 @@ export class PiViewProvider
 			if (client) await client.stop();
 			await this.sessionMutations.drain();
 			await this.attachmentStore.dispose();
+			this.workspaceFileSearch.dispose();
 		})();
 		return this.shutdownPromise;
 	}
@@ -579,6 +584,10 @@ export class PiViewProvider
 				}
 				case "listCommands": {
 					await this.sendCommandList();
+					break;
+				}
+				case "listWorkspaceFiles": {
+					await this.sendWorkspaceFileList(message.requestId, message.query);
 					break;
 				}
 				case "pickAttachments": {
@@ -1206,6 +1215,27 @@ export class PiViewProvider
 		} catch (error) {
 			this.output.appendLine(`[commands] ${toErrorMessage(error)}`);
 		}
+	}
+
+	/**
+	 * Answers one `@` mention query.
+	 *
+	 * The request id travels back with the results so the webview can drop
+	 * responses that a newer keystroke has already superseded — searches resolve
+	 * out of order once a cold cache walk overlaps a warm one.
+	 */
+	private async sendWorkspaceFileList(
+		requestId: number,
+		query: string,
+	): Promise<void> {
+		if (!this.webviewReady) return;
+		let entries: WorkspaceEntrySuggestion[] = [];
+		try {
+			entries = await this.workspaceFileSearch.search(query);
+		} catch (error) {
+			this.output.appendLine(`[mentions] ${toErrorMessage(error)}`);
+		}
+		await this.post({ type: "workspaceFileList", requestId, query, entries });
 	}
 
 	private async syncComposerReferences(): Promise<void> {

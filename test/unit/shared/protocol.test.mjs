@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadProtocol() {
 	return loadBundledModule({
 		entry: "shared/protocol.ts",
@@ -178,6 +177,46 @@ test("webview protocol accepts bounded renameSession payloads", async () => {
 			}),
 			undefined,
 		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("workspace file mention queries require a bounded query and request id", async () => {
+	const loaded = await loadProtocol();
+	try {
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "listWorkspaceFiles",
+				requestId: 3,
+				query: "src/main",
+			}),
+			{ type: "listWorkspaceFiles", requestId: 3, query: "src/main" },
+		);
+		// A bare `@` is an empty query, and it must list files rather than be dropped.
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "listWorkspaceFiles",
+				requestId: 0,
+				query: "",
+			}),
+			{ type: "listWorkspaceFiles", requestId: 0, query: "" },
+		);
+		for (const invalid of [
+			{ requestId: -1, query: "src" },
+			{ requestId: 1.5, query: "src" },
+			{ query: "src" },
+			{ requestId: 1, query: "x".repeat(513) },
+			{ requestId: 1, query: 42 },
+		]) {
+			assert.equal(
+				loaded.module.parseWebviewMessage({
+					type: "listWorkspaceFiles",
+					...invalid,
+				}),
+				undefined,
+			);
+		}
 	} finally {
 		await loaded.dispose();
 	}

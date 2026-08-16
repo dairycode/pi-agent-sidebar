@@ -255,7 +255,8 @@
 	will-change: transform;
 }
 
-.composer-reference-highlight {
+.composer-reference-highlight,
+.composer-command-highlight {
 	color: var(--vscode-textLink-foreground, #4daafc);
 	background: transparent;
 }

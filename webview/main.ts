@@ -2,7 +2,9 @@ import DOMPurify from "dompurify";
 import { formatComposerReferenceLocation } from "../shared/composerReferences.js";
 import { handleImagePaste } from "./attachments/imagePaste.js";
 import type { ManagedComposerReference } from "./composer/model.js";
+import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
+import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
 import {
 	contentText,
@@ -32,6 +34,7 @@ import {
 	type PiStats,
 	type SessionSummary,
 	type WebviewToHostMessage,
+	type WorkspaceFileSuggestion,
 } from "../shared/protocol.js";
 
 declare function acquireVsCodeApi<T = unknown>(): {
@@ -60,6 +63,7 @@ interface PendingAction {
 	draft?: string;
 	attachmentIds?: string[];
 	referenceSnapshots?: ManagedComposerReference[];
+	stagedReferenceId?: string;
 }
 
 interface ConfirmOptions extends ConfirmDialogOptions {
@@ -150,6 +154,8 @@ const elements = {
 	commandPanel: element<HTMLElement>("command-panel"),
 	commandSearch: element<HTMLInputElement>("command-search"),
 	commandList: element<HTMLElement>("command-list"),
+	mentionPanel: element<HTMLElement>("mention-panel"),
+	mentionList: element<HTMLElement>("mention-list"),
 	composerTools: element<HTMLElement>("composer-tools"),
 	modelSelect: element<HTMLButtonElement>("model-select"),
 	modelSelectValue: element<HTMLElement>("model-select-value"),
@@ -205,6 +211,7 @@ const selectorController = new SelectController({
 	beforeOpen: () => {
 		dismissHistory();
 		dismissCommandPalette();
+		mentionController.dismiss();
 	},
 	position: (trigger, popup) =>
 		positionPopupAbove({ container: elements.app, popup, anchor: trigger }),
@@ -229,6 +236,34 @@ const composerController = new ComposerController(
 	},
 	persisted?.composerReferences,
 );
+
+/**
+ * `@` mention popup for workspace files.
+ *
+ * Picking a row immediately replaces the query with a locally highlighted
+ * marker, then goes through `addResources`, the same host path the Explorer drag
+ * and drop uses. The host remains the owner of reference identity and revisions;
+ * its response adopts the staged marker's range without another text update.
+ */
+const mentionController = new MentionController({
+	panel: elements.mentionPanel,
+	list: elements.mentionList,
+	editor: elements.input,
+	requestFiles: (requestId, query) =>
+		post({ type: "listWorkspaceFiles", requestId, query }),
+	commit: (file, token) => addMentionReference(file, token),
+	navigate: (directoryPath, token) =>
+		composerController.replaceRange(
+			token.start,
+			token.end,
+			`@${directoryPath}/`,
+		),
+	announce,
+	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
+	position: positionMentionPanel,
+	isProtectedOffset: (offset) =>
+		Boolean(composerController.referenceAtOffset(offset)),
+});
 resizeInput();
 renderComposerHighlights();
 
@@ -247,6 +282,10 @@ window.addEventListener("keydown", (event) => {
 	if (event.key !== "Escape") return;
 	if (selectorController.activeKind) {
 		selectorController.close(true);
+		return;
+	}
+	if (mentionController.isOpen) {
+		mentionController.dismiss();
 		return;
 	}
 	if (!elements.commandPanel.hidden) {
@@ -277,6 +316,15 @@ window.addEventListener("pointerdown", (event) => {
 		dismissCommandPalette();
 	}
 	if (
+		mentionController.isOpen &&
+		!elements.mentionPanel.contains(event.target) &&
+		// Same reasoning as the inline palette: the composer is the mention popup's
+		// search field, so a click inside it is handled by the caret checks.
+		!elements.input.contains(event.target)
+	) {
+		mentionController.dismiss();
+	}
+	if (
 		modalController.isOpen ||
 		elements.historyPanel.hidden ||
 		elements.historyPanel.contains(event.target) ||
@@ -292,12 +340,14 @@ window.addEventListener("pointerdown", (event) => {
 window.addEventListener("blur", () => {
 	if (selectorController.activeKind) selectorController.close(false);
 	if (!elements.commandPanel.hidden) dismissCommandPalette();
+	mentionController.dismiss();
 	if (!elements.historyPanel.hidden) dismissHistory();
 });
 
 elements.input.addEventListener("input", () => {
 	composerController.handleInput();
 	syncInlineCommandPalette();
+	mentionController.sync();
 });
 
 elements.input.addEventListener("keyup", (event) => {
@@ -310,11 +360,13 @@ elements.input.addEventListener("keyup", (event) => {
 		event.key === "End"
 	) {
 		syncInlineCommandPalette();
+		mentionController.sync();
 	}
 });
 elements.input.addEventListener("pointerup", () => {
 	composerController.rememberCaret();
 	syncInlineCommandPalette();
+	mentionController.sync();
 });
 elements.input.addEventListener("select", () =>
 	composerController.rememberCaret(),
@@ -336,6 +388,7 @@ const composerToolsResizeObserver = new ResizeObserver(() => {
 	reflowComposerTools();
 	selectorController.reposition();
 	if (!elements.commandPanel.hidden) positionCommandPanel();
+	mentionController.reposition();
 });
 composerToolsResizeObserver.observe(elements.composerTools);
 
@@ -349,13 +402,17 @@ updateComposerOverlayOffset();
 
 elements.input.addEventListener("keydown", (event) => {
 	// The palette claims Enter/Tab/arrows while it is open, so this runs before
-	// the composer's own send and reference-jump handling.
+	// the composer's own send and reference-jump handling. The mention popup is
+	// checked first for the same reason; only one of the two can be open, because
+	// a `/` token and an `@` token cannot share a caret.
+	if (mentionController.handleKeydown(event)) return;
 	if (handleInlineCommandKeydown(event)) return;
 	if (event.key === "F12") {
 		const reference = composerController.referenceAtOffset(
 			elements.input.selectionStart,
 		);
-		if (!reference) return;
+		if (!reference || composerController.isPendingReference(reference.id))
+			return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
 		return;
@@ -410,7 +467,7 @@ window.addEventListener("drop", (event) => {
 	}
 	const availableReferenceCount = Math.max(
 		0,
-		MAX_COMPOSER_REFERENCE_COUNT - composerController.references.length,
+		MAX_COMPOSER_REFERENCE_COUNT - composerController.referenceCount,
 	);
 	if (resources.length > availableReferenceCount) {
 		showToast(
@@ -431,7 +488,7 @@ elements.input.addEventListener("click", (event) => {
 	const reference = composerController.referenceAtOffset(
 		elements.input.selectionStart,
 	);
-	if (!reference) return;
+	if (!reference || composerController.isPendingReference(reference.id)) return;
 	post({ type: "openComposerReference", id: reference.id });
 });
 
@@ -580,6 +637,15 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 		case "commandList": {
 			ui.commands = message.commands;
 			if (!elements.commandPanel.hidden) renderCommands();
+			scheduleRender();
+			break;
+		}
+		case "workspaceFileList": {
+			mentionController.applyResults(
+				message.requestId,
+				message.query,
+				message.entries,
+			);
 			break;
 		}
 		case "attachments": {
@@ -715,6 +781,12 @@ function handleActionResult(
 	if (ok && action?.type === "addResources") {
 		showToast("Resources added to the input", "info");
 		announce("Resources added to the input");
+	}
+	if (
+		action?.stagedReferenceId &&
+		composerController.isPendingReference(action.stagedReferenceId)
+	) {
+		composerController.discardPendingReference(action.stagedReferenceId);
 	}
 	if (ok && action?.type === "deleteSession") {
 		showToast("Session deleted", "info");
@@ -927,7 +999,10 @@ function render(): void {
 	if (activeSelect && selectorController.trigger(activeSelect).disabled) {
 		selectorController.close(false);
 	}
-	if (!enabled) dismissCommandPalette();
+	if (!enabled) {
+		dismissCommandPalette();
+		mentionController.dismiss();
+	}
 	reflowComposerTools();
 	focusComposerIfRequested();
 
@@ -1215,7 +1290,7 @@ function renderComposerHighlights(): void {
 	if (text.length > MAX_HIGHLIGHTED_COMPOSER_LENGTH) {
 		renderedPromptText = undefined;
 		renderedPromptMarkerSignature = undefined;
-		elements.promptEditor.classList.remove("has-reference-highlights");
+		elements.promptEditor.classList.remove("has-token-highlights");
 		if (elements.promptHighlights.childNodes.length > 0) {
 			elements.promptHighlights.replaceChildren();
 		}
@@ -1225,12 +1300,17 @@ function renderComposerHighlights(): void {
 	const references = composerController
 		.managedReferences()
 		.sort((left, right) => left.start - right.start || left.end - right.end);
-	const markerSignature = references
-		.map(
+	const commandRanges = commandHighlightRanges(
+		text,
+		ui.commands.map((command) => command.name),
+	);
+	const markerSignature = [
+		...references.map(
 			(reference) =>
-				`${reference.id}:${reference.revision}:${reference.start}:${reference.end}`,
-		)
-		.join("\u0000");
+				`reference:${reference.id}:${reference.revision}:${reference.start}:${reference.end}`,
+		),
+		...commandRanges.map((range) => `command:${range.start}:${range.end}`),
+	].join("\u0000");
 	if (
 		text === renderedPromptText &&
 		markerSignature === renderedPromptMarkerSignature
@@ -1241,9 +1321,20 @@ function renderComposerHighlights(): void {
 	renderedPromptText = text;
 	renderedPromptMarkerSignature = markerSignature;
 
-	const ranges = references.map(({ start, end }) => ({ start, end }));
+	const ranges = [
+		...references.map(({ start, end }) => ({
+			start,
+			end,
+			className: "composer-reference-highlight",
+		})),
+		...commandRanges.map(({ start, end }) => ({
+			start,
+			end,
+			className: "composer-command-highlight",
+		})),
+	].sort((left, right) => left.start - right.start || left.end - right.end);
 	elements.promptEditor.classList.toggle(
-		"has-reference-highlights",
+		"has-token-highlights",
 		ranges.length > 0,
 	);
 	if (ranges.length === 0) {
@@ -1258,7 +1349,7 @@ function renderComposerHighlights(): void {
 		if (range.start < cursor) continue;
 		fragment.append(document.createTextNode(text.slice(cursor, range.start)));
 		const highlight = document.createElement("mark");
-		highlight.className = "composer-reference-highlight";
+		highlight.className = range.className;
 		highlight.textContent = text.slice(range.start, range.end);
 		fragment.append(highlight);
 		cursor = range.end;
@@ -1340,7 +1431,8 @@ function renderSendButton(): void {
 	elements.sendButton.title = label;
 	elements.sendButton.setAttribute("aria-label", label);
 	elements.sendButton.disabled =
-		ui.connection !== "ready" || (!ui.busy && pendingSubmit);
+		ui.connection !== "ready" ||
+		(!ui.busy && (pendingSubmit || composerController.hasPendingReferences));
 	elements.composer.classList.toggle("busy", ui.busy || pendingSubmit);
 }
 
@@ -1669,6 +1761,7 @@ function openCommandPalette(mode: CommandPaletteMode): void {
 	if (ui.connection !== "ready") return;
 	selectorController.close(false);
 	dismissHistory();
+	mentionController.dismiss();
 	commandPaletteMode = mode;
 	activeCommandName = undefined;
 	elements.commandPanel.classList.toggle("is-inline", mode === "inline");
@@ -1814,6 +1907,62 @@ function positionCommandPanel(): void {
 	});
 }
 
+/**
+ * Positions the mention popup on the same anchor as the command palette so both
+ * lists occupy the same place above the composer.
+ */
+function positionMentionPanel(): void {
+	elements.mentionPanel.style.width = `${Math.round(
+		elements.composer.getBoundingClientRect().width,
+	)}px`;
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.mentionPanel,
+		anchor: elements.composer,
+	});
+}
+
+/**
+ * Turns a picked mention into a real composer reference.
+ *
+ * The final marker is staged locally so there is no empty frame while the host
+ * registers its identity. Duplicate picks only remove the query because the
+ * existing reference already owns the highlighted marker.
+ */
+function addMentionReference(
+	file: WorkspaceFileSuggestion,
+	token: { start: number; end: number },
+): void {
+	const alreadyReferenced = composerController
+		.managedReferences()
+		.some((reference) => reference.displayPath === file.displayPath);
+	if (
+		!alreadyReferenced &&
+		composerController.referenceCount >= MAX_COMPOSER_REFERENCE_COUNT
+	) {
+		showToast(
+			`Remove a reference before adding another (maximum ${MAX_COMPOSER_REFERENCE_COUNT})`,
+			"error",
+		);
+		return;
+	}
+	if (alreadyReferenced) {
+		composerController.replaceRange(token.start, token.end, "");
+		elements.input.focus();
+		return;
+	}
+	const stagedReferenceId = composerController.stageFileReference(
+		file.displayPath,
+		token.start,
+		token.end,
+	);
+	elements.input.focus();
+	runAction("addResources", {
+		resources: [file.uri],
+		stagedReferenceId,
+	});
+}
+
 function isAttachableResourceDrag(
 	dataTransfer: DataTransfer | null,
 ): dataTransfer is DataTransfer {
@@ -1831,7 +1980,12 @@ function clearResourceDragState(): void {
 }
 
 function sendPrompt(): void {
-	if (pendingSubmit || ui.connection !== "ready") return;
+	if (
+		pendingSubmit ||
+		ui.connection !== "ready" ||
+		composerController.hasPendingReferences
+	)
+		return;
 	const text = elements.input.value;
 	if (
 		!text.trim() &&
@@ -1842,6 +1996,7 @@ function sendPrompt(): void {
 	// The send button can be clicked while the palette is open, and submitting
 	// clears the text the palette was filtering on.
 	dismissCommandPalette();
+	mentionController.dismiss();
 	pendingSubmit = true;
 	runAction("submit", {
 		text,
@@ -1879,13 +2034,17 @@ function runAction(
 ): void {
 	const actionId = crypto.randomUUID();
 	const action: PendingAction = { type };
+	if (typeof fields.stagedReferenceId === "string") {
+		action.stagedReferenceId = fields.stagedReferenceId;
+	}
 	if (type === "submit" || type === "newSession") {
 		action.draft = elements.input.value;
 		action.attachmentIds = ui.attachments.map((attachment) => attachment.id);
 		action.referenceSnapshots = composerController.snapshotReferences();
 	}
 	pendingActions.set(actionId, action);
-	post({ type, actionId, ...fields } as WebviewToHostMessage);
+	const { stagedReferenceId: _stagedReferenceId, ...outgoingFields } = fields;
+	post({ type, actionId, ...outgoingFields } as WebviewToHostMessage);
 }
 
 function post(message: WebviewToHostMessage): void {

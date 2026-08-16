@@ -53,10 +53,12 @@ test("manifest preserves public command IDs and selection keybindings", async ()
 	);
 });
 
-test("inline composer references use font color without decoration", async () => {
+test("inline composer tokens use font color without decoration", async () => {
 	const css = await readFile("webview/styles/composer.css", "utf8");
-	const match = css.match(/\.composer-reference-highlight\s*\{([^}]+)\}/u);
-	assert.ok(match, "composer-reference-highlight rule is missing");
+	const match = css.match(
+		/\.composer-reference-highlight,\s*\.composer-command-highlight\s*\{([^}]+)\}/u,
+	);
+	assert.ok(match, "shared composer token highlight rule is missing");
 	const rule = match[1];
 	assert.match(rule, /color:\s*var\(--vscode-textLink-foreground/iu);
 	assert.match(rule, /background:\s*transparent/iu);

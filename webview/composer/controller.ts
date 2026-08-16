@@ -1,4 +1,8 @@
-import { formatComposerReferenceLocation } from "../../shared/composerReferences.js";
+import {
+	formatComposerReferenceLocation,
+	formatFileReferenceMarker,
+	insertComposerReferenceMarker,
+} from "../../shared/composerReferences.js";
 import type {
 	ComposerReference,
 	WebviewToHostMessage,
@@ -39,10 +43,12 @@ export interface ComposerControllerOptions {
 
 export class ComposerController {
 	private activeReferences: ManagedComposerReference[] = [];
+	private pendingReferences: ManagedComposerReference[] = [];
 	private readonly restoredReferences: Map<string, ManagedComposerReference>;
 	private readonly locallyRemovedRevisions = new Map<string, number>();
 	private textSnapshot: string;
 	private rememberedCaret = 0;
+	private pendingReferenceSequence = 0;
 
 	public constructor(
 		private readonly options: ComposerControllerOptions,
@@ -58,6 +64,14 @@ export class ComposerController {
 
 	public get references(): readonly ManagedComposerReference[] {
 		return this.activeReferences;
+	}
+
+	public get referenceCount(): number {
+		return this.activeReferences.length + this.pendingReferences.length;
+	}
+
+	public get hasPendingReferences(): boolean {
+		return this.pendingReferences.length > 0;
 	}
 
 	public get lastCaret(): number {
@@ -83,6 +97,11 @@ export class ComposerController {
 	public managedReferences(): ManagedComposerReference[] {
 		const references = new Map<string, ManagedComposerReference>();
 		for (const reference of this.activeReferences) {
+			if (isManagedReferenceValid(this.options.editor.value, reference)) {
+				references.set(`${reference.id}:${reference.revision}`, reference);
+			}
+		}
+		for (const reference of this.pendingReferences) {
 			if (isManagedReferenceValid(this.options.editor.value, reference)) {
 				references.set(`${reference.id}:${reference.revision}`, reference);
 			}
@@ -133,11 +152,17 @@ export class ComposerController {
 			);
 			const restored = this.restoredReferences.get(summary.id);
 			this.restoredReferences.delete(summary.id);
-			const pending = this.managedReferences().find(
+			const actionPending = this.managedReferences().find(
 				(reference) =>
 					reference.id === summary.id && reference.marker === summary.marker,
 			);
-			const candidate = [current, restored, pending].find(
+			const localPending = this.pendingReferences.find(
+				(reference) =>
+					reference.kind === summary.kind &&
+					reference.marker === summary.marker &&
+					reference.displayPath === summary.displayPath,
+			);
+			const candidate = [current, restored, actionPending, localPending].find(
 				(reference): reference is ManagedComposerReference =>
 					Boolean(
 						reference &&
@@ -154,8 +179,16 @@ export class ComposerController {
 				this.activeReferences = this.activeReferences.filter(
 					(reference) => reference.id !== summary.id,
 				);
+				if (localPending) {
+					this.pendingReferences = this.pendingReferences.filter(
+						(reference) => reference.id !== localPending.id,
+					);
+				}
 				this.activeReferences.push(updated);
-				if (previousById.get(summary.id)?.revision !== summary.revision) {
+				if (
+					localPending ||
+					previousById.get(summary.id)?.revision !== summary.revision
+				) {
 					changed.push(updated);
 				}
 				continue;
@@ -204,6 +237,12 @@ export class ComposerController {
 		);
 		this.reconcilePendingEdits(this.textSnapshot, nextText);
 		this.activeReferences = result.references;
+		const pendingResult = reconcileComposerEdit(
+			this.textSnapshot,
+			nextText,
+			this.pendingReferences,
+		);
+		this.pendingReferences = pendingResult.references;
 		this.textSnapshot = nextText;
 		for (const reference of result.removed) {
 			this.locallyRemovedRevisions.set(reference.id, reference.revision);
@@ -236,10 +275,64 @@ export class ComposerController {
 		return caret;
 	}
 
+	/**
+	 * Replaces an `@query` with its final marker before the host round-trip.
+	 * The host-owned reference adopts this exact range in applyIncoming(), so
+	 * the composer never paints an empty intermediate frame.
+	 */
+	public stageFileReference(
+		displayPath: string,
+		start: number,
+		end: number,
+	): string {
+		const previousText = this.options.editor.value;
+		const textWithoutQuery = `${previousText.slice(0, start)}${previousText.slice(end)}`;
+		const marker = formatFileReferenceMarker(displayPath);
+		const insertion = insertComposerReferenceMarker(
+			textWithoutQuery,
+			start,
+			marker,
+		);
+		this.options.editor.value = insertion.text;
+		this.options.editor.setSelectionRange(insertion.caret, insertion.caret);
+		this.reconcileInput();
+
+		const id = `pending-file-${++this.pendingReferenceSequence}`;
+		this.pendingReferences.push({
+			kind: "file",
+			id,
+			revision: 0,
+			marker,
+			displayPath,
+			start: insertion.markerStart,
+			end: insertion.markerEnd,
+		});
+		this.rememberedCaret = insertion.caret;
+		this.persist();
+		this.options.refreshEditorView();
+		this.options.invalidate();
+		return id;
+	}
+
+	public discardPendingReference(id: string): void {
+		const pending = this.pendingReferences.find(
+			(reference) => reference.id === id,
+		);
+		if (!pending) return;
+		this.removeManaged([pending]);
+	}
+
 	public referenceAtOffset(
 		offset: number,
 	): ManagedComposerReference | undefined {
-		return referenceAtOffset(this.activeReferences, offset);
+		return referenceAtOffset(
+			[...this.activeReferences, ...this.pendingReferences],
+			offset,
+		);
+	}
+
+	public isPendingReference(id: string): boolean {
+		return this.pendingReferences.some((reference) => reference.id === id);
 	}
 
 	public completeSubmittedReferences(action: ComposerPendingAction): void {
@@ -306,11 +399,15 @@ export class ComposerController {
 				(reference) => `${reference.id}:${reference.revision}`,
 			),
 		);
+		const pendingKeys = new Set(
+			this.pendingReferences.map(
+				(reference) => `${reference.id}:${reference.revision}`,
+			),
+		);
 		const working = new Map(
-			[...this.activeReferences, ...references].map((reference) => [
-				`${reference.id}:${reference.revision}`,
-				reference,
-			]),
+			[...this.activeReferences, ...this.pendingReferences, ...references].map(
+				(reference) => [`${reference.id}:${reference.revision}`, reference],
+			),
 		);
 		const result = removeManagedReferences(
 			previousText,
@@ -325,6 +422,9 @@ export class ComposerController {
 		this.reconcilePendingEdits(previousText, result.text);
 		this.activeReferences = result.references.filter((reference) =>
 			activeKeys.has(`${reference.id}:${reference.revision}`),
+		);
+		this.pendingReferences = result.references.filter((reference) =>
+			pendingKeys.has(`${reference.id}:${reference.revision}`),
 		);
 		this.writeDraft(result.text, prefixResult.text.length);
 	}

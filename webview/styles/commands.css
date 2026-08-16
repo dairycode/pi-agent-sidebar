@@ -163,6 +163,35 @@
 	white-space: nowrap;
 }
 
+/* The `@` popup is a level-by-level workspace browser. Typing `@` shows only
+   root children; choosing a folder rewrites the token to `@folder/` and shows
+   that folder's immediate children. Folder/file icons and a trailing chevron
+   make navigation explicit without exposing deeper descendants prematurely. */
+.mention-panel {
+	padding-bottom: 4px;
+}
+
+.mention-row {
+	gap: 6px;
+}
+
+.mention-row-icon {
+	flex: 0 0 auto;
+	color: var(--pi-muted);
+	font-size: 14px;
+}
+
+.mention-row.is-directory .mention-row-icon {
+	color: var(--vscode-symbolIcon-folderForeground, var(--pi-muted));
+}
+
+.mention-row-arrow {
+	flex: 0 0 auto;
+	margin-left: auto;
+	color: var(--pi-muted);
+	font-size: 14px;
+}
+
 .command-list-empty {
 	padding: 18px 8px;
 	color: var(--pi-muted);

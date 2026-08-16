@@ -43,7 +43,6 @@
 		padding-inline: 6px;
 		font-size: var(--pi-font-chrome);
 	}
-
 }
 
 @media (max-height: 430px) {
@@ -67,7 +66,8 @@
 		background: Canvas;
 	}
 
-	.composer-reference-highlight {
+	.composer-reference-highlight,
+	.composer-command-highlight {
 		forced-color-adjust: none;
 		color: LinkText;
 		background: transparent;

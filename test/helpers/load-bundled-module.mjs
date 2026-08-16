@@ -45,8 +45,7 @@ export async function loadBundledModule({
 				`${pathToFileURL(output).href}?v=${Date.now()}-${Math.random()}`
 			),
 			temporaryDirectory,
-			dispose: () =>
-				rm(temporaryDirectory, { recursive: true, force: true }),
+			dispose: () => rm(temporaryDirectory, { recursive: true, force: true }),
 		};
 	} catch (error) {
 		await rm(temporaryDirectory, { recursive: true, force: true });

@@ -42,10 +42,10 @@
     "onCommand:piAgentSidebar.exportHtml"
   ],
   "main": "./dist/extension.js",
-  "icon": "media/pi-logo.png",
+  "icon": "assets/pi-logo.png",
   "files": [
+    "assets/**",
     "dist/**",
-    "media/**",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
@@ -115,7 +115,7 @@
       {
         "id": "piAgentSidebar.editorContext",
         "label": "Pi Agent",
-        "icon": "media/pi.svg"
+        "icon": "assets/pi.svg"
       }
     ],
     "menus": {
@@ -224,7 +224,7 @@
         {
           "id": "pi-agent-sidebar-secondary",
           "title": "Pi Agent",
-          "icon": "media/pi.svg"
+          "icon": "assets/pi.svg"
         }
       ]
     },
@@ -249,8 +249,8 @@
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test:unit": "node --test scripts/*.test.mjs",
-    "preview": "node scripts/preview.mjs",
+    "test:unit": "node --test test/unit/host/*.test.mjs test/unit/shared/*.test.mjs test/unit/webview/*.test.mjs test/integration/*.test.mjs",
+    "preview": "npm run build && node scripts/preview.mjs",
     "test:rpc": "node scripts/rpc-smoke.mjs",
     "test:rpc:live": "node scripts/rpc-smoke.mjs",
     "test": "npm run typecheck && npm run test:unit",
@@ -264,12 +264,15 @@
       "src/extension.ts",
       "webview/main.ts",
       "scripts/*.mjs",
-      "scripts/**/*.mjs"
+      "scripts/**/*.mjs",
+      "test/**/*.mjs"
     ],
     "project": [
       "src/**/*.ts",
       "webview/**/*.ts",
-      "scripts/**/*.mjs"
+      "shared/**/*.ts",
+      "scripts/**/*.mjs",
+      "test/**/*.mjs"
     ],
     "ignoreDependencies": [
       "@vscode/codicons"

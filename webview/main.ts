@@ -1,41 +1,38 @@
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { formatComposerReferenceLocation } from "../shared/composerReferences.js";
+import { handleImagePaste } from "./attachments/imagePaste.js";
+import type { ManagedComposerReference } from "./composer/model.js";
+import { ComposerController } from "./composer/controller.js";
+import { applyAssistantMessageDelta } from "./transcript/streaming.js";
 import {
-	formatComposerReferenceLocation,
-	parseFileReferencePayload,
-	parseSelectionReferencePayload,
-} from "../src/composerReferences.js";
-import {
-	insertManagedReference,
-	isManagedReferenceValid,
-	parsePersistedReferences,
-	reconcileComposerEdit,
-	referenceAtOffset,
-	removeManagedReferences,
-	type ManagedComposerReference,
-} from "./composerModel.js";
-import { applyAssistantMessageDelta } from "./streaming.js";
+	contentText,
+	extractResultDiff,
+	friendlyToolName,
+	messageHtml,
+} from "./transcript/renderer.js";
 import {
 	containsDroppedResources,
 	extractDroppedResources,
 } from "./resourceDrop.js";
 import {
+	ModalController,
+	type ConfirmDialogOptions,
+} from "./ui/modalController.js";
+import { positionPopupAbove } from "./ui/popupPosition.js";
+import { SelectController } from "./ui/selectController.js";
+import {
 	MAX_COMPOSER_REFERENCE_COUNT,
-	MAX_IMAGE_ATTACHMENT_COUNT,
 	type AttachmentRef,
-	type ComposerReference,
 	type HostToWebviewMessage,
 	type JsonRecord,
 	type PiCommand,
-	type PiContentBlock,
 	type PiMessage,
 	type PiModel,
-	type PastedImage,
 	type PiState,
 	type PiStats,
 	type SessionSummary,
 	type WebviewToHostMessage,
-} from "../src/shared/protocol.js";
+} from "../shared/protocol.js";
 
 declare function acquireVsCodeApi<T = unknown>(): {
 	postMessage(message: WebviewToHostMessage): void;
@@ -65,12 +62,7 @@ interface PendingAction {
 	referenceSnapshots?: ManagedComposerReference[];
 }
 
-interface ConfirmOptions {
-	title: string;
-	message: string;
-	confirmLabel: string;
-	onConfirm: () => void;
-	destructive?: boolean;
+interface ConfirmOptions extends ConfirmDialogOptions {
 	dismissHistory?: boolean;
 }
 
@@ -86,14 +78,12 @@ interface UiState {
 	thinkingLevels: string[];
 	commands: PiCommand[];
 	attachments: AttachmentRef[];
-	composerReferences: ManagedComposerReference[];
 	sessions: SessionSummary[];
 	queue: { steering: string[]; followUp: string[] };
 	busy: boolean;
 }
 
 const vscode = acquireVsCodeApi<PersistedState>();
-marked.setOptions({ gfm: true, breaks: true });
 
 const ui: UiState = {
 	connection: "starting",
@@ -105,7 +95,6 @@ const ui: UiState = {
 	thinkingLevels: ["off"],
 	commands: [],
 	attachments: [],
-	composerReferences: [],
 	sessions: [],
 	queue: { steering: [], followUp: [] },
 	busy: false,
@@ -115,7 +104,6 @@ const liveTools = new Map<string, LiveTool>();
 const pendingActions = new Map<string, PendingAction>();
 const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
-const locallyRemovedComposerReferenceRevisions = new Map<string, number>();
 let renderQueued = false;
 let pendingSubmit = false;
 let composerFocusRequestId: number | undefined;
@@ -124,19 +112,8 @@ let lastAnnouncedFocusRequestId = 0;
 let lastCompletedFocusRequestId = 0;
 let renderedPromptText: string | undefined;
 let renderedPromptMarkerSignature: string | undefined;
-let composerTextSnapshot = "";
-let lastComposerCaret = 0;
-let modalReturnFocus: HTMLElement | null = null;
 let resourceDragDepth = 0;
 
-const SUPPORTED_CLIPBOARD_IMAGE_TYPES = new Set([
-	"image/png",
-	"image/jpeg",
-	"image/gif",
-	"image/webp",
-]);
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/gu;
@@ -186,15 +163,72 @@ const elements = {
 	modalBackdrop: element<HTMLElement>("modal-backdrop"),
 };
 
+const modalController = new ModalController({
+	backdrop: elements.modalBackdrop,
+	inertRoots: [
+		elements.sessionHeader,
+		elements.historyPanel,
+		elements.transcript,
+		elements.widgetArea,
+		elements.composerShell,
+	],
+});
+
+const selectorController = new SelectController({
+	popup: elements.selectPopup,
+	triggers: {
+		model: elements.modelSelect,
+		thinking: elements.thinkingSelect,
+	},
+	getOptions: (kind) =>
+		kind === "thinking"
+			? ui.thinkingLevels.map((level) => ({ value: level, label: level }))
+			: ui.models.map((model) => ({
+					value: `${model.provider}/${model.id}`,
+					label: model.name || model.id,
+				})),
+	getSelectedValue: (kind) => {
+		if (kind === "thinking") return ui.state.thinkingLevel ?? "";
+		return ui.state.model
+			? `${ui.state.model.provider}/${ui.state.model.id}`
+			: "";
+	},
+	onCommit: (kind, value) => {
+		if (kind === "thinking") {
+			runAction("setThinking", { level: value });
+			return;
+		}
+		const [provider, ...idParts] = value.split("/");
+		const modelId = idParts.join("/");
+		if (provider && modelId) runAction("setModel", { provider, modelId });
+	},
+	beforeOpen: () => {
+		dismissHistory();
+		dismissCommandPalette();
+	},
+	position: (trigger, popup) =>
+		positionPopupAbove({ container: elements.app, popup, anchor: trigger }),
+});
+
 const persisted = vscode.getState();
 if (persisted?.draft) elements.input.value = persisted.draft;
-const restoredComposerReferences = new Map(
-	parsePersistedReferences(
-		persisted?.composerReferences,
-		elements.input.value,
-	).map((reference) => [reference.id, reference]),
+const composerController = new ComposerController(
+	{
+		editor: elements.input,
+		persist: (draft, composerReferences) =>
+			vscode.setState({ draft, composerReferences }),
+		post,
+		announce,
+		invalidate: scheduleRender,
+		refreshEditorView: () => {
+			resizeInput();
+			renderComposerHighlights();
+		},
+		isEditorActive: () => document.activeElement === elements.input,
+		pendingActions: () => pendingActions.values(),
+	},
+	persisted?.composerReferences,
 );
-composerTextSnapshot = elements.input.value;
 resizeInput();
 renderComposerHighlights();
 
@@ -206,13 +240,13 @@ window.addEventListener(
 );
 
 window.addEventListener("keydown", (event) => {
-	if (!elements.modalBackdrop.hidden) {
-		handleModalKeydown(event);
+	if (modalController.isOpen) {
+		modalController.handleKeydown(event);
 		return;
 	}
 	if (event.key !== "Escape") return;
-	if (activeSelect) {
-		closeSelect(true);
+	if (selectorController.activeKind) {
+		selectorController.close(true);
 		return;
 	}
 	if (!elements.commandPanel.hidden) {
@@ -224,12 +258,13 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("pointerdown", (event) => {
 	if (!(event.target instanceof Node)) return;
+	const activeSelect = selectorController.activeKind;
 	if (
 		activeSelect &&
 		!elements.selectPopup.contains(event.target) &&
-		!selectTrigger(activeSelect).contains(event.target)
+		!selectorController.trigger(activeSelect).contains(event.target)
 	) {
-		closeSelect(false);
+		selectorController.close(false);
 	}
 	if (
 		!elements.commandPanel.hidden &&
@@ -242,7 +277,7 @@ window.addEventListener("pointerdown", (event) => {
 		dismissCommandPalette();
 	}
 	if (
-		!elements.modalBackdrop.hidden ||
+		modalController.isOpen ||
 		elements.historyPanel.hidden ||
 		elements.historyPanel.contains(event.target) ||
 		elements.historyButton.contains(event.target)
@@ -255,22 +290,18 @@ window.addEventListener("pointerdown", (event) => {
 // when focus moves to the editor or another VS Code surface, without restoring
 // focus to their triggers and pulling it back into the sidebar.
 window.addEventListener("blur", () => {
-	if (activeSelect) closeSelect(false);
+	if (selectorController.activeKind) selectorController.close(false);
 	if (!elements.commandPanel.hidden) dismissCommandPalette();
 	if (!elements.historyPanel.hidden) dismissHistory();
 });
 
 elements.input.addEventListener("input", () => {
-	reconcileComposerReferencesWithComposer();
-	rememberComposerCaret();
-	resizeInput();
-	persistComposerState();
-	renderComposerHighlights();
+	composerController.handleInput();
 	syncInlineCommandPalette();
 });
 
 elements.input.addEventListener("keyup", (event) => {
-	rememberComposerCaret();
+	composerController.rememberCaret();
 	// Caret keys move without firing `input`, so the inline palette has to
 	// re-check whether the caret is still inside its token.
 	if (
@@ -282,11 +313,15 @@ elements.input.addEventListener("keyup", (event) => {
 	}
 });
 elements.input.addEventListener("pointerup", () => {
-	rememberComposerCaret();
+	composerController.rememberCaret();
 	syncInlineCommandPalette();
 });
-elements.input.addEventListener("select", rememberComposerCaret);
-elements.input.addEventListener("blur", rememberComposerCaret);
+elements.input.addEventListener("select", () =>
+	composerController.rememberCaret(),
+);
+elements.input.addEventListener("blur", () =>
+	composerController.rememberCaret(),
+);
 
 elements.input.addEventListener("scroll", syncPromptHighlightScroll);
 window.addEventListener("resize", syncPromptHighlightScroll);
@@ -299,7 +334,7 @@ promptHighlightResizeObserver.observe(elements.input);
 // change, so the label stages have to be re-measured here as well as in render().
 const composerToolsResizeObserver = new ResizeObserver(() => {
 	reflowComposerTools();
-	if (activeSelect) positionSelectPopup(selectTrigger(activeSelect));
+	selectorController.reposition();
 	if (!elements.commandPanel.hidden) positionCommandPanel();
 });
 composerToolsResizeObserver.observe(elements.composerTools);
@@ -317,7 +352,9 @@ elements.input.addEventListener("keydown", (event) => {
 	// the composer's own send and reference-jump handling.
 	if (handleInlineCommandKeydown(event)) return;
 	if (event.key === "F12") {
-		const reference = composerReferenceAtOffset(elements.input.selectionStart);
+		const reference = composerController.referenceAtOffset(
+			elements.input.selectionStart,
+		);
 		if (!reference) return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
@@ -330,7 +367,12 @@ elements.input.addEventListener("keydown", (event) => {
 });
 
 elements.input.addEventListener("paste", (event) => {
-	void handleImagePaste(event);
+	void handleImagePaste(event, {
+		attachedImageCount: () =>
+			ui.attachments.filter((attachment) => attachment.kind === "image").length,
+		onImages: (images) => runAction("pasteImages", { images }),
+		onError: (message) => showToast(message, "error"),
+	});
 });
 
 window.addEventListener("dragenter", (event) => {
@@ -368,7 +410,7 @@ window.addEventListener("drop", (event) => {
 	}
 	const availableReferenceCount = Math.max(
 		0,
-		MAX_COMPOSER_REFERENCE_COUNT - ui.composerReferences.length,
+		MAX_COMPOSER_REFERENCE_COUNT - composerController.references.length,
 	);
 	if (resources.length > availableReferenceCount) {
 		showToast(
@@ -386,7 +428,9 @@ window.addEventListener("dragend", clearResourceDragState);
 
 elements.input.addEventListener("click", (event) => {
 	if (!event.metaKey && !event.ctrlKey) return;
-	const reference = composerReferenceAtOffset(elements.input.selectionStart);
+	const reference = composerController.referenceAtOffset(
+		elements.input.selectionStart,
+	);
 	if (!reference) return;
 	post({ type: "openComposerReference", id: reference.id });
 });
@@ -459,61 +503,7 @@ elements.renameSessionButton.addEventListener("click", () =>
 	openRenamePrompt(),
 );
 
-elements.modelSelect.addEventListener("click", () => toggleSelect("model"));
-elements.thinkingSelect.addEventListener("click", () =>
-	toggleSelect("thinking"),
-);
-for (const kind of ["model", "thinking"] as const) {
-	selectTrigger(kind).addEventListener("keydown", (event) => {
-		if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-		event.preventDefault();
-		if (activeSelect !== kind) openSelect(kind);
-	});
-}
-
-elements.selectPopup.addEventListener("click", (event) => {
-	if (!activeSelect || !(event.target instanceof HTMLElement)) return;
-	const value =
-		event.target.closest<HTMLElement>(".select-option")?.dataset.value;
-	if (value !== undefined) commitSelect(activeSelect, value);
-});
-
-elements.selectPopup.addEventListener("keydown", (event) => {
-	const kind = activeSelect;
-	if (!kind) return;
-	const rows = [
-		...elements.selectPopup.querySelectorAll<HTMLElement>(".select-option"),
-	];
-	if (rows.length === 0) return;
-	const index = rows.findIndex((row) => row === document.activeElement);
-	if (event.key === "Escape" || event.key === "Tab") {
-		event.preventDefault();
-		closeSelect(true);
-		return;
-	}
-	if (event.key === "Enter" || event.key === " ") {
-		event.preventDefault();
-		const value = rows[index]?.dataset.value;
-		if (value !== undefined) commitSelect(kind, value);
-		return;
-	}
-	let next = -1;
-	if (event.key === "ArrowDown") next = Math.min(rows.length - 1, index + 1);
-	else if (event.key === "ArrowUp") next = Math.max(0, index - 1);
-	else if (event.key === "Home") next = 0;
-	else if (event.key === "End") next = rows.length - 1;
-	if (next < 0) return;
-	event.preventDefault();
-	focusSelectOption(rows[next]);
-});
-
-window.addEventListener("resize", () => {
-	if (activeSelect) positionSelectPopup(selectTrigger(activeSelect));
-});
-
-elements.modalBackdrop.addEventListener("click", (event) => {
-	if (event.target === elements.modalBackdrop) closeModal();
-});
+window.addEventListener("resize", () => selectorController.reposition());
 
 elements.messages.addEventListener("click", (event) => {
 	const target = event.target as HTMLElement;
@@ -598,9 +588,9 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 			break;
 		}
 		case "composerReferences": {
-			const changedReference = applyIncomingComposerReferences(
-				message.references,
-			).at(-1);
+			const changedReference = composerController
+				.applyIncoming(message.references)
+				.at(-1);
 			const requestId = message.focusRequestId;
 			if (
 				typeof requestId === "number" &&
@@ -616,9 +606,9 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 						announce(
 							`Referenced ${formatComposerReferenceLocation(changedReference)}`,
 						);
-					} else if (ui.composerReferences.length > 0) {
+					} else if (composerController.references.length > 0) {
 						announce(
-							`Pi Agent input focused with ${ui.composerReferences.length} ${ui.composerReferences.length === 1 ? "reference" : "references"}`,
+							`Pi Agent input focused with ${composerController.references.length} ${composerController.references.length === 1 ? "reference" : "references"}`,
 						);
 					} else {
 						announce("Pi Agent input focused");
@@ -633,14 +623,7 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 			break;
 		}
 		case "setComposerText": {
-			const references = ui.composerReferences.map(
-				({ start: _start, end: _end, ...reference }) => reference,
-			);
-			reconcilePendingReferenceEdits(elements.input.value, message.text);
-			ui.composerReferences = [];
-			writeComposerDraft(message.text, message.text.length);
-			applyIncomingComposerReferences(references);
-			elements.input.focus();
+			composerController.setText(message.text);
 			break;
 		}
 		default:
@@ -719,41 +702,11 @@ function handleActionResult(
 		action &&
 		(action.type === "submit" || action.type === "newSession")
 	) {
-		const draftUnchanged = elements.input.value === action.draft;
 		const submittedIds = new Set(action.attachmentIds ?? []);
 		ui.attachments = ui.attachments.filter(
 			(attachment) => !submittedIds.has(attachment.id),
 		);
-		const submittedReferences = new Map(
-			(action.referenceSnapshots ?? []).map((reference) => [
-				reference.id,
-				reference.revision,
-			]),
-		);
-		ui.composerReferences = ui.composerReferences.filter(
-			(reference) =>
-				submittedReferences.get(reference.id) !== reference.revision,
-		);
-		const activeKeys = new Set(
-			ui.composerReferences.map(
-				(reference) => `${reference.id}:${reference.revision}`,
-			),
-		);
-		if (draftUnchanged) {
-			const activeReferences = ui.composerReferences.map(
-				({ start: _start, end: _end, ...reference }) => reference,
-			);
-			ui.composerReferences = [];
-			writeComposerDraft("", 0);
-			applyIncomingComposerReferences(activeReferences);
-		} else {
-			removeManagedReferencesFromComposer(
-				(action.referenceSnapshots ?? []).filter(
-					(reference) =>
-						!activeKeys.has(`${reference.id}:${reference.revision}`),
-				),
-			);
-		}
+		composerController.completeSubmittedReferences(action);
 	}
 	if (ok && action?.type === "pasteImages") {
 		showToast("Clipboard image attached", "info");
@@ -970,7 +923,10 @@ function render(): void {
 	elements.renameSessionButton.disabled = !enabled;
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
 	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
-	if (activeSelect && selectTrigger(activeSelect).disabled) closeSelect(false);
+	const activeSelect = selectorController.activeKind;
+	if (activeSelect && selectorController.trigger(activeSelect).disabled) {
+		selectorController.close(false);
+	}
 	if (!enabled) dismissCommandPalette();
 	reflowComposerTools();
 	focusComposerIfRequested();
@@ -1101,6 +1057,7 @@ function renderMessages(): void {
 		html += messageHtml(
 			message,
 			resultMap,
+			liveTools,
 			message === ui.streamingMessage,
 			`message-${omitted + index}`,
 		);
@@ -1209,275 +1166,6 @@ function linkifyWorkspacePaths(): void {
 	}
 }
 
-function messageHtml(
-	message: PiMessage,
-	results: Map<string, PiMessage>,
-	streaming: boolean,
-	messageKey: string,
-): string {
-	if (message.role === "toolResult") return "";
-	if (message.role === "user") return userMessageHtml(message);
-	if (message.role === "assistant")
-		return assistantMessageHtml(message, results, streaming, messageKey);
-	if (message.role === "bashExecution") {
-		return `<div class="message system-message">${toolDisclosureHtml(
-			"bash-execution",
-			"bash",
-			{ command: message.command },
-			undefined,
-			{
-				id: "bash-execution",
-				name: "bash",
-				args: { command: message.command },
-				status: message.exitCode === 0 ? "success" : "error",
-				output: stringValue(message.output),
-				startedAt: 0,
-			},
-		)}</div>`;
-	}
-	if (
-		message.role === "compactionSummary" ||
-		message.role === "branchSummary"
-	) {
-		return `<div class="context-divider"><i class="codicon codicon-fold"></i> Context summarized</div>`;
-	}
-	if (message.role === "custom" && message.display !== false) {
-		return `<div class="message system-message custom-message">${markdown(contentText(message.content))}</div>`;
-	}
-	return "";
-}
-
-function userMessageHtml(message: PiMessage): string {
-	const rawText = contentText(message.content);
-	const contextMatch = rawText.match(
-		/^<pi-context>\n([\s\S]*?)\n<\/pi-context>\n\n/u,
-	);
-	const context = contextMatch?.[1] ?? "";
-	const text = contextMatch ? rawText.slice(contextMatch[0].length) : rawText;
-	const markers = context
-		.split("\n")
-		.map(contextInlineMarker)
-		.filter((marker): marker is InlineMarker => Boolean(marker));
-	const bodyHtml = renderUserBodyHtml(text, markers);
-	const imageHtml = contentImages(message.content)
-		.map(
-			(image) =>
-				`<img class="message-image" src="data:${escapeHtml(image.mimeType ?? "image/png")};base64,${image.data ?? ""}" alt="Attached image">`,
-		)
-		.join("");
-	return `<article class="message user-message"><div class="user-message-text">${bodyHtml}</div>${imageHtml}</article>`;
-}
-
-function markerSpanHtml(marker: InlineMarker): string {
-	const resourceAttr = marker.resourceUri
-		? ` data-resource-uri="${escapeHtml(marker.resourceUri)}"`
-		: marker.workspacePath
-			? ` data-workspace-path="${escapeHtml(marker.workspacePath)}"`
-			: "";
-	const lineAttr = marker.line ? ` data-workspace-line="${marker.line}"` : "";
-	return `<span class="composer-reference-highlight"${resourceAttr}${lineAttr}>${escapeHtml(marker.label)}</span>`;
-}
-
-/**
- * Render the user message body. Reference markers are kept in place within the
- * text (see buildPrompt), so locate each marker where it actually appears and
- * replace it with a highlight span. Markers not found inline are prefixed so
- * their context remains visible.
- */
-function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
-	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
-		[];
-	const leftover: InlineMarker[] = [];
-	let searchFrom = 0;
-	for (const marker of markers) {
-		const index = text.indexOf(marker.label, searchFrom);
-		if (index >= 0) {
-			inline.push({ start: index, end: index + marker.label.length, marker });
-			searchFrom = index + marker.label.length;
-		} else {
-			leftover.push(marker);
-		}
-	}
-	let body = "";
-	let cursor = 0;
-	for (const { start, end, marker } of inline) {
-		body += escapeHtml(text.slice(cursor, start));
-		body += markerSpanHtml(marker);
-		cursor = end;
-	}
-	body += escapeHtml(text.slice(cursor));
-	const prefix = leftover.map(markerSpanHtml).join(" ");
-	if (!prefix) return body;
-	return body ? `${prefix} ${body}` : prefix;
-}
-
-interface InlineMarker {
-	label: string;
-	resourceUri?: string;
-	workspacePath?: string;
-	line?: number;
-}
-
-function contextInlineMarker(line: string): InlineMarker | undefined {
-	const filePrefix = "- file: ";
-	if (line.startsWith(filePrefix)) {
-		const value = line.slice(filePrefix.length);
-		const reference = parseFileReferencePayload(value);
-		if (reference) {
-			return {
-				label: reference.marker,
-				resourceUri: reference.uri,
-				workspacePath: reference.displayPath,
-			};
-		}
-		try {
-			const filePath = JSON.parse(value) as unknown;
-			if (typeof filePath !== "string") return { label: "@file" };
-			const name = filePath.split(/[/\\]/u).pop() || filePath;
-			return { label: `@${name}` };
-		} catch {
-			return { label: "@file" };
-		}
-	}
-	// symbol/diagnostics are supplemental data for a selection; keep them in the
-	// payload sent to pi but do not render an inline marker.
-	if (line.startsWith("- symbol: ") || line.startsWith("- diagnostics: ")) {
-		return undefined;
-	}
-	const selectionPrefix = "- selection: ";
-	if (!line.startsWith(selectionPrefix)) return undefined;
-	const reference = parseSelectionReferencePayload(
-		line.slice(selectionPrefix.length),
-	);
-	if (!reference) return undefined;
-	return {
-		label: reference.marker,
-		resourceUri: reference.uri,
-		workspacePath: reference.displayPath,
-		line: reference.startLine,
-	};
-}
-
-function assistantMessageHtml(
-	message: PiMessage,
-	results: Map<string, PiMessage>,
-	streaming: boolean,
-	messageKey: string,
-): string {
-	const blocks = Array.isArray(message.content) ? message.content : [];
-	const sections: string[] = [];
-	let activity: string[] = [];
-	let thinkingIndex = 0;
-	const isActivityBlock = (type: string | undefined): boolean =>
-		type === "thinking" || type === "toolCall";
-	const startsWithActivity = isActivityBlock(blocks[0]?.type);
-	const endsWithActivity = isActivityBlock(blocks.at(-1)?.type);
-	const flushActivity = (): void => {
-		if (activity.length === 0) return;
-		sections.push(`<div class="activity-timeline">${activity.join("")}</div>`);
-		activity = [];
-	};
-
-	for (const block of blocks) {
-		if (block.type === "text") {
-			flushActivity();
-			sections.push(
-				`<div class="assistant-text">${markdown(block.text ?? "")}</div>`,
-			);
-		}
-		if (block.type === "thinking") {
-			const thinkingKey = `${messageKey}-thinking-${thinkingIndex}`;
-			const streamingState = streaming ? " streaming" : "";
-			const openState = streaming ? " open" : "";
-			thinkingIndex += 1;
-			activity.push(
-				`<details class="activity-item thinking-block${streamingState}" data-thinking-key="${escapeHtml(thinkingKey)}"${openState}><summary class="thinking-summary"><span class="activity-marker"><i class="codicon codicon-lightbulb" aria-hidden="true"></i></span><span class="thinking-summary-content"><span class="thinking-label">Reasoning</span><i class="codicon codicon-chevron-right thinking-chevron" aria-hidden="true"></i></span></summary><div class="thinking-content">${markdown(block.thinking ?? "")}</div></details>`,
-			);
-		}
-		if (block.type === "toolCall" && block.id && block.name) {
-			activity.push(
-				toolDisclosureHtml(
-					block.id,
-					block.name,
-					block.arguments ?? {},
-					results.get(block.id),
-					liveTools.get(block.id),
-				),
-			);
-		}
-	}
-	flushActivity();
-	if (message.errorMessage)
-		sections.push(
-			`<div class="message-error">${escapeHtml(message.errorMessage)}</div>`,
-		);
-	if (message.stopReason === "aborted")
-		sections.push('<div class="cancelled-note">Cancelled</div>');
-	const activityClasses = `${startsWithActivity ? " starts-with-activity" : ""}${endsWithActivity ? " ends-with-activity" : ""}`;
-	return `<article class="message assistant-message${activityClasses}">${sections.join("")}</article>`;
-}
-
-function toolDisclosureHtml(
-	id: string,
-	name: string,
-	args: JsonRecord,
-	result?: PiMessage,
-	live?: LiveTool,
-): string {
-	const status = resolveToolStatus(result, live);
-	const output = live?.output || (result ? contentText(result.content) : "");
-	const { label: statusLabel, icon } = toolStatusPresentation(status);
-	const target = summarizeTool(name, args);
-	const diff = live?.diff ?? (result ? extractResultDiff(result) : "");
-	const diffHtml = status === "success" && diff ? renderDiffBlock(diff) : "";
-	// For file edits the diff replaces the noisy "Successfully replaced..."
-	// output, so only show tool output when there is no diff to display.
-	const outputHtml =
-		output && !diffHtml
-			? `<div class="tool-output"><pre>${escapeHtml(truncate(output, 20_000))}</pre></div>`
-			: "";
-	return `<details class="activity-item tool-call ${status}" data-tool-key="${escapeHtml(id)}" ${status === "error" ? "open" : ""}>
-    <summary>
-      <span class="activity-marker"><i class="codicon codicon-${icon}" aria-hidden="true"></i></span>
-      <span class="tool-summary-content"><span class="tool-summary-main"><span class="tool-name">${escapeHtml(friendlyToolName(name))}</span><span class="tool-target">${escapeHtml(target)}</span></span><span class="tool-status">${statusLabel}</span></span>
-    </summary>
-    ${outputHtml}
-    ${diffHtml}
-  </details>`;
-}
-
-const MAX_DIFF_LINES = 400;
-
-/**
- * Render a diff string produced by pi (the `result.details.diff` field of a
- * file-editing tool). Each line already begins with `+`, `-`, or a leading
- * space for context; the client only classifies and colorizes it, and never
- * recomputes the diff itself.
- */
-function renderDiffBlock(diff: string): string {
-	const lines = diff.replace(/\n$/u, "").split("\n");
-	const truncated = lines.length > MAX_DIFF_LINES;
-	const shown = truncated ? lines.slice(0, MAX_DIFF_LINES) : lines;
-	const rows = shown
-		.map((line) => {
-			const marker = line.charAt(0);
-			const kind =
-				marker === "+" ? "add" : marker === "-" ? "remove" : "context";
-			return `<div class="diff-line diff-${kind}"><span class="diff-text">${escapeHtml(line) || "&nbsp;"}</span></div>`;
-		})
-		.join("");
-	const more = truncated
-		? `<div class="diff-line diff-context"><span class="diff-text">\u2026 ${lines.length - MAX_DIFF_LINES} more lines</span></div>`
-		: "";
-	return `<div class="tool-diff">${rows}${more}</div>`;
-}
-
-function extractResultDiff(result: unknown): string {
-	const record = objectValue(result);
-	const details = objectValue(record.details);
-	return stringValue(details.diff);
-}
-
 function buildToolResultMap(): Map<string, PiMessage> {
 	const results = new Map<string, PiMessage>();
 	for (const message of ui.messages) {
@@ -1515,53 +1203,6 @@ function renderAttachments(): void {
 	}
 }
 
-function acceptIncomingComposerReferences(
-	references: ComposerReference[],
-): ComposerReference[] {
-	const incomingById = new Map(
-		references.map((reference) => [reference.id, reference]),
-	);
-	for (const [
-		id,
-		removedRevision,
-	] of locallyRemovedComposerReferenceRevisions) {
-		const incoming = incomingById.get(id);
-		if (!incoming || incoming.revision > removedRevision) {
-			locallyRemovedComposerReferenceRevisions.delete(id);
-		}
-	}
-	return references.filter((reference) => {
-		const removedRevision = locallyRemovedComposerReferenceRevisions.get(
-			reference.id,
-		);
-		return (
-			removedRevision === undefined || reference.revision > removedRevision
-		);
-	});
-}
-
-function managedComposerReferences(): ManagedComposerReference[] {
-	const references = new Map<string, ManagedComposerReference>();
-	for (const reference of ui.composerReferences) {
-		if (isManagedReferenceValid(elements.input.value, reference)) {
-			references.set(`${reference.id}:${reference.revision}`, reference);
-		}
-	}
-	for (const action of pendingActions.values()) {
-		for (const reference of action.referenceSnapshots ?? []) {
-			if (isManagedReferenceValid(elements.input.value, reference)) {
-				references.set(`${reference.id}:${reference.revision}`, reference);
-			}
-		}
-	}
-	for (const reference of restoredComposerReferences.values()) {
-		if (isManagedReferenceValid(elements.input.value, reference)) {
-			references.set(`${reference.id}:${reference.revision}`, reference);
-		}
-	}
-	return [...references.values()];
-}
-
 function syncPromptHighlightScroll(): void {
 	if (elements.input.clientWidth > 0) {
 		elements.promptHighlights.style.width = `${elements.input.clientWidth}px`;
@@ -1581,9 +1222,9 @@ function renderComposerHighlights(): void {
 		syncPromptHighlightScroll();
 		return;
 	}
-	const references = managedComposerReferences().sort(
-		(left, right) => left.start - right.start || left.end - right.end,
-	);
+	const references = composerController
+		.managedReferences()
+		.sort((left, right) => left.start - right.start || left.end - right.end);
 	const markerSignature = references
 		.map(
 			(reference) =>
@@ -1628,213 +1269,6 @@ function renderComposerHighlights(): void {
 	syncPromptHighlightScroll();
 }
 
-function persistComposerState(): void {
-	vscode.setState({
-		draft: elements.input.value,
-		composerReferences: ui.composerReferences,
-	});
-}
-
-function writeComposerDraft(text: string, caret: number): void {
-	const nextCaret = Math.max(0, Math.min(caret, text.length));
-	elements.input.value = text;
-	composerTextSnapshot = text;
-	elements.input.setSelectionRange(nextCaret, nextCaret);
-	lastComposerCaret = nextCaret;
-	persistComposerState();
-	resizeInput();
-	renderComposerHighlights();
-}
-
-function rememberComposerCaret(): void {
-	const caret = elements.input.selectionStart;
-	if (typeof caret === "number") lastComposerCaret = caret;
-}
-
-function reconcilePendingReferenceEdits(
-	previousText: string,
-	nextText: string,
-): void {
-	for (const action of pendingActions.values()) {
-		if (!action.referenceSnapshots) continue;
-		action.referenceSnapshots = reconcileComposerEdit(
-			previousText,
-			nextText,
-			action.referenceSnapshots,
-		).references;
-	}
-}
-
-function removeManagedReferencesFromComposer(
-	references: ManagedComposerReference[],
-): void {
-	if (references.length === 0) return;
-	const previousText = elements.input.value;
-	const originalPrefix = previousText.slice(0, elements.input.selectionStart);
-	const identities = references.map(({ id, revision }) => ({ id, revision }));
-	const activeKeys = new Set(
-		ui.composerReferences.map(
-			(reference) => `${reference.id}:${reference.revision}`,
-		),
-	);
-	const working = new Map(
-		[...ui.composerReferences, ...references].map((reference) => [
-			`${reference.id}:${reference.revision}`,
-			reference,
-		]),
-	);
-	const result = removeManagedReferences(
-		previousText,
-		[...working.values()],
-		identities,
-	);
-	const prefixResult = removeManagedReferences(
-		originalPrefix,
-		references.filter((reference) => reference.end <= originalPrefix.length),
-		identities,
-	);
-	reconcilePendingReferenceEdits(previousText, result.text);
-	ui.composerReferences = result.references.filter((reference) =>
-		activeKeys.has(`${reference.id}:${reference.revision}`),
-	);
-	writeComposerDraft(result.text, prefixResult.text.length);
-}
-
-function isPendingComposerReference(reference: ComposerReference): boolean {
-	for (const action of pendingActions.values()) {
-		if (
-			action.referenceSnapshots?.some(
-				(snapshot) =>
-					snapshot.id === reference.id &&
-					snapshot.revision === reference.revision,
-			)
-		)
-			return true;
-	}
-	return false;
-}
-
-function applyIncomingComposerReferences(
-	incoming: ComposerReference[],
-): ManagedComposerReference[] {
-	const references = acceptIncomingComposerReferences(incoming);
-	const previousById = new Map(
-		ui.composerReferences.map((reference) => [reference.id, reference]),
-	);
-	const acceptedIds = new Set(references.map((reference) => reference.id));
-	const restoredOrphans = [...restoredComposerReferences.values()].filter(
-		(reference) => !acceptedIds.has(reference.id),
-	);
-	if (restoredOrphans.length > 0) {
-		ui.composerReferences.push(...restoredOrphans);
-		removeManagedReferencesFromComposer(restoredOrphans);
-	}
-	const stale = ui.composerReferences.filter(
-		(reference) =>
-			!acceptedIds.has(reference.id) && !isPendingComposerReference(reference),
-	);
-	removeManagedReferencesFromComposer(stale);
-	ui.composerReferences = ui.composerReferences.filter((reference) =>
-		acceptedIds.has(reference.id),
-	);
-
-	const changed: ManagedComposerReference[] = [];
-	for (const summary of references) {
-		const current = ui.composerReferences.find(
-			(reference) => reference.id === summary.id,
-		);
-		const restored = restoredComposerReferences.get(summary.id);
-		restoredComposerReferences.delete(summary.id);
-		const pending = managedComposerReferences().find(
-			(reference) =>
-				reference.id === summary.id && reference.marker === summary.marker,
-		);
-		const candidate = [current, restored, pending].find(
-			(reference): reference is ManagedComposerReference =>
-				Boolean(
-					reference &&
-						reference.marker === summary.marker &&
-						isManagedReferenceValid(elements.input.value, reference),
-				),
-		);
-		if (candidate) {
-			const updated = {
-				...summary,
-				start: candidate.start,
-				end: candidate.end,
-			};
-			ui.composerReferences = ui.composerReferences.filter(
-				(reference) => reference.id !== summary.id,
-			);
-			ui.composerReferences.push(updated);
-			if (previousById.get(summary.id)?.revision !== summary.revision) {
-				changed.push(updated);
-			}
-			continue;
-		}
-
-		const previousText = elements.input.value;
-		const caretSource =
-			document.activeElement === elements.input
-				? (elements.input.selectionStart ?? lastComposerCaret)
-				: lastComposerCaret;
-		const insertion = insertManagedReference(
-			previousText,
-			Math.min(caretSource, previousText.length),
-			summary,
-			ui.composerReferences,
-		);
-		reconcilePendingReferenceEdits(previousText, insertion.text);
-		ui.composerReferences = insertion.references;
-		writeComposerDraft(insertion.text, insertion.caret);
-		const inserted = ui.composerReferences.find(
-			(reference) => reference.id === summary.id,
-		);
-		if (inserted) changed.push(inserted);
-	}
-	ui.composerReferences.sort((left, right) => left.start - right.start);
-	persistComposerState();
-	return changed;
-}
-
-function reconcileComposerReferencesWithComposer(): void {
-	const nextText = elements.input.value;
-	const result = reconcileComposerEdit(
-		composerTextSnapshot,
-		nextText,
-		ui.composerReferences,
-	);
-	reconcilePendingReferenceEdits(composerTextSnapshot, nextText);
-	ui.composerReferences = result.references;
-	composerTextSnapshot = nextText;
-	for (const reference of result.removed) {
-		locallyRemovedComposerReferenceRevisions.set(
-			reference.id,
-			reference.revision,
-		);
-		post({
-			type: "removeComposerReference",
-			id: reference.id,
-			revision: reference.revision,
-		});
-	}
-	if (result.removed.length > 0) {
-		const first = result.removed[0];
-		const label =
-			result.removed.length === 1 && first
-				? formatComposerReferenceLocation(first)
-				: `${result.removed.length} references`;
-		announce(`Removed ${label}`);
-		scheduleRender();
-	}
-}
-
-function composerReferenceAtOffset(
-	offset: number,
-): ManagedComposerReference | undefined {
-	return referenceAtOffset(ui.composerReferences, offset);
-}
-
 function renderSelectors(): void {
 	const model = ui.state.model;
 	elements.modelSelectValue.textContent = model
@@ -1847,19 +1281,8 @@ function renderSelectors(): void {
 	elements.thinkingSelectValue.textContent = ui.state.thinkingLevel || "off";
 	elements.thinkingSelect.title = ui.state.thinkingLevel || "Thinking level";
 
-	// A re-render mid-selection (streaming keeps them coming) must not rebuild the
-	// open list and drop focus; only the checkmarks are refreshed in place.
-	if (!activeSelect) return;
-	const current = selectedValue(activeSelect);
-	for (const row of elements.selectPopup.querySelectorAll<HTMLElement>(
-		".select-option",
-	)) {
-		const selected = row.dataset.value === current;
-		row.setAttribute("aria-selected", String(selected));
-		row
-			.querySelector(".select-option-check")
-			?.classList.toggle("is-hidden", !selected);
-	}
+	// Preserve focus while streaming renders update the selected value.
+	selectorController.syncSelected();
 }
 
 function renderQueue(): void {
@@ -2244,7 +1667,7 @@ function moveActiveCommand(delta: number): void {
 
 function openCommandPalette(mode: CommandPaletteMode): void {
 	if (ui.connection !== "ready") return;
-	closeSelect(false);
+	selectorController.close(false);
 	dismissHistory();
 	commandPaletteMode = mode;
 	activeCommandName = undefined;
@@ -2303,28 +1726,19 @@ function insertSlashCommand(name: string): void {
 
 	let start = token
 		? token.start
-		: Math.max(0, Math.min(lastComposerCaret, text.length));
+		: Math.max(0, Math.min(composerController.lastCaret, text.length));
 	let end = token ? token.end : start;
 	if (!token) {
 		// Never split a marker: land after it instead.
-		const marker = referenceAtOffset(ui.composerReferences, start);
+		const marker = composerController.referenceAtOffset(start);
 		if (marker && start > marker.start && start < marker.end) {
 			start = marker.end;
 			end = marker.end;
 		}
 	}
 
-	const caret = start + insertion.length;
-	elements.input.value = `${text.slice(0, start)}${insertion}${text.slice(end)}`;
-	elements.input.setSelectionRange(caret, caret);
-	lastComposerCaret = caret;
+	composerController.replaceRange(start, end, insertion);
 	dismissCommandPalette();
-	// Same sequence as the composer's `input` listener: this diffs against the
-	// previous snapshot, posts any lost composer references, and refreshes highlights.
-	reconcileComposerReferencesWithComposer();
-	resizeInput();
-	persistComposerState();
-	renderComposerHighlights();
 	elements.input.focus();
 	announce(`Inserted /${name}`);
 }
@@ -2386,129 +1800,6 @@ function handleInlineCommandKeydown(event: KeyboardEvent): boolean {
 }
 
 /**
- * The model and thinking pickers are custom popups rather than native
- * `<select>` elements: a native dropdown's list is drawn by the OS, so it
- * cannot follow the VS Code theme or this view's styling. The popup lives under
- * `#app` because both `.composer` and `#app` clip their overflow.
- */
-type SelectKind = "model" | "thinking";
-
-let activeSelect: SelectKind | undefined;
-
-function selectTrigger(kind: SelectKind): HTMLButtonElement {
-	return kind === "model" ? elements.modelSelect : elements.thinkingSelect;
-}
-
-function selectOptions(kind: SelectKind): { value: string; label: string }[] {
-	if (kind === "thinking")
-		return ui.thinkingLevels.map((level) => ({ value: level, label: level }));
-	return ui.models.map((model) => ({
-		value: `${model.provider}/${model.id}`,
-		label: model.name || model.id,
-	}));
-}
-
-function selectedValue(kind: SelectKind): string {
-	if (kind === "thinking") return ui.state.thinkingLevel ?? "";
-	return ui.state.model
-		? `${ui.state.model.provider}/${ui.state.model.id}`
-		: "";
-}
-
-function toggleSelect(kind: SelectKind): void {
-	if (activeSelect === kind) closeSelect(true);
-	else openSelect(kind);
-}
-
-function openSelect(kind: SelectKind): void {
-	const trigger = selectTrigger(kind);
-	if (trigger.disabled) return;
-	const options = selectOptions(kind);
-	if (options.length === 0) return;
-	if (activeSelect) closeSelect(false);
-	dismissHistory();
-	dismissCommandPalette();
-	activeSelect = kind;
-
-	const current = selectedValue(kind);
-	const rows = options.map((option) => {
-		const row = document.createElement("div");
-		row.className = "select-option";
-		row.setAttribute("role", "option");
-		row.tabIndex = -1;
-		row.dataset.value = option.value;
-		const selected = option.value === current;
-		row.setAttribute("aria-selected", String(selected));
-		const check = document.createElement("i");
-		check.className = `codicon codicon-check select-option-check${
-			selected ? "" : " is-hidden"
-		}`;
-		check.setAttribute("aria-hidden", "true");
-		const label = document.createElement("span");
-		label.className = "select-option-label";
-		label.textContent = option.label;
-		row.append(check, label);
-		return row;
-	});
-
-	elements.selectPopup.replaceChildren(...rows);
-	elements.selectPopup.classList.toggle("is-thinking", kind === "thinking");
-	elements.selectPopup.hidden = false;
-	trigger.setAttribute("aria-expanded", "true");
-	positionSelectPopup(trigger);
-	focusSelectOption(
-		rows.find((row) => row.getAttribute("aria-selected") === "true") ?? rows[0],
-	);
-}
-
-function focusSelectOption(row: HTMLElement | undefined): void {
-	if (!row) return;
-	row.focus();
-	row.scrollIntoView({ block: "nearest" });
-}
-
-function positionSelectPopup(trigger: HTMLElement): void {
-	positionPopupAbove(trigger, elements.selectPopup);
-}
-
-/**
- * Places a popup above a composer element, inside `#app`.
- *
- * Shared by the model/thinking listbox and the slash-command palette: the
- * composer sits at the bottom of the view, so both open upward, cap their height
- * at the space actually available, and clamp horizontally to stay in view.
- *
- * `anchor` defaults to the trigger but the palette passes the whole composer.
- * Anchoring the palette to its toolbar button put its bottom edge level with the
- * button, which is *below* the textarea — so the panel covered the text being
- * typed. The listbox pickers are short-lived and keep anchoring to their trigger.
- */
-function positionPopupAbove(
-	trigger: HTMLElement,
-	popup: HTMLElement,
-	anchor?: HTMLElement,
-): void {
-	const appRect = elements.app.getBoundingClientRect();
-	const rect = (anchor ?? trigger).getBoundingClientRect();
-	popup.style.bottom = `${Math.round(appRect.bottom - rect.top + 4)}px`;
-	popup.style.maxHeight = `${Math.max(
-		120,
-		Math.round(rect.top - appRect.top - 12),
-	)}px`;
-	// Reset before measuring: offsetWidth has to be read at the popup's natural
-	// width, not at whatever the previous placement left behind.
-	popup.style.left = "0px";
-	const left = Math.max(
-		8,
-		Math.min(
-			Math.round(rect.left - appRect.left),
-			Math.round(appRect.width - popup.offsetWidth - 8),
-		),
-	);
-	popup.style.left = `${left}px`;
-}
-
-/**
  * Positions the command palette above the composer and matches its width, so the
  * list lines up with the input it writes into.
  */
@@ -2516,93 +1807,11 @@ function positionCommandPanel(): void {
 	elements.commandPanel.style.width = `${Math.round(
 		elements.composer.getBoundingClientRect().width,
 	)}px`;
-	positionPopupAbove(
-		elements.commandButton,
-		elements.commandPanel,
-		elements.composer,
-	);
-}
-
-function closeSelect(restoreFocus: boolean): void {
-	const kind = activeSelect;
-	activeSelect = undefined;
-	elements.selectPopup.hidden = true;
-	elements.selectPopup.replaceChildren();
-	if (!kind) return;
-	const trigger = selectTrigger(kind);
-	trigger.setAttribute("aria-expanded", "false");
-	if (restoreFocus) trigger.focus();
-}
-
-function commitSelect(kind: SelectKind, value: string): void {
-	const unchanged = value === selectedValue(kind);
-	closeSelect(true);
-	if (unchanged) return;
-	if (kind === "thinking") {
-		runAction("setThinking", { level: value });
-		return;
-	}
-	const [provider, ...idParts] = value.split("/");
-	const modelId = idParts.join("/");
-	if (provider && modelId) runAction("setModel", { provider, modelId });
-}
-
-async function handleImagePaste(event: ClipboardEvent): Promise<void> {
-	const clipboard = event.clipboardData;
-	if (!clipboard) return;
-	const files = [...clipboard.items]
-		.filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-		.map((item) => item.getAsFile())
-		.filter((file): file is File => Boolean(file));
-	if (files.length === 0) return;
-	event.preventDefault();
-
-	const attachedImageCount = ui.attachments.filter(
-		(attachment) => attachment.kind === "image",
-	).length;
-	if (attachedImageCount + files.length > MAX_IMAGE_ATTACHMENT_COUNT) {
-		showToast(
-			`Attach at most ${MAX_IMAGE_ATTACHMENT_COUNT} images per message`,
-			"error",
-		);
-		return;
-	}
-
-	let totalBytes = 0;
-	for (const file of files) {
-		if (!SUPPORTED_CLIPBOARD_IMAGE_TYPES.has(file.type.toLowerCase())) {
-			showToast("Paste PNG, JPEG, GIF, or WebP images", "error");
-			return;
-		}
-		if (file.size > MAX_IMAGE_BYTES) {
-			showToast(
-				`${file.name || "Clipboard image"} exceeds the 10 MB limit`,
-				"error",
-			);
-			return;
-		}
-		totalBytes += file.size;
-	}
-	if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
-		showToast("Pasted images exceed the 12 MB total limit", "error");
-		return;
-	}
-
-	try {
-		const images: PastedImage[] = await Promise.all(
-			files.map(async (file, index) => ({
-				name: file.name || `Pasted image ${index + 1}`,
-				mimeType: file.type.toLowerCase(),
-				data: await readFileAsBase64(file),
-			})),
-		);
-		runAction("pasteImages", { images });
-	} catch (error) {
-		showToast(
-			error instanceof Error ? error.message : "Could not read clipboard image",
-			"error",
-		);
-	}
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.commandPanel,
+		anchor: elements.composer,
+	});
 }
 
 function isAttachableResourceDrag(
@@ -2621,35 +1830,13 @@ function clearResourceDragState(): void {
 	elements.app.classList.remove("is-resource-drag");
 }
 
-function readFileAsBase64(file: File): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.addEventListener("error", () =>
-			reject(new Error("Could not read clipboard image")),
-		);
-		reader.addEventListener("load", () => {
-			if (typeof reader.result !== "string") {
-				reject(new Error("Could not read clipboard image"));
-				return;
-			}
-			const separator = reader.result.indexOf(",");
-			if (separator < 0) {
-				reject(new Error("Invalid clipboard image"));
-				return;
-			}
-			resolve(reader.result.slice(separator + 1));
-		});
-		reader.readAsDataURL(file);
-	});
-}
-
 function sendPrompt(): void {
 	if (pendingSubmit || ui.connection !== "ready") return;
 	const text = elements.input.value;
 	if (
 		!text.trim() &&
 		ui.attachments.length === 0 &&
-		ui.composerReferences.length === 0
+		composerController.references.length === 0
 	)
 		return;
 	// The send button can be clicked while the palette is open, and submitting
@@ -2659,7 +1846,7 @@ function sendPrompt(): void {
 	runAction("submit", {
 		text,
 		attachmentIds: ui.attachments.map((attachment) => attachment.id),
-		references: ui.composerReferences.map((reference) => ({
+		references: composerController.references.map((reference) => ({
 			id: reference.id,
 			revision: reference.revision,
 			start: reference.start,
@@ -2695,9 +1882,7 @@ function runAction(
 	if (type === "submit" || type === "newSession") {
 		action.draft = elements.input.value;
 		action.attachmentIds = ui.attachments.map((attachment) => attachment.id);
-		action.referenceSnapshots = ui.composerReferences.map((reference) => ({
-			...reference,
-		}));
+		action.referenceSnapshots = composerController.snapshotReferences();
 	}
 	pendingActions.set(actionId, action);
 	post({ type, actionId, ...fields } as WebviewToHostMessage);
@@ -2709,49 +1894,13 @@ function post(message: WebviewToHostMessage): void {
 
 function openConfirm(options: ConfirmOptions): void {
 	if (options.dismissHistory) dismissHistory();
-	elements.modalBackdrop.replaceChildren();
-	const dialog = document.createElement("section");
-	dialog.className = "modal";
-	dialog.setAttribute("role", "dialog");
-	dialog.setAttribute("aria-modal", "true");
-	dialog.setAttribute("aria-label", options.title);
-	const heading = document.createElement("h2");
-	heading.textContent = options.title;
-	const detail = document.createElement("p");
-	detail.textContent = options.message;
-	const actions = document.createElement("div");
-	actions.className = "modal-actions";
-	const cancel = document.createElement("button");
-	cancel.type = "button";
-	cancel.className = "secondary-button";
-	cancel.textContent = "Cancel";
-	cancel.addEventListener("click", closeModal);
-	const confirm = document.createElement("button");
-	confirm.type = "button";
-	confirm.className = options.destructive ? "danger-button" : "primary-button";
-	confirm.textContent = options.confirmLabel;
-	confirm.addEventListener("click", () => {
-		closeModal();
-		options.onConfirm();
+	modalController.openConfirm({
+		title: options.title,
+		message: options.message,
+		confirmLabel: options.confirmLabel,
+		destructive: options.destructive,
+		onConfirm: options.onConfirm,
 	});
-	actions.append(cancel, confirm);
-	dialog.append(heading, detail, actions);
-	modalReturnFocus =
-		document.activeElement instanceof HTMLElement
-			? document.activeElement
-			: null;
-	elements.modalBackdrop.append(dialog);
-	elements.modalBackdrop.hidden = false;
-	setBackgroundInert(true);
-	cancel.focus();
-}
-
-function closeModal(): void {
-	elements.modalBackdrop.hidden = true;
-	elements.modalBackdrop.replaceChildren();
-	setBackgroundInert(false);
-	modalReturnFocus?.focus();
-	modalReturnFocus = null;
 }
 
 /**
@@ -2761,91 +1910,14 @@ function closeModal(): void {
  * editing target.
  */
 function openRenamePrompt(): void {
-	const dialog = document.createElement("section");
-	dialog.className = "modal";
-	dialog.setAttribute("role", "dialog");
-	dialog.setAttribute("aria-modal", "true");
-	dialog.setAttribute("aria-label", "Rename session");
-	const heading = document.createElement("h2");
-	heading.textContent = "Rename session";
-	const input = document.createElement("input");
-	input.type = "text";
-	input.className = "modal-input";
-	input.maxLength = MAX_SESSION_NAME_LENGTH;
-	input.value = ui.state.sessionName ?? "";
-	input.setAttribute("aria-label", "Session name");
-	input.setAttribute("autocomplete", "off");
-	const actions = document.createElement("div");
-	actions.className = "modal-actions";
-	const cancel = document.createElement("button");
-	cancel.type = "button";
-	cancel.className = "secondary-button";
-	cancel.textContent = "Cancel";
-	cancel.addEventListener("click", closeModal);
-	const confirm = document.createElement("button");
-	confirm.type = "button";
-	confirm.className = "primary-button";
-	confirm.textContent = "Rename";
-	const submit = () => {
-		const name = input.value.trim();
-		if (!name || confirm.disabled) return;
-		closeModal();
-		runAction("renameSession", { name });
-	};
-	const updateConfirm = () => {
-		confirm.disabled = input.value.trim().length === 0;
-	};
-	confirm.addEventListener("click", submit);
-	input.addEventListener("input", updateConfirm);
-	input.addEventListener("keydown", (event) => {
-		if (event.key === "Enter") submit();
+	modalController.openTextPrompt({
+		title: "Rename session",
+		label: "Session name",
+		initialValue: ui.state.sessionName ?? "",
+		confirmLabel: "Rename",
+		maxLength: MAX_SESSION_NAME_LENGTH,
+		onSubmit: (name) => runAction("renameSession", { name }),
 	});
-	updateConfirm();
-	actions.append(cancel, confirm);
-	dialog.append(heading, input, actions);
-	modalReturnFocus =
-		document.activeElement instanceof HTMLElement
-			? document.activeElement
-			: null;
-	elements.modalBackdrop.replaceChildren();
-	elements.modalBackdrop.append(dialog);
-	elements.modalBackdrop.hidden = false;
-	setBackgroundInert(true);
-	input.focus();
-	input.select();
-}
-
-function handleModalKeydown(event: KeyboardEvent): void {
-	if (event.key === "Escape") {
-		event.preventDefault();
-		closeModal();
-		return;
-	}
-	if (event.key !== "Tab") return;
-	const focusable = [
-		...elements.modalBackdrop.querySelectorAll<HTMLElement>(
-			"button, [href], input, textarea, select, [tabindex]:not([tabindex='-1'])",
-		),
-	].filter((item) => !item.hasAttribute("disabled"));
-	if (focusable.length === 0) return;
-	const first = focusable[0];
-	const last = focusable.at(-1);
-	if (!first || !last) return;
-	if (event.shiftKey && document.activeElement === first) {
-		event.preventDefault();
-		last.focus();
-	} else if (!event.shiftKey && document.activeElement === last) {
-		event.preventDefault();
-		first.focus();
-	}
-}
-
-function setBackgroundInert(inert: boolean): void {
-	elements.sessionHeader.inert = inert;
-	elements.historyPanel.inert = inert;
-	elements.transcript.inert = inert;
-	elements.widgetArea.inert = inert;
-	elements.composerShell.inert = inert;
 }
 
 function announce(message: string): void {
@@ -2917,32 +1989,6 @@ function connectionLabel(): string {
 	return ui.connectionDetail || "Pi is disconnected";
 }
 
-function contentText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const value of content) {
-		if (!value || typeof value !== "object") continue;
-		const block = value as PiContentBlock;
-		if (block.type === "text" && block.text) parts.push(block.text);
-	}
-	return parts.join("\n");
-}
-
-function contentImages(content: unknown): PiContentBlock[] {
-	if (!Array.isArray(content)) return [];
-	return content.filter((block): block is PiContentBlock =>
-		Boolean(block && typeof block === "object" && block.type === "image"),
-	);
-}
-
-function markdown(text: string): string {
-	return DOMPurify.sanitize(marked.parse(text) as string, {
-		USE_PROFILES: { html: true },
-		ADD_ATTR: ["target", "rel"],
-	});
-}
-
 function extractResultText(value: unknown): string {
 	const result = objectValue(value);
 	const content = result.content;
@@ -2954,49 +2000,6 @@ function extractResultText(value: unknown): string {
 		if (text) parts.push(text);
 	}
 	return parts.join("\n");
-}
-
-function summarizeTool(name: string, args: JsonRecord): string {
-	const value =
-		name === "bash"
-			? stringValue(args.command)
-			: stringValue(args.path) ||
-				stringValue(args.file_path) ||
-				stringValue(args.pattern) ||
-				stringValue(args.query);
-	return truncate(value || "", 88);
-}
-
-function resolveToolStatus(
-	result?: PiMessage,
-	live?: LiveTool,
-): LiveTool["status"] {
-	if (live) return live.status;
-	if (!result) return "running";
-	return result.isError ? "error" : "success";
-}
-
-function toolStatusPresentation(status: LiveTool["status"]): {
-	label: string;
-	icon: string;
-} {
-	if (status === "running")
-		return { label: "Running", icon: "loading codicon-modifier-spin" };
-	if (status === "error") return { label: "Failed", icon: "error" };
-	return { label: "Done", icon: "check" };
-}
-
-function friendlyToolName(name: string): string {
-	const labels: Record<string, string> = {
-		bash: "Run command",
-		read: "Read file",
-		write: "Write file",
-		edit: "Edit file",
-		grep: "Search text",
-		find: "Find files",
-		ls: "List files",
-	};
-	return labels[name] ?? name.replaceAll("_", " ");
 }
 
 function hasEquivalentTail(
@@ -3041,20 +2044,6 @@ function stringArray(value: unknown): string[] {
 	return Array.isArray(value)
 		? value.filter((item): item is string => typeof item === "string")
 		: [];
-}
-
-function escapeHtml(value: string): string {
-	return value.replace(
-		/[&<>"']/gu,
-		(character) =>
-			({
-				"&": "&amp;",
-				"<": "&lt;",
-				">": "&gt;",
-				'"': "&quot;",
-				"'": "&#39;",
-			})[character] ?? character,
-	);
 }
 
 function truncate(value: string, length: number): string {

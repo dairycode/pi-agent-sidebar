@@ -14,16 +14,17 @@ const outDir = outDirArgument
 
 await Promise.all([
 	rm(path.join(outDir, "dist"), { recursive: true, force: true }),
-	rm(path.join(outDir, "media", "main.js"), { force: true }),
-	rm(path.join(outDir, "media", "codicons"), { recursive: true, force: true }),
+	// Remove generated artifacts from the pre-dist/webview layout.
+	rm(path.join(outDir, "media"), { recursive: true, force: true }),
 ]);
 
 if (cleanOnly) {
 	process.exit(0);
 }
 
-await mkdir(path.join(outDir, "dist"), { recursive: true });
-await mkdir(path.join(outDir, "media", "codicons"), { recursive: true });
+const webviewOutDir = path.join(outDir, "dist", "webview");
+await mkdir(webviewOutDir, { recursive: true });
+await mkdir(path.join(webviewOutDir, "codicons"), { recursive: true });
 
 await Promise.all([
 	copyFile(
@@ -35,7 +36,7 @@ await Promise.all([
 			"dist",
 			"codicon.css",
 		),
-		path.join(outDir, "media", "codicons", "codicon.css"),
+		path.join(webviewOutDir, "codicons", "codicon.css"),
 	),
 	copyFile(
 		path.join(
@@ -46,7 +47,7 @@ await Promise.all([
 			"dist",
 			"codicon.ttf",
 		),
-		path.join(outDir, "media", "codicons", "codicon.ttf"),
+		path.join(webviewOutDir, "codicons", "codicon.ttf"),
 	),
 ]);
 
@@ -70,22 +71,27 @@ const extensionOptions = {
 const webviewOptions = {
 	...shared,
 	entryPoints: [path.join(root, "webview", "main.ts")],
-	outfile: path.join(outDir, "media", "main.js"),
+	outfile: path.join(webviewOutDir, "main.js"),
 	platform: "browser",
 	format: "iife",
 	target: ["chrome120"],
 };
 
+const webviewStyleOptions = {
+	...shared,
+	entryPoints: [path.join(root, "webview", "main.css")],
+	outfile: path.join(webviewOutDir, "main.css"),
+	target: ["chrome120"],
+};
+
+const buildOptions = [extensionOptions, webviewOptions, webviewStyleOptions];
+
 if (watch) {
-	const contexts = await Promise.all([
-		esbuild.context(extensionOptions),
-		esbuild.context(webviewOptions),
-	]);
+	const contexts = await Promise.all(
+		buildOptions.map((options) => esbuild.context(options)),
+	);
 	await Promise.all(contexts.map((context) => context.watch()));
-	console.log("Watching extension and webview bundles...");
+	console.log("Watching extension, Webview bundle, and stylesheet...");
 } else {
-	await Promise.all([
-		esbuild.build(extensionOptions),
-		esbuild.build(webviewOptions),
-	]);
+	await Promise.all(buildOptions.map((options) => esbuild.build(options)));
 }

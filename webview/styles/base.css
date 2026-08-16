@@ -1,0 +1,214 @@
+:root {
+	color-scheme: light dark;
+	--pi-accent: #d97757;
+	--pi-accent-hover: #e58a6b;
+	--pi-accent-soft: color-mix(in srgb, var(--pi-accent) 13%, transparent);
+	--pi-accent-border: color-mix(in srgb, var(--pi-accent) 72%, transparent);
+	--pi-success: var(--vscode-testing-iconPassed, #3fb950);
+	--pi-warning: var(--vscode-editorWarning-foreground, #d6a520);
+	--pi-danger: var(--vscode-errorForeground, #f85149);
+	--pi-border: var(
+		--vscode-widget-border,
+		var(--vscode-panel-border, rgba(128, 128, 128, 0.32))
+	);
+	--pi-border-subtle: color-mix(in srgb, var(--pi-border) 65%, transparent);
+	--pi-muted: var(--vscode-descriptionForeground, #9ba1a6);
+	--pi-page-background: var(
+		--vscode-sideBar-background,
+		var(--vscode-editor-background)
+	);
+	--pi-surface: var(--vscode-input-background, rgba(128, 128, 128, 0.07));
+	--pi-raised: var(
+		--vscode-editorWidget-background,
+		var(--vscode-editor-background)
+	);
+	--pi-focus-ring: var(--vscode-focusBorder, var(--pi-accent));
+	--pi-radius-control: 4px;
+	--pi-radius-content: 6px;
+	--pi-radius-panel: 8px;
+	/* Three-step type scale: 11 / inherited body (13px by default) / 15. Even
+	   2px steps, so each level is actually distinguishable — the 10/11/12px mix
+	   this replaces read as inconsistency rather than hierarchy. Ranking *within*
+	   a step is expressed through color and weight instead. */
+	--pi-font-chrome: 11px;
+	--pi-font-title: 15px;
+	/* Shared size for every composer-toolbar control: icon buttons, the model
+	   and thinking pickers, and the send button. */
+	--pi-control-size: 28px;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+[hidden] {
+	display: none !important;
+}
+
+html {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+	padding: 0;
+	overflow: hidden;
+}
+
+body {
+	position: relative;
+	width: 100%;
+	min-width: 0;
+	max-width: 100vw;
+	height: 100%;
+	margin: 0;
+	padding: 0 8px;
+	overflow: hidden;
+	color: var(--vscode-foreground);
+	background: var(--pi-page-background);
+	font-family: var(--vscode-font-family);
+	font-size: var(--vscode-font-size);
+	line-height: 1.5;
+}
+
+button,
+input,
+textarea,
+select {
+	color: inherit;
+	font: inherit;
+}
+
+button,
+select {
+	cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+textarea:disabled {
+	cursor: default;
+	opacity: 0.55;
+}
+
+button:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+a:focus-visible {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: 2px;
+}
+
+::selection {
+	background: color-mix(in srgb, var(--pi-accent) 35%, transparent);
+}
+
+button {
+	border: 0;
+}
+
+#app {
+	position: relative;
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr) auto auto;
+	width: 100%;
+	max-width: 100%;
+	height: 100vh;
+	overflow: hidden;
+	min-width: 0;
+}
+
+.session-header {
+	position: relative;
+	z-index: 4;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	min-width: 0;
+	height: 38px;
+	padding: 0 2px 0 4px;
+	overflow: hidden;
+	border-bottom: 1px solid var(--pi-border-subtle);
+	background: var(--pi-page-background);
+}
+
+.session-title-wrap {
+	display: flex;
+	align-items: center;
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	gap: 8px;
+}
+
+.connection-dot {
+	flex: 0 0 6px;
+	width: 6px;
+	height: 6px;
+	border: 1px solid transparent;
+	border-radius: 50%;
+	background: var(--pi-muted);
+}
+
+.connection-dot.ready {
+	background: var(--pi-success);
+}
+
+.connection-dot.starting {
+	border-color: var(--pi-warning);
+	background: transparent;
+}
+
+.connection-dot.error,
+.connection-dot.disconnected {
+	background: var(--pi-danger);
+}
+
+.connection-dot.no-workspace {
+	background: var(--pi-warning);
+}
+
+.session-title {
+	min-width: 0;
+	overflow: hidden;
+	font-size: var(--vscode-font-size, 13px);
+	font-weight: 600;
+	line-height: 1.25;
+	letter-spacing: 0;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.header-actions,
+.composer-tools,
+.composer-toolbar,
+.composer-actions {
+	display: flex;
+	align-items: center;
+}
+
+.header-actions {
+	flex: 0 0 auto;
+	margin-left: auto;
+	gap: 1px;
+}
+
+/* Borderless by default. `.icon-button` is shared with the session header, where
+   two buttons sit 1px apart — giving every instance a border turned that seam into
+   a thick double rule. Only the composer row opts in, below. */
+.icon-button {
+	display: inline-grid;
+	place-items: center;
+	flex: 0 0 auto;
+	width: var(--pi-control-size);
+	height: var(--pi-control-size);
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: var(--pi-radius-control);
+	color: var(--pi-muted);
+	background: transparent;
+}
+
+.icon-button:hover:not(:disabled) {
+	color: var(--vscode-foreground);
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}

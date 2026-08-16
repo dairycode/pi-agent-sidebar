@@ -1,0 +1,195 @@
+.history-panel {
+	position: absolute;
+	z-index: 8;
+	top: 46px;
+	right: 8px;
+	left: 8px;
+	display: flex;
+	flex-direction: column;
+	max-height: min(320px, calc(100vh - 56px));
+	padding: 8px;
+	overflow: hidden;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-panel);
+	background: var(--pi-raised);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
+}
+
+.history-panel[hidden] {
+	display: none;
+}
+
+.history-search {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	flex: 0 0 auto;
+	height: 32px;
+	padding: 0 9px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	color: var(--vscode-input-placeholderForeground, var(--pi-muted));
+	background: var(--vscode-input-background, var(--pi-surface));
+	gap: 5px;
+}
+
+.history-search:focus-within {
+	border-color: var(--pi-focus-ring);
+}
+
+/* Icons size independently of the type scale: a codicon shrunk to caption size
+   reads lighter than the text beside it. */
+.history-search .codicon {
+	font-size: 14px;
+}
+
+.history-search input {
+	width: 100%;
+	min-width: 0;
+	height: 100%;
+	padding: 0;
+	border: 0;
+	outline: 0;
+	color: var(--vscode-input-foreground, var(--vscode-foreground));
+	background: transparent;
+	font-size: var(--pi-font-chrome);
+}
+
+.history-search input::placeholder {
+	color: var(--vscode-input-placeholderForeground, var(--pi-muted));
+}
+
+.session-list {
+	min-height: 0;
+	margin-top: 4px;
+	overflow-y: auto;
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.session-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 24px 24px;
+	align-items: center;
+	width: 100%;
+	height: 28px;
+	min-height: 28px;
+	padding: 2px 2px 2px 8px;
+	border-radius: 4px;
+	color: inherit;
+	background: transparent;
+	gap: 2px;
+}
+
+.session-row + .session-row {
+	margin-top: 2px;
+}
+
+.session-row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.session-row:focus-within {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: -1px;
+}
+
+.session-row.active {
+	color: var(--vscode-list-inactiveSelectionForeground, inherit);
+	background: var(
+		--vscode-list-inactiveSelectionBackground,
+		var(--pi-accent-soft)
+	);
+}
+
+.session-open {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	width: 100%;
+	min-width: 0;
+	height: 24px;
+	padding: 0;
+	color: inherit;
+	background: transparent;
+	text-align: left;
+	gap: 8px;
+}
+
+.session-open:focus-visible {
+	outline: 0;
+}
+
+.session-open strong {
+	min-width: 0;
+	overflow: hidden;
+	font-size: var(--pi-font-chrome);
+	font-weight: 600;
+	letter-spacing: 0;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.session-open time {
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	white-space: nowrap;
+}
+
+.session-delete {
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border-radius: var(--pi-radius-control);
+	color: var(--pi-muted);
+	background: transparent;
+	opacity: 0;
+}
+
+.session-row:hover .session-delete:not(:disabled),
+.session-delete:focus-visible {
+	opacity: 1;
+}
+
+.session-delete:hover:not(:disabled) {
+	color: var(--pi-danger);
+	background: color-mix(in srgb, var(--pi-danger) 12%, transparent);
+}
+
+.session-delete:disabled {
+	visibility: hidden;
+}
+
+.session-rename {
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border-radius: var(--pi-radius-control);
+	color: var(--pi-muted);
+	background: transparent;
+	opacity: 0;
+}
+
+.session-row:hover .session-rename:not(:disabled),
+.session-rename:focus-visible {
+	opacity: 1;
+}
+
+.session-rename:hover:not(:disabled) {
+	color: var(--pi-accent);
+	background: color-mix(in srgb, var(--pi-accent) 12%, transparent);
+}
+
+.session-rename:disabled {
+	visibility: hidden;
+}
+
+.session-list-empty {
+	padding: 18px 8px;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	text-align: center;
+}

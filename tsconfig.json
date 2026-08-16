@@ -12,5 +12,5 @@
     "types": ["node", "vscode"],
     "rootDir": "."
   },
-  "include": ["src/**/*.ts", "webview/**/*.ts"]
+  "include": ["src/**/*.ts", "webview/**/*.ts", "shared/**/*.ts"]
 }

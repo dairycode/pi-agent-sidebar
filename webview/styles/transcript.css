@@ -1,0 +1,572 @@
+.transcript {
+	position: relative;
+	min-height: 0;
+	overflow-x: hidden;
+	overflow-y: auto;
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.empty-state {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	min-height: 100%;
+	padding: 28px 20px 76px;
+	text-align: center;
+}
+
+.empty-logo {
+	display: block;
+	width: 54px;
+	height: 54px;
+	margin-bottom: 12px;
+}
+
+.empty-wordmark {
+	font-size: 18px;
+	font-weight: 700;
+	letter-spacing: 0;
+}
+
+.empty-detail {
+	max-width: 260px;
+	margin: 4px 0 0;
+	overflow-wrap: anywhere;
+	color: var(--pi-muted);
+}
+
+.messages {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	padding: 14px 8px 34px;
+	gap: 20px;
+}
+
+/* `break-word` rather than `anywhere`: the latter breaks mid-identifier, which
+   shredded names like handleExtensionUiRequest. Elements that really can
+   overflow (path links, URLs, the composer) opt into `anywhere` themselves. */
+.message {
+	min-width: 0;
+	overflow-wrap: break-word;
+}
+
+.user-message {
+	align-self: stretch;
+	width: 100%;
+	max-width: none;
+	padding: 9px 11px;
+	border: 1px solid var(--pi-border-subtle);
+	border-left: 2px solid var(--pi-accent);
+	border-radius: var(--pi-radius-content);
+	background: color-mix(in srgb, var(--pi-surface) 88%, transparent);
+	white-space: pre-wrap;
+}
+
+.user-message-text {
+	line-height: 1.65;
+}
+
+.assistant-message {
+	align-self: stretch;
+	line-height: 1.65;
+}
+
+.assistant-message.ends-with-activity + .assistant-message {
+	margin-top: -8px;
+}
+
+.assistant-text > :first-child,
+.thinking-content > :first-child {
+	margin-top: 0;
+}
+
+.assistant-text > :last-child,
+.thinking-content > :last-child {
+	margin-bottom: 0;
+}
+
+.assistant-text + .assistant-text {
+	margin-top: 12px;
+}
+
+/* Headings need a real size step to act as scan anchors: at the old
+   1.14/1.07/1em an h3 was indistinguishable from body text. Bottom margin
+   stays smaller than the top one so a heading binds to the text below it. */
+.assistant-text h1,
+.assistant-text h2,
+.assistant-text h3 {
+	margin: 18px 0 8px;
+	font-size: 1.02em;
+	font-weight: 700;
+	letter-spacing: 0;
+}
+
+.assistant-text h1 {
+	font-size: 1.26em;
+}
+
+.assistant-text h2 {
+	font-size: 1.13em;
+}
+
+.assistant-text p,
+.assistant-text ul,
+.assistant-text ol,
+.assistant-text pre,
+.assistant-text blockquote {
+	margin-block: 12px;
+}
+
+.assistant-text ul,
+.assistant-text ol {
+	padding-left: 22px;
+}
+
+/* Tight lists otherwise run together at the 1.65 body line height. Loose
+   lists keep their wider rhythm: the item margin collapses with the child
+   paragraph's larger one. */
+.assistant-text li + li {
+	margin-top: 4px;
+}
+
+.assistant-text li > ul,
+.assistant-text li > ol {
+	margin-block: 4px;
+}
+
+.assistant-text a {
+	color: var(--pi-accent-hover);
+	text-decoration: none;
+}
+
+.assistant-text a:hover {
+	color: var(--pi-accent);
+	text-decoration: underline;
+}
+
+.assistant-text code,
+.thinking-content code,
+.tool-output,
+.system-message,
+.message-context {
+	font-family: var(--vscode-editor-font-family, monospace);
+}
+
+/* Extension custom messages (e.g. remote-pi's QR pair code) carry
+   whitespace-sensitive block art: markdown keeps single newlines as soft
+   breaks, so the container must preserve them or the QR collapses into one
+   wrapped line and becomes unscannable.
+
+   Terminal-style line-height keeps the half-block art square: the QR is
+   drawn with ▀▄█ where each text line encodes two modules vertically, which
+   only renders square at roughly 1:1 character cells (line-height ~1.2 with
+   a 0.6em monospace advance). The body's 1.5 line-height stretches the art
+   ~28% taller than wide. */
+.custom-message {
+	white-space: pre-wrap;
+	line-height: 1.2;
+}
+
+/* Inline code is dense in coding replies, so it carries only the faint
+   background: tinting the text as well turned long answers into noise.
+   `color` must be set explicitly rather than omitted — VS Code injects a base
+   `code` rule painting `--vscode-textPreformat-foreground`, which many themes
+   define as a warm accent (One Dark Pro Darker uses #d19a66), so dropping the
+   declaration hands the color back to the theme instead of clearing it.
+   Covers every container that renders markdown. */
+.assistant-text :not(pre) > code,
+.thinking-content :not(pre) > code,
+.system-message :not(pre) > code {
+	padding: 1px 4px;
+	border-radius: 3px;
+	color: inherit;
+	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+}
+
+.assistant-text pre,
+.thinking-block pre {
+	position: relative;
+	max-width: 100%;
+	padding: 10px 34px 10px 11px;
+	overflow: auto;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-content);
+	background: var(
+		--vscode-textCodeBlock-background,
+		var(--vscode-editor-background)
+	);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: var(--vscode-editor-font-size, 12px);
+	line-height: 1.65;
+	white-space: pre;
+}
+
+/* Non-scrolling positioning context for the copy button: the <pre> inside
+   scrolls, so an absolute button placed in it would drift with the content. */
+.code-block {
+	position: relative;
+	margin-block: 12px;
+}
+
+.code-block pre {
+	margin-block: 0;
+}
+
+.copy-code-button {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	z-index: 1;
+	width: 25px;
+	height: 25px;
+	background: var(
+		--vscode-textCodeBlock-background,
+		var(--vscode-editor-background)
+	);
+}
+
+.assistant-text blockquote {
+	padding-left: 10px;
+	border-left: 2px solid var(--pi-border);
+	color: var(--pi-muted);
+}
+
+.assistant-text table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
+	border-collapse: collapse;
+}
+
+.assistant-text th,
+.assistant-text td {
+	padding: 4px 7px;
+	border: 1px solid var(--pi-border);
+	text-align: left;
+}
+
+.message-context {
+	margin-bottom: 7px;
+	overflow: hidden;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	text-overflow: ellipsis;
+}
+
+.message-context .codicon {
+	margin-right: 5px;
+}
+
+.message-image {
+	display: block;
+	width: auto;
+	max-width: 100%;
+	max-height: 260px;
+	margin-top: 8px;
+	border: 1px solid var(--pi-border);
+	border-radius: var(--pi-radius-content);
+	object-fit: contain;
+}
+
+.activity-timeline {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.activity-timeline::before {
+	position: absolute;
+	top: 14px;
+	bottom: 14px;
+	left: 7px;
+	width: 1px;
+	background: var(--pi-border-subtle);
+	content: "";
+}
+
+.activity-item {
+	position: relative;
+	z-index: 1;
+	min-width: 0;
+}
+
+.activity-marker {
+	display: inline-grid;
+	place-items: center;
+	width: 16px;
+	min-width: 16px;
+	color: var(--pi-muted);
+	background: transparent;
+}
+
+.thinking-block {
+	min-height: 28px;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+}
+
+.thinking-summary {
+	display: grid;
+	grid-template-columns: 16px auto;
+	align-items: center;
+	width: fit-content;
+	min-height: 28px;
+	cursor: pointer;
+	column-gap: 3px;
+	list-style: none;
+	user-select: none;
+}
+
+.thinking-summary-content {
+	display: grid;
+	grid-template-columns: auto 16px;
+	align-items: center;
+	min-height: 28px;
+	padding-inline: 5px;
+	border-radius: var(--pi-radius-control);
+	column-gap: 7px;
+}
+
+.thinking-summary:hover .thinking-summary-content {
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.thinking-summary::-webkit-details-marker {
+	display: none;
+}
+
+.thinking-block .activity-marker {
+	height: 28px;
+	color: var(--pi-accent);
+}
+
+.thinking-label {
+	font-weight: 650;
+	line-height: 28px;
+	white-space: nowrap;
+}
+
+.thinking-chevron {
+	color: var(--pi-muted);
+	transition: transform 120ms ease;
+}
+
+.thinking-block[open] .thinking-chevron {
+	transform: rotate(90deg);
+}
+
+.thinking-content {
+	min-width: 0;
+	margin: 1px 0 4px 23px;
+	padding: 5px 0 5px 8px;
+	color: var(--pi-muted);
+	line-height: 1.65;
+}
+
+.thinking-content p {
+	margin: 0;
+}
+
+.tool-call {
+	margin: 0;
+	border: 0;
+}
+
+.tool-call summary {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	min-height: 30px;
+	cursor: pointer;
+	gap: 3px;
+	list-style: none;
+	font-size: var(--pi-font-chrome);
+	user-select: none;
+}
+
+.tool-summary-content {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	min-width: 0;
+	min-height: 30px;
+	padding: 1px 5px;
+	border-radius: var(--pi-radius-control);
+	gap: 7px;
+}
+
+.tool-call summary:hover .tool-summary-content {
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.tool-call summary::-webkit-details-marker {
+	display: none;
+}
+
+.tool-call.running .activity-marker {
+	color: var(--pi-accent);
+}
+
+.tool-call.success .activity-marker {
+	color: var(--pi-success);
+}
+
+.tool-call.error .activity-marker,
+.message-error {
+	color: var(--pi-danger);
+}
+
+.tool-summary-main {
+	display: flex;
+	align-items: baseline;
+	min-width: 0;
+	gap: 6px;
+}
+
+.tool-name {
+	flex: 0 0 auto;
+	font-weight: 650;
+}
+
+.tool-target {
+	min-width: 0;
+	overflow: hidden;
+	color: var(--pi-muted);
+	font-family: var(--vscode-editor-font-family, monospace);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tool-status {
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+}
+
+.tool-output {
+	max-height: 280px;
+	margin: 3px 4px 9px 23px;
+	overflow: auto;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-content);
+	color: var(--pi-muted);
+	background: var(
+		--vscode-textCodeBlock-background,
+		var(--vscode-editor-background)
+	);
+}
+
+.tool-output pre {
+	margin: 0;
+	padding: 7px 9px;
+	font-size: var(--pi-font-chrome);
+	line-height: 1.5;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.tool-diff {
+	max-height: 320px;
+	margin: 0 4px 9px 23px;
+	overflow: auto;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-content);
+	background: var(
+		--vscode-textCodeBlock-background,
+		var(--vscode-editor-background)
+	);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: var(--pi-font-chrome);
+	line-height: 1.5;
+}
+
+.diff-line {
+	display: flex;
+	padding: 0 4px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.diff-sign {
+	flex: 0 0 auto;
+	width: 14px;
+	text-align: center;
+	user-select: none;
+	opacity: 0.7;
+}
+
+.diff-text {
+	flex: 1 1 auto;
+	padding-right: 8px;
+}
+
+.diff-add {
+	background: color-mix(in srgb, var(--pi-success) 16%, transparent);
+}
+
+.diff-remove {
+	background: color-mix(in srgb, var(--pi-danger) 16%, transparent);
+}
+
+.diff-context {
+	color: var(--pi-muted);
+}
+
+.system-message,
+.context-divider,
+.history-omitted,
+.cancelled-note {
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+}
+
+.context-divider,
+.history-omitted {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	text-align: center;
+}
+
+.connection-banner {
+	position: sticky;
+	top: 0;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	min-height: 34px;
+	padding: 6px 9px;
+	border: 1px solid var(--pi-border-subtle);
+	border-left: 2px solid var(--pi-danger);
+	border-radius: var(--pi-radius-content);
+	color: var(--vscode-notifications-foreground, var(--vscode-foreground));
+	background: var(
+		--vscode-notifications-background,
+		var(--vscode-sideBar-background)
+	);
+	font-size: var(--pi-font-chrome);
+	gap: 8px;
+}
+
+.text-button,
+.primary-button,
+.secondary-button,
+.danger-button {
+	min-height: 28px;
+	padding: 4px 9px;
+	border-radius: 4px;
+}
+
+.text-button {
+	flex: 0 0 auto;
+	color: var(--vscode-textLink-foreground);
+	background: transparent;
+}
+
+.text-button:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}

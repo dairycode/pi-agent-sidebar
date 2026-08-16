@@ -1,0 +1,98 @@
+@media (prefers-reduced-motion: reduce) {
+	.composer {
+		transition: none;
+	}
+
+	#app.is-working .composer-shell {
+		border-top-color: var(--pi-accent);
+		background: var(
+			--vscode-sideBar-background,
+			var(--vscode-editor-background)
+		);
+		animation: none;
+	}
+}
+
+@media (max-width: 320px) {
+	html,
+	body {
+		padding-inline: 5px;
+	}
+
+	.session-header {
+		padding-left: 3px;
+	}
+
+	.messages {
+		padding-inline: 6px;
+	}
+
+	.resource-drop-overlay {
+		padding: 6px;
+	}
+
+	.resource-drop-prompt {
+		padding-inline: 8px;
+		font-size: 12px;
+	}
+}
+
+@media (max-width: 220px) {
+	.resource-drop-prompt {
+		min-height: 28px;
+		padding-inline: 6px;
+		font-size: var(--pi-font-chrome);
+	}
+
+}
+
+@media (max-height: 430px) {
+	.empty-state {
+		justify-content: flex-start;
+		padding-top: 24px;
+	}
+
+	.empty-logo {
+		width: 36px;
+		height: 36px;
+	}
+}
+
+@media (forced-colors: active) {
+	.activity-timeline::before {
+		background: CanvasText;
+	}
+
+	.activity-marker {
+		background: Canvas;
+	}
+
+	.composer-reference-highlight {
+		forced-color-adjust: none;
+		color: LinkText;
+		background: transparent;
+	}
+
+	.attachment-chip,
+	.composer,
+	.resource-drop-prompt,
+	.tool-output,
+	.tool-diff,
+	.user-message,
+	.modal,
+	.toast {
+		border-color: CanvasText;
+	}
+
+	.resource-drop-overlay {
+		border-color: LinkText;
+		background: color-mix(in srgb, LinkText 12%, transparent);
+	}
+
+	.send-button,
+	.primary-button {
+		border: 1px solid ButtonText;
+		color: ButtonText;
+		background: ButtonFace;
+	}
+}

@@ -1,5 +1,8 @@
 import * as vscode from "vscode";
-import { PiViewProvider, type PresetPromptKind } from "./piViewProvider.js";
+import {
+	PiViewProvider,
+	type PresetPromptKind,
+} from "./provider/piViewProvider.js";
 
 let activeProvider: PiViewProvider | undefined;
 
@@ -79,11 +82,13 @@ export function activate(context: vscode.ExtensionContext): void {
 		vscode.commands.registerCommand(
 			"piAgentSidebar.addFilesToInput",
 			(uri: vscode.Uri | undefined, selectedUris: vscode.Uri[] | undefined) =>
-				provider.addExplorerResources(uri, selectedUris).catch((error: unknown) => {
-					void vscode.window.showWarningMessage(
-						error instanceof Error ? error.message : String(error),
-					);
-				}),
+				provider
+					.addExplorerResources(uri, selectedUris)
+					.catch((error: unknown) => {
+						void vscode.window.showWarningMessage(
+							error instanceof Error ? error.message : String(error),
+						);
+					}),
 		),
 		vscode.commands.registerCommand("piAgentSidebar.newSession", async () => {
 			await provider.reveal();

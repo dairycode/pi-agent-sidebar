@@ -1,0 +1,171 @@
+/* Slash-command palette. Positioned from script against `#app` for the same
+   reason as `.select-popup`: both `.composer` and `#app` clip overflow, so the
+   panel cannot live inside the composer.
+
+   The search field is the LAST child, not the first. The panel is anchored by its
+   bottom edge, so a top-mounted field slid downward every time filtering shrank
+   the list. Pinning it to the bottom keeps it still, and it ends up next to the
+   composer where the caret already is. */
+.command-panel {
+	position: absolute;
+	z-index: 9;
+	display: flex;
+	flex-direction: column;
+	min-width: min(260px, calc(100% - 16px));
+	max-width: calc(100% - 16px);
+	padding: 4px;
+	overflow: hidden;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-panel);
+	background: var(--pi-raised);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
+}
+
+.command-panel[hidden] {
+	display: none;
+}
+
+/* Hidden when the palette is driven by a `/` token already in the composer:
+   the textarea is the search field in that mode, so a second box would be a
+   decoy that cannot receive focus. */
+.command-panel.is-inline .command-search {
+	display: none;
+}
+
+.command-search {
+	display: grid;
+	grid-template-columns: 14px minmax(0, 1fr);
+	align-items: center;
+	flex: 0 0 auto;
+	height: 28px;
+	margin-top: 4px;
+	padding: 0 7px;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	color: var(--vscode-input-placeholderForeground, var(--pi-muted));
+	background: var(--vscode-input-background, var(--pi-surface));
+	gap: 5px;
+}
+
+.command-search:focus-within {
+	border-color: var(--pi-focus-ring);
+}
+
+/* Matches the history panel's search icon rather than the 16px toolbar scale: a
+   full-size icon inside a 28px field crowds the text beside it. */
+.command-search .codicon {
+	font-size: 14px;
+}
+
+/* The codicon set has no plain slash — `circle-slash` is a crossed-out circle — so
+   the one glyph this UI needs is drawn inline. Keeping it a vector rather than a
+   text character matters: a text glyph is positioned by the font's ascent and
+   descent, which differ from the icon font's, so it could never sit on the same
+   optical centre as the codicons beside it.
+
+   The path is fitted to measured codicon metrics rather than eyeballed. At 16px a
+   codicon's ink box runs 12.06–13.69 tall; `lightbulb` and `arrow-up` both sit at
+   12.06 with ~2px of breathing room, so the slash matches those. Stroke is 1.3
+   against a codicon's 1.13px stem: a diagonal of equal nominal width reads lighter
+   because antialiasing spreads it over more pixels. */
+.slash-icon {
+	display: block;
+	flex: 0 0 auto;
+	width: 16px;
+	height: 16px;
+}
+
+.slash-icon.is-search {
+	width: 14px;
+	height: 14px;
+}
+
+.command-search input {
+	width: 100%;
+	min-width: 0;
+	border: 0;
+	color: var(--vscode-input-foreground, var(--vscode-foreground));
+	background: transparent;
+	font-family: inherit;
+	font-size: var(--pi-font-chrome);
+}
+
+.command-search input:focus {
+	outline: 0;
+}
+
+.command-search input::-webkit-search-cancel-button {
+	display: none;
+}
+
+.command-list {
+	min-height: 0;
+	overflow-y: auto;
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+/* Group headings are separators, not entries: no uppercase tracking and no
+   background, so the eye lands on the command names instead. A leading rule
+   carries the grouping without adding a heavy band of its own. */
+.command-group-label {
+	margin-top: 4px;
+	padding: 4px 6px 2px;
+	border-top: 1px solid var(--pi-border-subtle);
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	opacity: 0.75;
+}
+
+.command-group-label:first-child {
+	margin-top: 0;
+	border-top: 0;
+}
+
+/* One row per command, name only. The description lives in the row tooltip: at
+   20+ commands a second column of same-sized grey text competed with the names
+   for attention and made the list hard to scan. Filtering still matches
+   description text, so search behaviour is unchanged. */
+.command-row {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	padding: 3px 6px;
+	border-radius: 4px;
+	color: inherit;
+	background: transparent;
+	cursor: pointer;
+	gap: 8px;
+	text-align: left;
+}
+
+.command-row:hover,
+.command-row.is-active {
+	outline: 0;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.command-row-name {
+	min-width: 0;
+	overflow: hidden;
+	color: var(--vscode-foreground);
+	font-size: var(--pi-font-chrome);
+	font-weight: 600;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.command-row-scope {
+	flex: 0 0 auto;
+	margin-left: auto;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	opacity: 0.7;
+	white-space: nowrap;
+}
+
+.command-list-empty {
+	padding: 18px 8px;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	text-align: center;
+}

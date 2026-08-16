@@ -1,21 +1,23 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
-import { build } from "esbuild";
+import {
+	loadBundledModule,
+	projectRoot,
+} from "../../helpers/load-bundled-module.mjs";
 
-const root = process.cwd();
+const root = projectRoot;
 
 test("session history reads and safely deletes custom-directory sessions", async () => {
-	const temporaryDirectory = await mkdtemp(
-		path.join(os.tmpdir(), "pi-agent-session-test-"),
+	const loaded = await loadBundledModule({
+		entry: "src/services/sessionStore.ts",
+		name: "session-store",
+	});
+	const sessionsDirectory = path.join(
+		loaded.temporaryDirectory,
+		"custom-sessions",
 	);
-	const bundleDirectory = path.join(temporaryDirectory, "bundle");
-	const sessionsDirectory = path.join(temporaryDirectory, "custom-sessions");
-	const output = path.join(bundleDirectory, "session-store.mjs");
-	await mkdir(bundleDirectory, { recursive: true });
 	await mkdir(sessionsDirectory, { recursive: true });
 	await writeFile(
 		path.join(sessionsDirectory, "session.jsonl"),
@@ -45,22 +47,12 @@ test("session history reads and safely deletes custom-directory sessions", async
 		"utf8",
 	);
 
-	await build({
-		entryPoints: [path.join(root, "src", "services", "sessionStore.ts")],
-		outfile: output,
-		bundle: true,
-		platform: "node",
-		format: "esm",
-		target: "node22",
-		logLevel: "silent",
-	});
-
 	try {
 		const {
 			deleteProjectSession,
 			listProjectSessions,
 			resolveSessionDirectory,
-		} = await import(`${pathToFileURL(output).href}?v=${Date.now()}`);
+		} = loaded.module;
 		assert.equal(
 			resolveSessionDirectory(root, "relative-sessions", undefined),
 			path.resolve(root, "relative-sessions"),
@@ -90,7 +82,7 @@ test("session history reads and safely deletes custom-directory sessions", async
 		await assert.rejects(
 			deleteProjectSession(
 				root,
-				path.join(temporaryDirectory, "outside.jsonl"),
+				path.join(loaded.temporaryDirectory, "outside.jsonl"),
 				undefined,
 				sessionsDirectory,
 			),
@@ -108,6 +100,6 @@ test("session history reads and safely deletes custom-directory sessions", async
 			[],
 		);
 	} finally {
-		await rm(temporaryDirectory, { recursive: true, force: true });
+		await loaded.dispose();
 	}
 });

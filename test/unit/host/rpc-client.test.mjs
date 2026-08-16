@@ -1,31 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
-import { build } from "esbuild";
+import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
 const root = process.cwd();
 
 async function loadPiRpcClient() {
-	const temporaryDirectory = await mkdtemp(
-		path.join(os.tmpdir(), "pi-agent-rpc-test-"),
-	);
-	const output = path.join(temporaryDirectory, "pi-rpc-client.mjs");
-	await build({
-		entryPoints: [path.join(root, "src", "rpc", "piRpcClient.ts")],
-		outfile: output,
-		bundle: true,
-		platform: "node",
-		format: "esm",
-		target: "node22",
-		logLevel: "silent",
+	return loadBundledModule({
+		entry: "src/rpc/piRpcClient.ts",
+		name: "pi-rpc-client",
 	});
-	return {
-		module: await import(`${pathToFileURL(output).href}?v=${Date.now()}`),
-		dispose: () => rm(temporaryDirectory, { recursive: true, force: true }),
-	};
 }
 
 function fakeClient(PiRpcClient) {

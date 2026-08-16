@@ -1,31 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
-import { build } from "esbuild";
-
-const root = process.cwd();
+import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
 async function loadWorkspaceResources() {
-	const temporaryDirectory = await mkdtemp(
-		path.join(os.tmpdir(), "pi-agent-workspace-resources-test-"),
-	);
-	const output = path.join(
-		temporaryDirectory,
-		"bundle",
-		"workspace-resources.mjs",
-	);
-	await mkdir(path.dirname(output), { recursive: true });
-	await build({
-		entryPoints: [path.join(root, "src", "services", "workspaceResources.ts")],
-		outfile: output,
-		bundle: true,
-		platform: "node",
-		format: "esm",
-		target: "node22",
-		logLevel: "silent",
+	return loadBundledModule({
+		entry: "src/services/workspaceResources.ts",
+		name: "workspace-resources",
 		plugins: [
 			{
 				name: "mock-vscode",
@@ -37,31 +17,27 @@ async function loadWorkspaceResources() {
 					buildApi.onLoad({ filter: /.*/, namespace: "mock-vscode" }, () => ({
 						loader: "js",
 						contents: `
-								export const Uri = {
-									file: (value) => ({ scheme: "file", fsPath: value, value }),
-									parse: (value) => {
-										if (!/^[a-z][a-z0-9+.-]*:/iu.test(value)) throw new Error("invalid URI");
-										return { scheme: value.slice(0, value.indexOf(":")), value };
-									},
-									joinPath: () => undefined,
-								};
-								export const workspace = {};
-								export const window = {};
-								export const FileType = { File: 1 };
-								export class Position {}
-								export class Selection {}
-								export class Range {}
-								export const TextEditorRevealType = { InCenterIfOutsideViewport: 0 };
-							`,
+							export const Uri = {
+								file: (value) => ({ scheme: "file", fsPath: value, value }),
+								parse: (value) => {
+									if (!/^[a-z][a-z0-9+.-]*:/iu.test(value)) throw new Error("invalid URI");
+									return { scheme: value.slice(0, value.indexOf(":")), value };
+								},
+								joinPath: () => undefined,
+							};
+							export const workspace = {};
+							export const window = {};
+							export const FileType = { File: 1 };
+							export class Position {}
+							export class Selection {}
+							export class Range {}
+							export const TextEditorRevealType = { InCenterIfOutsideViewport: 0 };
+						`,
 					}));
 				},
 			},
 		],
 	});
-	return {
-		module: await import(`${pathToFileURL(output).href}?v=${Date.now()}`),
-		dispose: () => rm(temporaryDirectory, { recursive: true, force: true }),
-	};
 }
 
 test("workspace display paths resolve explicit multi-root prefixes", async () => {

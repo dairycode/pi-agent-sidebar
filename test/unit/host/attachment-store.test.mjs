@@ -1,39 +1,16 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { access } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
-import { build } from "esbuild";
-
-const root = process.cwd();
+import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 const ONE_PIXEL_PNG =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nMsAAAAASUVORK5CYII=";
 
 async function loadAttachmentStore() {
-	const temporaryDirectory = await mkdtemp(
-		path.join(os.tmpdir(), "pi-agent-attachment-store-test-"),
-	);
-	const output = path.join(
-		temporaryDirectory,
-		"bundle",
-		"attachment-store.mjs",
-	);
-	await mkdir(path.dirname(output), { recursive: true });
-	await build({
-		entryPoints: [path.join(root, "src", "services", "attachmentStore.ts")],
-		outfile: output,
-		bundle: true,
-		platform: "node",
-		format: "esm",
-		target: "node22",
-		logLevel: "silent",
+	return loadBundledModule({
+		entry: "src/services/attachmentStore.ts",
+		name: "attachment-store",
 	});
-	return {
-		module: await import(`${pathToFileURL(output).href}?v=${Date.now()}`),
-		temporaryDirectory,
-		dispose: () => rm(temporaryDirectory, { recursive: true, force: true }),
-	};
 }
 
 test("attachment IDs are host-owned and temporary images are removed immediately", async () => {

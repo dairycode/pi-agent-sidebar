@@ -1,29 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
-import { build } from "esbuild";
-
-const root = process.cwd();
+import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
 async function loadStore() {
-	const temporaryDirectory = await mkdtemp(
-		path.join(os.tmpdir(), "pi-agent-composer-reference-store-test-"),
-	);
-	const output = path.join(temporaryDirectory, "bundle", "store.mjs");
-	await mkdir(path.dirname(output), { recursive: true });
-	await build({
-		entryPoints: [
-			path.join(root, "src", "provider", "composerReferenceStore.ts"),
-		],
-		outfile: output,
-		bundle: true,
-		platform: "node",
-		format: "esm",
-		target: "node22",
-		logLevel: "silent",
+	return loadBundledModule({
+		entry: "src/provider/composerReferenceStore.ts",
+		name: "composer-reference-store",
 		plugins: [
 			{
 				name: "mock-vscode",
@@ -35,46 +17,42 @@ async function loadStore() {
 					buildApi.onLoad({ filter: /.*/, namespace: "mock-vscode" }, () => ({
 						loader: "js",
 						contents: `
-								const state = () => globalThis.__composerReferenceVscodeMock;
-								export const DiagnosticSeverity = {
-									Error: 0,
-									Warning: 1,
-									Information: 2,
-									Hint: 3,
-								};
-								export const SymbolKind = new Proxy({}, {
-									get: (_target, key) => state().symbolKinds?.[key],
-								});
-								export class Selection {
-									constructor(start, end) { this.start = start; this.end = end; }
-								}
-								export const TextEditorRevealType = { InCenterIfOutsideViewport: 0 };
-								export const languages = {
-									getDiagnostics: (uri) => state().diagnostics.get(uri.toString()) ?? [],
-								};
-								export const workspace = {
-									get workspaceFolders() { return state().workspaceFolders; },
-									getWorkspaceFolder: (uri) => state().getWorkspaceFolder(uri),
-									asRelativePath: (uri, includeFolder) => state().asRelativePath(uri, includeFolder),
-									openTextDocument: (uri) => state().openTextDocument(uri),
-								};
-								export const window = {
-									showTextDocument: (document, options) => state().showTextDocument(document, options),
-									showWarningMessage: (message) => state().warnings.push(message),
-								};
-								export const commands = {
-									executeCommand: (...args) => state().executeCommand(...args),
-								};
-							`,
+							const state = () => globalThis.__composerReferenceVscodeMock;
+							export const DiagnosticSeverity = {
+								Error: 0,
+								Warning: 1,
+								Information: 2,
+								Hint: 3,
+							};
+							export const SymbolKind = new Proxy({}, {
+								get: (_target, key) => state().symbolKinds?.[key],
+							});
+							export class Selection {
+								constructor(start, end) { this.start = start; this.end = end; }
+							}
+							export const TextEditorRevealType = { InCenterIfOutsideViewport: 0 };
+							export const languages = {
+								getDiagnostics: (uri) => state().diagnostics.get(uri.toString()) ?? [],
+							};
+							export const workspace = {
+								get workspaceFolders() { return state().workspaceFolders; },
+								getWorkspaceFolder: (uri) => state().getWorkspaceFolder(uri),
+								asRelativePath: (uri, includeFolder) => state().asRelativePath(uri, includeFolder),
+								openTextDocument: (uri) => state().openTextDocument(uri),
+							};
+							export const window = {
+								showTextDocument: (document, options) => state().showTextDocument(document, options),
+								showWarningMessage: (message) => state().warnings.push(message),
+							};
+							export const commands = {
+								executeCommand: (...args) => state().executeCommand(...args),
+							};
+						`,
 					}));
 				},
 			},
 		],
 	});
-	return {
-		module: await import(`${pathToFileURL(output).href}?v=${Date.now()}`),
-		dispose: () => rm(temporaryDirectory, { recursive: true, force: true }),
-	};
 }
 
 function uri(value, scheme = "file") {

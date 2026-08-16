@@ -1,33 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
-import { build } from "esbuild";
+import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-const root = process.cwd();
 const MB = 1024 * 1024;
 
 async function loadImagePaste() {
-	const temporaryDirectory = await mkdtemp(
-		path.join(os.tmpdir(), "pi-agent-image-paste-test-"),
-	);
-	const output = path.join(temporaryDirectory, "bundle", "image-paste.mjs");
-	await mkdir(path.dirname(output), { recursive: true });
-	await build({
-		entryPoints: [path.join(root, "webview", "attachments", "imagePaste.ts")],
-		outfile: output,
-		bundle: true,
+	return loadBundledModule({
+		entry: "webview/attachments/imagePaste.ts",
+		name: "image-paste",
 		platform: "browser",
-		format: "esm",
-		target: "chrome120",
-		logLevel: "silent",
 	});
-	return {
-		module: await import(`${pathToFileURL(output).href}?v=${Date.now()}`),
-		dispose: () => rm(temporaryDirectory, { recursive: true, force: true }),
-	};
 }
 
 function file(name, type, size) {

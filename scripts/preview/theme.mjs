@@ -167,4 +167,3 @@ export function previewStyle(theme, width) {
 		.join("\n");
 	return `:root {\n${declarations}\n}\n\nhtml, body {\n  width: ${width}px !important;\n  max-width: ${width}px !important;\n  overflow-x: hidden !important;\n}\n`;
 }
-

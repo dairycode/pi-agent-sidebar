@@ -29,4 +29,3 @@ export async function loadDocumentFactory(workDir) {
 	const module = await import(pathToFileURL(outfile).href);
 	return module.createWebviewDocument;
 }
-

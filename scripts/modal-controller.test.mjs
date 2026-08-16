@@ -12,7 +12,11 @@ async function loadModalController() {
 	const temporaryDirectory = await mkdtemp(
 		path.join(os.tmpdir(), "pi-agent-modal-controller-test-"),
 	);
-	const output = path.join(temporaryDirectory, "bundle", "modal-controller.mjs");
+	const output = path.join(
+		temporaryDirectory,
+		"bundle",
+		"modal-controller.mjs",
+	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
 		entryPoints: [path.join(root, "webview", "ui", "modalController.ts")],
@@ -187,9 +191,7 @@ test("confirm modal owns inertness and restores focus before callback", async ()
 
 		assert.equal(state.controller.isOpen, false);
 		assert.ok(state.inertRoots.every((root) => !root.inert));
-		assert.deepEqual(observations, [
-			{ open: false, focus: state.returnFocus },
-		]);
+		assert.deepEqual(observations, [{ open: false, focus: state.returnFocus }]);
 	} finally {
 		delete globalThis.HTMLElement;
 		await loaded.dispose();

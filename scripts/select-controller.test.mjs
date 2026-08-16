@@ -12,7 +12,11 @@ async function loadSelectController() {
 	const temporaryDirectory = await mkdtemp(
 		path.join(os.tmpdir(), "pi-agent-select-controller-test-"),
 	);
-	const output = path.join(temporaryDirectory, "bundle", "select-controller.mjs");
+	const output = path.join(
+		temporaryDirectory,
+		"bundle",
+		"select-controller.mjs",
+	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
 		entryPoints: [path.join(root, "webview", "ui", "selectController.ts")],
@@ -35,7 +39,9 @@ class FakeClassList {
 	}
 
 	toggle(name, force) {
-		const values = new Set(this.element.className.split(/\s+/u).filter(Boolean));
+		const values = new Set(
+			this.element.className.split(/\s+/u).filter(Boolean),
+		);
 		const enabled = force === undefined ? !values.has(name) : force;
 		if (enabled) values.add(name);
 		else values.delete(name);
@@ -83,7 +89,11 @@ class FakeElement {
 			...fields,
 		};
 		for (const listener of this.listeners.get(type) ?? []) listener(event);
-		return { get prevented() { return prevented; } };
+		return {
+			get prevented() {
+				return prevented;
+			},
+		};
 	}
 
 	append(...children) {
@@ -186,7 +196,16 @@ function createHarness(SelectController) {
 			events.push({ trigger, popup: positionedPopup }),
 		document,
 	});
-	return { controller, document, popup, triggers, selected, options, commits, events };
+	return {
+		controller,
+		document,
+		popup,
+		triggers,
+		selected,
+		options,
+		commits,
+		events,
+	};
 }
 
 function cleanup() {
@@ -253,15 +272,22 @@ test("syncSelected updates rows in place without dropping focus", async () => {
 		const originalRows = [...rows];
 		state.selected.thinking = "off";
 		state.controller.syncSelected();
-		assert.deepEqual(state.popup.querySelectorAll(".select-option"), originalRows);
+		assert.deepEqual(
+			state.popup.querySelectorAll(".select-option"),
+			originalRows,
+		);
 		assert.equal(rows[0].getAttribute("aria-selected"), "true");
 		assert.equal(rows[1].getAttribute("aria-selected"), "false");
 		assert.equal(
-			rows[0].querySelector(".select-option-check").classList.contains("is-hidden"),
+			rows[0]
+				.querySelector(".select-option-check")
+				.classList.contains("is-hidden"),
 			false,
 		);
 		assert.equal(
-			rows[1].querySelector(".select-option-check").classList.contains("is-hidden"),
+			rows[1]
+				.querySelector(".select-option-check")
+				.classList.contains("is-hidden"),
 			true,
 		);
 	} finally {

@@ -34,8 +34,8 @@ export class SelectController {
 		}
 		options.popup.addEventListener("click", (event) => {
 			if (!this.currentKind || !(event.target instanceof HTMLElement)) return;
-			const value = event.target.closest<HTMLElement>(".select-option")?.dataset
-				.value;
+			const value =
+				event.target.closest<HTMLElement>(".select-option")?.dataset.value;
 			if (value !== undefined) this.commit(this.currentKind, value);
 		});
 		options.popup.addEventListener("keydown", (event) =>

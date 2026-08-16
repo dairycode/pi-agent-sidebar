@@ -118,7 +118,9 @@ export class ModalController {
 		}
 		if (event.key !== "Tab") return;
 		const focusable = [
-			...this.options.backdrop.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+			...this.options.backdrop.querySelectorAll<HTMLElement>(
+				FOCUSABLE_SELECTOR,
+			),
 		].filter((item) => !item.hasAttribute("disabled"));
 		const first = focusable[0];
 		const last = focusable.at(-1);

@@ -32,11 +32,9 @@ async function loadStore() {
 						path: "vscode",
 						namespace: "mock-vscode",
 					}));
-					buildApi.onLoad(
-						{ filter: /.*/, namespace: "mock-vscode" },
-						() => ({
-							loader: "js",
-							contents: `
+					buildApi.onLoad({ filter: /.*/, namespace: "mock-vscode" }, () => ({
+						loader: "js",
+						contents: `
 								const state = () => globalThis.__composerReferenceVscodeMock;
 								export const DiagnosticSeverity = {
 									Error: 0,
@@ -68,8 +66,7 @@ async function loadStore() {
 									executeCommand: (...args) => state().executeCommand(...args),
 								};
 							`,
-						}),
-					);
+					}));
 				},
 			},
 		],
@@ -84,7 +81,8 @@ function uri(value, scheme = "file") {
 	return {
 		scheme,
 		fsPath: scheme === "file" ? value : "",
-		toString: () => (scheme === "file" ? `file://${value}` : `${scheme}:${value}`),
+		toString: () =>
+			scheme === "file" ? `file://${value}` : `${scheme}:${value}`,
 	};
 }
 
@@ -129,7 +127,9 @@ function installVscodeState() {
 		warnings: [],
 		symbolKinds: { 5: "Method" },
 		getWorkspaceFolder: (value) =>
-			value.fsPath.startsWith("/workspace/") ? state.workspaceFolders[0] : undefined,
+			value.fsPath.startsWith("/workspace/")
+				? state.workspaceFolders[0]
+				: undefined,
 		asRelativePath: (value, includeFolder) =>
 			`${includeFolder ? "workspace/" : ""}${value.fsPath.replace("/workspace/", "")}`,
 		openTextDocument: async () => {
@@ -154,7 +154,10 @@ test("selection recapture preserves identity, marker order, and increments revis
 	try {
 		installVscodeState();
 		const store = new loaded.module.ComposerReferenceStore(output());
-		const document = documentFor(uri("/workspace/src/example.ts"), "const answer = 42;");
+		const document = documentFor(
+			uri("/workspace/src/example.ts"),
+			"const answer = 42;",
+		);
 		const selected = selection(0, 6, 0, 12);
 		const editor = editorFor(document, selected);
 
@@ -196,7 +199,14 @@ test("resolve validates marker identity and returns prompt-compatible captures",
 		assert.throws(
 			() =>
 				store.resolve(
-					[{ id: fileId, revision: 1, start, end: start + summary.marker.length }],
+					[
+						{
+							id: fileId,
+							revision: 1,
+							start,
+							end: start + summary.marker.length,
+						},
+					],
 					text,
 				),
 			/A composer reference changed/u,
@@ -213,8 +223,18 @@ test("resolve validates marker identity and returns prompt-compatible captures",
 			() =>
 				store.resolve(
 					[
-						{ id: fileId, revision: 0, start, end: start + summary.marker.length },
-						{ id: fileId, revision: 0, start, end: start + summary.marker.length },
+						{
+							id: fileId,
+							revision: 0,
+							start,
+							end: start + summary.marker.length,
+						},
+						{
+							id: fileId,
+							revision: 0,
+							start,
+							end: start + summary.marker.length,
+						},
 					],
 					text,
 				),

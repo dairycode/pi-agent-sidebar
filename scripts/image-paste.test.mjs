@@ -123,12 +123,20 @@ test("image validation rejects unsupported, oversized, and excessive batches", a
 	try {
 		const cases = [
 			{
-				event: pasteEvent([item("file", "image/bmp", file("x.bmp", "image/bmp", 10))]),
+				event: pasteEvent([
+					item("file", "image/bmp", file("x.bmp", "image/bmp", 10)),
+				]),
 				state: harness(),
 				error: "Paste PNG, JPEG, GIF, or WebP images",
 			},
 			{
-				event: pasteEvent([item("file", "image/png", file("large.png", "image/png", 10 * MB + 1))]),
+				event: pasteEvent([
+					item(
+						"file",
+						"image/png",
+						file("large.png", "image/png", 10 * MB + 1),
+					),
+				]),
 				state: harness(),
 				error: "large.png exceeds the 10 MB limit",
 			},
@@ -141,13 +149,18 @@ test("image validation rejects unsupported, oversized, and excessive batches", a
 				error: "Pasted images exceed the 12 MB total limit",
 			},
 			{
-				event: pasteEvent([item("file", "image/png", file("extra.png", "image/png", 1))]),
+				event: pasteEvent([
+					item("file", "image/png", file("extra.png", "image/png", 1)),
+				]),
 				state: harness({ attachedImageCount: 4 }),
 				error: "Attach at most 4 images per message",
 			},
 		];
 		for (const current of cases) {
-			await loaded.module.handleImagePaste(current.event, current.state.dependencies);
+			await loaded.module.handleImagePaste(
+				current.event,
+				current.state.dependencies,
+			);
 			assert.equal(current.event.prevented, 1);
 			assert.deepEqual(current.state.images, []);
 			assert.deepEqual(current.state.errors, [current.error]);

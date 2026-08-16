@@ -74,9 +74,7 @@ export async function handleImagePaste(
 		dependencies.onImages(images);
 	} catch (error) {
 		dependencies.onError(
-			error instanceof Error
-				? error.message
-				: "Could not read clipboard image",
+			error instanceof Error ? error.message : "Could not read clipboard image",
 		);
 	}
 }

@@ -13,6 +13,7 @@ import {
 	containsDroppedResources,
 	extractDroppedResources,
 } from "./resourceDrop.js";
+import { positionPopupAbove } from "./ui/popupPosition.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	MAX_IMAGE_ATTACHMENT_COUNT,
@@ -1900,44 +1901,11 @@ function focusSelectOption(row: HTMLElement | undefined): void {
 }
 
 function positionSelectPopup(trigger: HTMLElement): void {
-	positionPopupAbove(trigger, elements.selectPopup);
-}
-
-/**
- * Places a popup above a composer element, inside `#app`.
- *
- * Shared by the model/thinking listbox and the slash-command palette: the
- * composer sits at the bottom of the view, so both open upward, cap their height
- * at the space actually available, and clamp horizontally to stay in view.
- *
- * `anchor` defaults to the trigger but the palette passes the whole composer.
- * Anchoring the palette to its toolbar button put its bottom edge level with the
- * button, which is *below* the textarea — so the panel covered the text being
- * typed. The listbox pickers are short-lived and keep anchoring to their trigger.
- */
-function positionPopupAbove(
-	trigger: HTMLElement,
-	popup: HTMLElement,
-	anchor?: HTMLElement,
-): void {
-	const appRect = elements.app.getBoundingClientRect();
-	const rect = (anchor ?? trigger).getBoundingClientRect();
-	popup.style.bottom = `${Math.round(appRect.bottom - rect.top + 4)}px`;
-	popup.style.maxHeight = `${Math.max(
-		120,
-		Math.round(rect.top - appRect.top - 12),
-	)}px`;
-	// Reset before measuring: offsetWidth has to be read at the popup's natural
-	// width, not at whatever the previous placement left behind.
-	popup.style.left = "0px";
-	const left = Math.max(
-		8,
-		Math.min(
-			Math.round(rect.left - appRect.left),
-			Math.round(appRect.width - popup.offsetWidth - 8),
-		),
-	);
-	popup.style.left = `${left}px`;
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.selectPopup,
+		anchor: trigger,
+	});
 }
 
 /**
@@ -1948,11 +1916,11 @@ function positionCommandPanel(): void {
 	elements.commandPanel.style.width = `${Math.round(
 		elements.composer.getBoundingClientRect().width,
 	)}px`;
-	positionPopupAbove(
-		elements.commandButton,
-		elements.commandPanel,
-		elements.composer,
-	);
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.commandPanel,
+		anchor: elements.composer,
+	});
 }
 
 function closeSelect(restoreFocus: boolean): void {

@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { formatComposerReferenceLocation } from "../shared/composerReferences.js";
+import { handleImagePaste } from "./attachments/imagePaste.js";
 import type { ManagedComposerReference } from "./composer/model.js";
 import { ComposerController } from "./composer/controller.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
@@ -16,14 +17,12 @@ import {
 import { positionPopupAbove } from "./ui/popupPosition.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
-	MAX_IMAGE_ATTACHMENT_COUNT,
 	type AttachmentRef,
 	type HostToWebviewMessage,
 	type JsonRecord,
 	type PiCommand,
 	type PiMessage,
 	type PiModel,
-	type PastedImage,
 	type PiState,
 	type PiStats,
 	type SessionSummary,
@@ -116,14 +115,6 @@ let renderedPromptMarkerSignature: string | undefined;
 let modalReturnFocus: HTMLElement | null = null;
 let resourceDragDepth = 0;
 
-const SUPPORTED_CLIPBOARD_IMAGE_TYPES = new Set([
-	"image/png",
-	"image/jpeg",
-	"image/gif",
-	"image/webp",
-]);
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/gu;
@@ -329,7 +320,12 @@ elements.input.addEventListener("keydown", (event) => {
 });
 
 elements.input.addEventListener("paste", (event) => {
-	void handleImagePaste(event);
+	void handleImagePaste(event, {
+		attachedImageCount: () =>
+			ui.attachments.filter((attachment) => attachment.kind === "image").length,
+		onImages: (images) => runAction("pasteImages", { images }),
+		onError: (message) => showToast(message, "error"),
+	});
 });
 
 window.addEventListener("dragenter", (event) => {
@@ -1947,64 +1943,6 @@ function commitSelect(kind: SelectKind, value: string): void {
 	if (provider && modelId) runAction("setModel", { provider, modelId });
 }
 
-async function handleImagePaste(event: ClipboardEvent): Promise<void> {
-	const clipboard = event.clipboardData;
-	if (!clipboard) return;
-	const files = [...clipboard.items]
-		.filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-		.map((item) => item.getAsFile())
-		.filter((file): file is File => Boolean(file));
-	if (files.length === 0) return;
-	event.preventDefault();
-
-	const attachedImageCount = ui.attachments.filter(
-		(attachment) => attachment.kind === "image",
-	).length;
-	if (attachedImageCount + files.length > MAX_IMAGE_ATTACHMENT_COUNT) {
-		showToast(
-			`Attach at most ${MAX_IMAGE_ATTACHMENT_COUNT} images per message`,
-			"error",
-		);
-		return;
-	}
-
-	let totalBytes = 0;
-	for (const file of files) {
-		if (!SUPPORTED_CLIPBOARD_IMAGE_TYPES.has(file.type.toLowerCase())) {
-			showToast("Paste PNG, JPEG, GIF, or WebP images", "error");
-			return;
-		}
-		if (file.size > MAX_IMAGE_BYTES) {
-			showToast(
-				`${file.name || "Clipboard image"} exceeds the 10 MB limit`,
-				"error",
-			);
-			return;
-		}
-		totalBytes += file.size;
-	}
-	if (totalBytes > MAX_TOTAL_IMAGE_BYTES) {
-		showToast("Pasted images exceed the 12 MB total limit", "error");
-		return;
-	}
-
-	try {
-		const images: PastedImage[] = await Promise.all(
-			files.map(async (file, index) => ({
-				name: file.name || `Pasted image ${index + 1}`,
-				mimeType: file.type.toLowerCase(),
-				data: await readFileAsBase64(file),
-			})),
-		);
-		runAction("pasteImages", { images });
-	} catch (error) {
-		showToast(
-			error instanceof Error ? error.message : "Could not read clipboard image",
-			"error",
-		);
-	}
-}
-
 function isAttachableResourceDrag(
 	dataTransfer: DataTransfer | null,
 ): dataTransfer is DataTransfer {
@@ -2019,28 +1957,6 @@ function clearResourceDragState(): void {
 	resourceDragDepth = 0;
 	elements.resourceDropOverlay.hidden = true;
 	elements.app.classList.remove("is-resource-drag");
-}
-
-function readFileAsBase64(file: File): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.addEventListener("error", () =>
-			reject(new Error("Could not read clipboard image")),
-		);
-		reader.addEventListener("load", () => {
-			if (typeof reader.result !== "string") {
-				reject(new Error("Could not read clipboard image"));
-				return;
-			}
-			const separator = reader.result.indexOf(",");
-			if (separator < 0) {
-				reject(new Error("Invalid clipboard image"));
-				return;
-			}
-			resolve(reader.result.slice(separator + 1));
-		});
-		reader.readAsDataURL(file);
-	});
 }
 
 function sendPrompt(): void {

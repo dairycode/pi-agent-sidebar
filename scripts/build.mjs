@@ -1,4 +1,3 @@
-import { watch as watchDirectory } from "node:fs";
 import { copyFile, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -24,14 +23,10 @@ if (cleanOnly) {
 }
 
 const webviewOutDir = path.join(outDir, "dist", "webview");
-const webviewSourceDir = path.join(root, "webview");
-const webviewCssSource = path.join(webviewSourceDir, "main.css");
-const webviewCssOutput = path.join(webviewOutDir, "main.css");
 await mkdir(webviewOutDir, { recursive: true });
 await mkdir(path.join(webviewOutDir, "codicons"), { recursive: true });
 
 await Promise.all([
-	copyFile(webviewCssSource, webviewCssOutput),
 	copyFile(
 		path.join(
 			root,
@@ -82,22 +77,21 @@ const webviewOptions = {
 	target: ["chrome120"],
 };
 
+const webviewStyleOptions = {
+	...shared,
+	entryPoints: [path.join(root, "webview", "main.css")],
+	outfile: path.join(webviewOutDir, "main.css"),
+	target: ["chrome120"],
+};
+
+const buildOptions = [extensionOptions, webviewOptions, webviewStyleOptions];
+
 if (watch) {
-	const contexts = await Promise.all([
-		esbuild.context(extensionOptions),
-		esbuild.context(webviewOptions),
-	]);
+	const contexts = await Promise.all(
+		buildOptions.map((options) => esbuild.context(options)),
+	);
 	await Promise.all(contexts.map((context) => context.watch()));
-	watchDirectory(webviewSourceDir, (_eventType, filename) => {
-		if (filename?.toString() !== "main.css") return;
-		void copyFile(webviewCssSource, webviewCssOutput).catch((error) => {
-			console.error("Could not update the Webview stylesheet:", error);
-		});
-	});
 	console.log("Watching extension, Webview bundle, and stylesheet...");
 } else {
-	await Promise.all([
-		esbuild.build(extensionOptions),
-		esbuild.build(webviewOptions),
-	]);
+	await Promise.all(buildOptions.map((options) => esbuild.build(options)));
 }

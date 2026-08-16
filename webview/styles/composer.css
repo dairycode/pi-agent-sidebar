@@ -1,0 +1,548 @@
+.widget-area {
+	max-height: min(120px, 20vh);
+	padding: 7px 9px;
+	overflow: auto;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-content);
+	background: var(--pi-surface);
+	color: var(--pi-muted);
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: var(--pi-font-chrome);
+	white-space: pre-wrap;
+}
+
+.composer-shell {
+	z-index: 5;
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+	max-height: min(240px, 58vh);
+	padding: 7px 7px 9px;
+	overflow-x: hidden;
+	overflow-y: auto;
+	border-top: 1px solid var(--pi-border-subtle);
+	background: var(--pi-page-background);
+}
+
+.resource-drop-overlay {
+	position: absolute;
+	z-index: 40;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 10px;
+	overflow: hidden;
+	border: 1px dashed var(--pi-accent);
+	background: color-mix(in srgb, var(--pi-accent) 12%, transparent);
+	pointer-events: none;
+}
+
+.resource-drop-overlay[hidden] {
+	display: none;
+}
+
+.resource-drop-prompt {
+	display: inline-flex;
+	align-items: center;
+	min-width: 0;
+	max-width: 100%;
+	min-height: 30px;
+	padding: 5px 10px;
+	border: 1px solid var(--pi-border);
+	border-radius: var(--pi-radius-content);
+	background: var(--pi-raised);
+	box-shadow: 0 4px 14px
+		color-mix(in srgb, var(--vscode-widget-shadow, #000) 24%, transparent);
+	color: var(--vscode-foreground);
+	font-size: var(--vscode-font-size, 13px);
+	font-weight: 600;
+	line-height: 18px;
+}
+
+.resource-drop-prompt span {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+#app.is-resource-drag .composer {
+	border-color: var(--pi-accent);
+	box-shadow: 0 0 0 1px var(--pi-accent-soft);
+}
+
+#app.is-working .composer-shell {
+	border-top-color: transparent;
+	background:
+		linear-gradient(
+			var(--vscode-sideBar-background, var(--vscode-editor-background)),
+			var(--vscode-sideBar-background, var(--vscode-editor-background))
+		)
+		padding-box,
+		linear-gradient(
+			90deg,
+			var(--pi-border-subtle) 0%,
+			var(--pi-border-subtle) 44%,
+			var(--pi-accent-hover) 48%,
+			var(--pi-accent) 50%,
+			var(--pi-accent-hover) 52%,
+			var(--pi-border-subtle) 56%,
+			var(--pi-border-subtle) 100%
+		)
+		border-box;
+	background-repeat: no-repeat;
+	background-position:
+		0 0,
+		100% 0;
+	background-size:
+		100% 100%,
+		240% 100%;
+	animation: composer-divider-sweep 1.25s ease-in-out infinite alternate;
+}
+
+@keyframes composer-divider-sweep {
+	from {
+		background-position:
+			0 0,
+			100% 0;
+	}
+
+	to {
+		background-position:
+			0 0,
+			0 0;
+	}
+}
+
+/* Align status metadata with the toolbar controls rather than the textarea text.
+   These rows are siblings of `.composer`, so they need their own inset. */
+.composer-status-row {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	min-height: 16px;
+	margin: 0 8px 5px;
+	gap: 8px;
+}
+
+.queue-status {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	line-height: 16px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Match the status row and toolbar inset so attachment chips sit on the same
+   visual edge as the controls below. */
+.attachment-list {
+	display: flex;
+	margin: 0 8px 5px;
+	overflow-x: auto;
+	gap: 4px;
+}
+
+.attachment-list:empty {
+	display: none;
+}
+
+.attachment-chip {
+	display: grid;
+	grid-template-columns: 14px minmax(0, auto) 20px;
+	align-items: center;
+	flex: 0 0 auto;
+	max-width: 180px;
+	min-height: 26px;
+	padding-left: 6px;
+	border: 1px solid var(--pi-accent-border);
+	border-radius: 4px;
+	background: var(--pi-accent-soft);
+	font-size: var(--pi-font-chrome);
+	gap: 4px;
+}
+
+.attachment-chip > span {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.attachment-remove {
+	display: grid;
+	place-items: center;
+	width: 20px;
+	height: 24px;
+	padding: 0;
+	color: var(--pi-muted);
+	background: transparent;
+}
+
+.attachment-remove:hover {
+	color: var(--vscode-foreground);
+}
+
+.composer {
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+	overflow: hidden;
+	border: 1px solid var(--pi-accent-border);
+	border-radius: var(--pi-radius-panel);
+	background: var(--pi-surface);
+	box-shadow: 0 5px 18px
+		color-mix(in srgb, var(--vscode-widget-shadow, #000) 14%, transparent);
+	transition:
+		border-color 120ms ease,
+		box-shadow 120ms ease;
+}
+
+.composer:focus-within {
+	border-color: var(--pi-accent);
+	box-shadow:
+		0 0 0 1px var(--pi-accent),
+		0 6px 20px color-mix(in srgb, var(--pi-accent) 10%, transparent);
+}
+
+.composer.busy,
+#app.is-working .composer {
+	border-color: var(--pi-accent);
+}
+
+.prompt-editor {
+	position: relative;
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+}
+
+.prompt-highlight-backdrop {
+	position: absolute;
+	z-index: 2;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+/* Both layers share one rule so the highlight backdrop cannot drift from the text
+   it sits behind — any padding or line-height change has to apply to both.
+
+   The vertical padding is symmetrical and derived: one line of 13px text at 1.45
+   is 18.85px, so 12.5px above and below fills the 44px minimum almost exactly
+   (43.85, with `min-height` covering the remainder). The old 11px/4px split looked
+   even while typing but not at rest: a textarea is top-aligned, so the leftover
+   10px of the minimum height all pooled below the text — 11px above against
+   14.15px below. */
+.prompt-highlights,
+#prompt-input {
+	width: 100%;
+	min-height: 44px;
+	padding: 12.5px 11px;
+	font: inherit;
+	letter-spacing: 0;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	tab-size: 4;
+}
+
+.prompt-highlights {
+	color: transparent;
+	transform-origin: top left;
+	will-change: transform;
+}
+
+.composer-reference-highlight {
+	color: var(--vscode-textLink-foreground, #4daafc);
+	background: transparent;
+}
+
+.workspace-path-link {
+	cursor: pointer;
+}
+
+#prompt-input {
+	position: relative;
+	z-index: 1;
+	display: block;
+	max-height: min(160px, 32vh);
+	resize: none;
+	overflow-y: auto;
+	border: 0;
+	outline: 0;
+	color: var(--vscode-input-foreground);
+	background: transparent;
+}
+
+/* Truncated rather than wrapped. The prompt is a `textarea`, so its placeholder
+   inherits the `pre-wrap` that real input needs and would break onto a second line
+   in a narrow sidebar — pushing the toolbar down and reflowing the composer while
+   the field is still empty. Scoped to the placeholder so typed text keeps wrapping
+   normally. */
+#prompt-input::placeholder {
+	overflow: hidden;
+	color: var(--vscode-input-placeholderForeground);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Keep the controls slightly closer to the composer's edges than the textarea
+   text. The 8px inset compensates for each control's own border and inner space,
+   while the tighter bottom inset keeps the single-line composer compact. */
+.composer-toolbar {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	min-height: 34px;
+	padding: 2px 8px 8px;
+	gap: 6px;
+}
+
+/* One flat gap across all four controls. An extra margin before the pickers was
+   meant to set the buttons apart from them, but each picker already carries 5px of
+   inner padding, and the two stacked into a visibly wider hole between `/` and
+   the model than anywhere else in the row.
+
+   This gap is fixed and never overridden by a narrow-width state. Every control
+   is shown at full size or not at all, so the row's rhythm is identical at every
+   sidebar width — see reflowComposerTools(). */
+.composer-tools {
+	min-width: 0;
+	overflow: hidden;
+	gap: 2px;
+	flex-wrap: nowrap;
+}
+
+.composer-actions {
+	flex: 0 0 auto;
+	gap: 3px;
+}
+
+/* A faint resting border marks each control's hit area. Without it the row read as
+   loose glyphs floating on the composer, with a hover background as the only
+   affordance — nothing to aim at before the pointer arrived. Scoped to this row so
+   the session header's tightly packed buttons stay borderless. */
+.composer-tools .icon-button {
+	border-color: var(--pi-border-subtle);
+}
+
+.composer-tools .icon-button:hover:not(:disabled) {
+	border-color: var(--pi-border);
+}
+
+/* Same resting border as the icon buttons, so all four controls in the row read
+   as one set. `flex: 0 0 auto` is load-bearing rather than decoration: a flex item
+   with an explicit width still shrinks past it because `flex-shrink` defaults to
+   1, which squashed these into slivers in a tight row. The 5px gap spaces the icon
+   from its label.
+
+   Deliberately no `max-width`: it is a hard cap that overrides `flex-shrink: 0`, so
+   a long model name still got squeezed narrower than its text as the sidebar
+   shrank. Worse, a clamped button stops overflowing its container, which is exactly
+   the signal reflowComposerTools() measures — so the row would sit there compressed
+   instead of switching to icons.
+
+   The padding is also fixed at every width. A `max-width: 320px` media query used
+   to trim it to 4px to claw back room, which made both pickers jump 4px narrower
+   the moment the sidebar crossed that breakpoint — read as the buttons being
+   squeezed mid-drag. Narrow widths are handled by dropping labels instead, which is
+   measured rather than guessed at a breakpoint. */
+.select-control {
+	display: flex;
+	align-items: center;
+	flex: 0 0 auto;
+	min-width: 0;
+	height: var(--pi-control-size);
+	padding: 0 6px;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-control);
+	color: var(--pi-muted);
+	background: transparent;
+	gap: 5px;
+}
+
+.select-control:hover:not(:disabled),
+.select-control[aria-expanded="true"] {
+	border-color: var(--pi-border);
+	color: var(--vscode-foreground);
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+/* Label or icon, never both. A label already names the control, so the icon beside
+   it was redundant decoration; dropping it also frees the width that used to push
+   the row into its icon-only state sooner. The icon is the fallback — it reappears
+   only when the labels no longer fit. */
+.select-control .codicon {
+	display: none;
+	flex: 0 0 auto;
+}
+
+.composer-tools.is-icons .select-control .codicon {
+	display: inline-block;
+}
+
+/* Shown in full or not at all — never ellipsised. A half-truncated model name
+   degrades into stray punctuation ("Claude ·") that reads as a rendering bug
+   rather than a shortened label. The trigger's tooltip carries the full value,
+   so dropping the label loses nothing. */
+.select-value {
+	flex: 0 0 auto;
+	color: var(--vscode-foreground);
+	text-align: left;
+	white-space: nowrap;
+}
+
+.thinking-control .select-value {
+	text-transform: capitalize;
+}
+
+/* Custom listbox: a native <select> renders its list through the OS, so it
+   cannot pick up the VS Code theme. Positioned from script against `#app`,
+   which is the nearest non-clipping positioned ancestor. `min-width` stays
+   small enough to fit a narrow sidebar — a fixed 160px floor collided with
+   `max-width` once the trigger collapsed to an icon, skewing the panel. */
+.select-popup {
+	position: absolute;
+	z-index: 9;
+	display: flex;
+	flex-direction: column;
+	min-width: min(160px, calc(100% - 16px));
+	max-width: calc(100% - 16px);
+	padding: 4px;
+	overflow-y: auto;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-panel);
+	background: var(--pi-raised);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.select-popup[hidden] {
+	display: none;
+}
+
+.select-option {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	flex: 0 0 auto;
+	min-height: 26px;
+	padding: 0 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	gap: 6px;
+	font-size: var(--pi-font-chrome);
+}
+
+.select-option:hover,
+.select-option:focus-visible {
+	outline: 0;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.select-option[aria-selected="true"] {
+	color: var(--vscode-foreground);
+}
+
+.select-option-check {
+	font-size: 13px;
+	color: var(--pi-accent);
+}
+
+.select-option-check.is-hidden {
+	visibility: hidden;
+}
+
+.select-option-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.select-popup.is-thinking .select-option-label {
+	text-transform: capitalize;
+}
+
+/* Both pickers show their labels or neither does — they never split, and a label
+   is never ellipsised. Dropping only the longer model name left the row
+   lopsided, and a truncated name degrades into stray punctuation that reads as a
+   rendering bug. Both tooltips carry the full value, so icon-only loses nothing.
+
+   Icon-only is the floor. Each picker then becomes a square the same size as the
+   `+` and `/` buttons, so all four controls keep one fixed rhythm instead of
+   creeping closer together as the sidebar narrows.
+
+   Measured from script because label widths range from "Max" to "Claude Sonnet
+   4.5 (latest)", so no fixed breakpoint suits every model. */
+.model-control,
+.thinking-control {
+	flex: 0 0 auto;
+}
+
+.composer-tools.is-icons .select-value {
+	display: none;
+}
+
+.composer-tools.is-icons .select-control {
+	justify-content: center;
+	width: var(--pi-control-size);
+	padding: 0;
+}
+
+/* Below the icon-only floor both pickers drop out together rather than being
+   clipped: a sidebar can be narrower than five 28px squares, and a half-sliced
+   icon looked like the spacing had collapsed. The values stay reachable from the
+   Command Palette, and the pickers return as soon as there is room. */
+.composer-tools.is-minimal .model-control,
+.composer-tools.is-minimal .thinking-control {
+	display: none;
+}
+
+.send-button {
+	display: grid;
+	place-items: center;
+	flex: 0 0 auto;
+	width: var(--pi-control-size);
+	height: var(--pi-control-size);
+	padding: 0;
+	border-radius: var(--pi-radius-control);
+	color: #fff;
+	background: var(--pi-accent);
+}
+
+.send-button:hover:not(:disabled) {
+	background: var(--pi-accent-hover);
+}
+
+.composer.busy .send-button {
+	border: 1px solid var(--pi-accent);
+	color: #fff;
+	background: var(--pi-accent);
+}
+
+.composer.busy .send-button:hover:not(:disabled) {
+	color: #fff;
+	background: var(--pi-accent-hover);
+}
+
+.runtime-meta {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 55%;
+	margin-left: auto;
+	overflow: hidden;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	line-height: 16px;
+	text-align: right;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.runtime-meta:empty {
+	display: none;
+}

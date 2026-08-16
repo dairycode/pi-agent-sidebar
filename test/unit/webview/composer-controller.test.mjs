@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadComposerController() {
 	return loadBundledModule({
 		entry: "webview/composer/controller.ts",
@@ -91,6 +90,64 @@ function fileReference(revision = 0) {
 		displayPath: "src/file.ts",
 	};
 }
+
+test("staged file references are highlighted before the host adopts them", async () => {
+	const loaded = await loadComposerController();
+	try {
+		const harness = createHarness(
+			loaded.module.ComposerController,
+			"inspect @src",
+		);
+		const pendingId = harness.controller.stageFileReference(
+			"src/file.ts",
+			8,
+			12,
+		);
+
+		assert.equal(harness.editor.value, "inspect @src/file.ts ");
+		assert.equal(harness.controller.references.length, 0);
+		assert.equal(harness.controller.referenceCount, 1);
+		assert.equal(harness.controller.hasPendingReferences, true);
+		assert.equal(harness.controller.isPendingReference(pendingId), true);
+		assert.equal(harness.controller.managedReferences().length, 1);
+		assert.equal(harness.refreshes, 1);
+
+		const stagedText = harness.editor.value;
+		const changed = harness.controller.applyIncoming([fileReference()]);
+		assert.equal(harness.editor.value, stagedText);
+		assert.equal(harness.controller.references.length, 1);
+		assert.equal(harness.controller.referenceCount, 1);
+		assert.equal(harness.controller.hasPendingReferences, false);
+		assert.equal(harness.controller.isPendingReference(pendingId), false);
+		assert.equal(changed[0].start, "inspect ".length);
+		assert.equal(changed[0].end, "inspect @src/file.ts".length);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("failed staged file references are removed cleanly", async () => {
+	const loaded = await loadComposerController();
+	try {
+		const harness = createHarness(
+			loaded.module.ComposerController,
+			"inspect @src",
+		);
+		const pendingId = harness.controller.stageFileReference(
+			"src/file.ts",
+			8,
+			12,
+		);
+
+		harness.controller.discardPendingReference(pendingId);
+		assert.equal(harness.editor.value, "inspect ");
+		assert.equal(harness.controller.referenceCount, 0);
+		assert.equal(harness.controller.managedReferences().length, 0);
+		assert.deepEqual(harness.posts, []);
+	} finally {
+		await loaded.dispose();
+	}
+});
 
 test("local marker removal suppresses stale host echoes", async () => {
 	const loaded = await loadComposerController();

@@ -62,6 +62,7 @@ interface PendingAction {
 	draft?: string;
 	attachmentIds?: string[];
 	referenceSnapshots?: ManagedComposerReference[];
+	stagedReferenceId?: string;
 }
 
 interface ConfirmOptions extends ConfirmDialogOptions {
@@ -238,10 +239,10 @@ const composerController = new ComposerController(
 /**
  * `@` mention popup for workspace files.
  *
- * Picking a row goes through `addResources`, the same host path the Explorer drag
- * and drop uses, so the host stays the single owner of reference identity,
- * revisions, and marker text. The webview only removes the typed `@query` — the
- * marker itself arrives back as a `composerReferences` update.
+ * Picking a row immediately replaces the query with a locally highlighted
+ * marker, then goes through `addResources`, the same host path the Explorer drag
+ * and drop uses. The host remains the owner of reference identity and revisions;
+ * its response adopts the staged marker's range without another text update.
  */
 const mentionController = new MentionController({
 	panel: elements.mentionPanel,
@@ -409,7 +410,8 @@ elements.input.addEventListener("keydown", (event) => {
 		const reference = composerController.referenceAtOffset(
 			elements.input.selectionStart,
 		);
-		if (!reference) return;
+		if (!reference || composerController.isPendingReference(reference.id))
+			return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
 		return;
@@ -464,7 +466,7 @@ window.addEventListener("drop", (event) => {
 	}
 	const availableReferenceCount = Math.max(
 		0,
-		MAX_COMPOSER_REFERENCE_COUNT - composerController.references.length,
+		MAX_COMPOSER_REFERENCE_COUNT - composerController.referenceCount,
 	);
 	if (resources.length > availableReferenceCount) {
 		showToast(
@@ -485,7 +487,7 @@ elements.input.addEventListener("click", (event) => {
 	const reference = composerController.referenceAtOffset(
 		elements.input.selectionStart,
 	);
-	if (!reference) return;
+	if (!reference || composerController.isPendingReference(reference.id)) return;
 	post({ type: "openComposerReference", id: reference.id });
 });
 
@@ -777,6 +779,12 @@ function handleActionResult(
 	if (ok && action?.type === "addResources") {
 		showToast("Resources added to the input", "info");
 		announce("Resources added to the input");
+	}
+	if (
+		action?.stagedReferenceId &&
+		composerController.isPendingReference(action.stagedReferenceId)
+	) {
+		composerController.discardPendingReference(action.stagedReferenceId);
 	}
 	if (ok && action?.type === "deleteSession") {
 		showToast("Session deleted", "info");
@@ -1405,7 +1413,8 @@ function renderSendButton(): void {
 	elements.sendButton.title = label;
 	elements.sendButton.setAttribute("aria-label", label);
 	elements.sendButton.disabled =
-		ui.connection !== "ready" || (!ui.busy && pendingSubmit);
+		ui.connection !== "ready" ||
+		(!ui.busy && (pendingSubmit || composerController.hasPendingReferences));
 	elements.composer.classList.toggle("busy", ui.busy || pendingSubmit);
 }
 
@@ -1898,25 +1907,20 @@ function positionMentionPanel(): void {
 /**
  * Turns a picked mention into a real composer reference.
  *
- * The typed `@query` is removed first and the host is then asked to register the
- * file, which comes back as a `composerReferences` update carrying the marker.
- * The order matters: the host-owned marker is inserted at the caret, so the caret
- * has to already sit where the query was for the marker to land there.
- *
- * Local removal also covers the duplicate case. Picking a file that is already
- * referenced produces no new reference from the host, so leaving the query behind
- * would strand `@src/main.ts` as plain prose beside the real marker.
+ * The final marker is staged locally so there is no empty frame while the host
+ * registers its identity. Duplicate picks only remove the query because the
+ * existing reference already owns the highlighted marker.
  */
 function addMentionReference(
 	file: WorkspaceFileSuggestion,
 	token: { start: number; end: number },
 ): void {
-	const alreadyReferenced = composerController.references.some(
-		(reference) => reference.displayPath === file.displayPath,
-	);
+	const alreadyReferenced = composerController
+		.managedReferences()
+		.some((reference) => reference.displayPath === file.displayPath);
 	if (
 		!alreadyReferenced &&
-		composerController.references.length >= MAX_COMPOSER_REFERENCE_COUNT
+		composerController.referenceCount >= MAX_COMPOSER_REFERENCE_COUNT
 	) {
 		showToast(
 			`Remove a reference before adding another (maximum ${MAX_COMPOSER_REFERENCE_COUNT})`,
@@ -1924,9 +1928,21 @@ function addMentionReference(
 		);
 		return;
 	}
-	composerController.replaceRange(token.start, token.end, "");
+	if (alreadyReferenced) {
+		composerController.replaceRange(token.start, token.end, "");
+		elements.input.focus();
+		return;
+	}
+	const stagedReferenceId = composerController.stageFileReference(
+		file.displayPath,
+		token.start,
+		token.end,
+	);
 	elements.input.focus();
-	runAction("addResources", { resources: [file.uri] });
+	runAction("addResources", {
+		resources: [file.uri],
+		stagedReferenceId,
+	});
 }
 
 function isAttachableResourceDrag(
@@ -1946,7 +1962,12 @@ function clearResourceDragState(): void {
 }
 
 function sendPrompt(): void {
-	if (pendingSubmit || ui.connection !== "ready") return;
+	if (
+		pendingSubmit ||
+		ui.connection !== "ready" ||
+		composerController.hasPendingReferences
+	)
+		return;
 	const text = elements.input.value;
 	if (
 		!text.trim() &&
@@ -1995,13 +2016,17 @@ function runAction(
 ): void {
 	const actionId = crypto.randomUUID();
 	const action: PendingAction = { type };
+	if (typeof fields.stagedReferenceId === "string") {
+		action.stagedReferenceId = fields.stagedReferenceId;
+	}
 	if (type === "submit" || type === "newSession") {
 		action.draft = elements.input.value;
 		action.attachmentIds = ui.attachments.map((attachment) => attachment.id);
 		action.referenceSnapshots = composerController.snapshotReferences();
 	}
 	pendingActions.set(actionId, action);
-	post({ type, actionId, ...fields } as WebviewToHostMessage);
+	const { stagedReferenceId: _stagedReferenceId, ...outgoingFields } = fields;
+	post({ type, actionId, ...outgoingFields } as WebviewToHostMessage);
 }
 
 function post(message: WebviewToHostMessage): void {

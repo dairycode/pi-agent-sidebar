@@ -67,7 +67,8 @@
 		background: Canvas;
 	}
 
-	.composer-reference-highlight {
+	.composer-reference-highlight,
+	.composer-command-highlight {
 		forced-color-adjust: none;
 		color: LinkText;
 		background: transparent;

@@ -2,6 +2,7 @@ import DOMPurify from "dompurify";
 import { formatComposerReferenceLocation } from "../shared/composerReferences.js";
 import { handleImagePaste } from "./attachments/imagePaste.js";
 import type { ManagedComposerReference } from "./composer/model.js";
+import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
@@ -636,6 +637,7 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 		case "commandList": {
 			ui.commands = message.commands;
 			if (!elements.commandPanel.hidden) renderCommands();
+			scheduleRender();
 			break;
 		}
 		case "workspaceFileList": {
@@ -1288,7 +1290,7 @@ function renderComposerHighlights(): void {
 	if (text.length > MAX_HIGHLIGHTED_COMPOSER_LENGTH) {
 		renderedPromptText = undefined;
 		renderedPromptMarkerSignature = undefined;
-		elements.promptEditor.classList.remove("has-reference-highlights");
+		elements.promptEditor.classList.remove("has-token-highlights");
 		if (elements.promptHighlights.childNodes.length > 0) {
 			elements.promptHighlights.replaceChildren();
 		}
@@ -1298,12 +1300,17 @@ function renderComposerHighlights(): void {
 	const references = composerController
 		.managedReferences()
 		.sort((left, right) => left.start - right.start || left.end - right.end);
-	const markerSignature = references
-		.map(
+	const commandRanges = commandHighlightRanges(
+		text,
+		ui.commands.map((command) => command.name),
+	);
+	const markerSignature = [
+		...references.map(
 			(reference) =>
-				`${reference.id}:${reference.revision}:${reference.start}:${reference.end}`,
-		)
-		.join("\u0000");
+				`reference:${reference.id}:${reference.revision}:${reference.start}:${reference.end}`,
+		),
+		...commandRanges.map((range) => `command:${range.start}:${range.end}`),
+	].join("\u0000");
 	if (
 		text === renderedPromptText &&
 		markerSignature === renderedPromptMarkerSignature
@@ -1314,9 +1321,20 @@ function renderComposerHighlights(): void {
 	renderedPromptText = text;
 	renderedPromptMarkerSignature = markerSignature;
 
-	const ranges = references.map(({ start, end }) => ({ start, end }));
+	const ranges = [
+		...references.map(({ start, end }) => ({
+			start,
+			end,
+			className: "composer-reference-highlight",
+		})),
+		...commandRanges.map(({ start, end }) => ({
+			start,
+			end,
+			className: "composer-command-highlight",
+		})),
+	].sort((left, right) => left.start - right.start || left.end - right.end);
 	elements.promptEditor.classList.toggle(
-		"has-reference-highlights",
+		"has-token-highlights",
 		ranges.length > 0,
 	);
 	if (ranges.length === 0) {
@@ -1331,7 +1349,7 @@ function renderComposerHighlights(): void {
 		if (range.start < cursor) continue;
 		fragment.append(document.createTextNode(text.slice(cursor, range.start)));
 		const highlight = document.createElement("mark");
-		highlight.className = "composer-reference-highlight";
+		highlight.className = range.className;
 		highlight.textContent = text.slice(range.start, range.end);
 		fragment.append(highlight);
 		cursor = range.end;

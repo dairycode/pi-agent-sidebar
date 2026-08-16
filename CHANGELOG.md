@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1
+
+- Highlight complete, valid slash commands such as `/compact` in blue once pi
+  recognizes them. Only the command token is highlighted; arguments, incomplete
+  names, unknown commands, paths, and slash characters in ordinary prose retain
+  the normal composer color.
+- Eliminate the visual flash when selecting a file from the `@` workspace
+  browser. The final `@path` marker is now highlighted immediately and keeps its
+  position while the extension host assigns the reference identity; failed
+  registrations safely remove the temporary marker.
+
 ## 0.5.0
 
 - Add a level-by-level `@` workspace browser to the composer: each view shows

@@ -1,7 +1,5 @@
 node_modules/
 dist/
-media/main.js
-media/codicons/
 *.vsix
 .DS_Store
 .pi-subagents/

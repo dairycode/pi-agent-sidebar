@@ -14,7 +14,7 @@ async function loadPiRpcClient() {
 	);
 	const output = path.join(temporaryDirectory, "pi-rpc-client.mjs");
 	await build({
-		entryPoints: [path.join(root, "src", "piRpcClient.ts")],
+		entryPoints: [path.join(root, "src", "rpc", "piRpcClient.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

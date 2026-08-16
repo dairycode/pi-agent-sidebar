@@ -3,7 +3,7 @@
  *
  * This exists so UI changes can be inspected without a manual screenshot from a
  * running VS Code window. The markup comes from the real
- * `createWebviewDocument()` and the real `media/main.css`, so the preview cannot
+ * `createWebviewDocument()` and the built `dist/webview/main.css`, so the preview cannot
  * drift from what ships — only the pieces VS Code owns are stubbed:
  *
  *  - `vscode.Uri` / `webview.asWebviewUri` become plain `file://` paths.
@@ -443,8 +443,8 @@ setTimeout(() => setTimeout(() => {
 				kind: "file",
 				id: "preview-file",
 				revision: 0,
-				marker: "@src/piViewProvider.ts",
-				displayPath: "src/piViewProvider.ts",
+				marker: "@src/provider/piViewProvider.ts",
+				displayPath: "src/provider/piViewProvider.ts",
 			}],
 		});
 	}
@@ -452,7 +452,7 @@ setTimeout(() => setTimeout(() => {
 		const transfer = new DataTransfer();
 		transfer.setData(
 			"ResourceURLs",
-			JSON.stringify(["file:///workspace/src/piViewProvider.ts"]),
+			JSON.stringify(["file:///workspace/src/provider/piViewProvider.ts"]),
 		);
 		document.querySelector("#session-header").dispatchEvent(
 			new DragEvent("dragenter", {
@@ -481,16 +481,14 @@ async function main() {
 
 	try {
 		const createWebviewDocument = await loadDocumentFactory(workDir);
-		const mediaRoot = pathToFileURL(path.join(root, "media")).href;
 		const html = createWebviewDocument(
 			{
 				cspSource: "file:",
 				// The real implementation hands back a webview URI; a file URL is the
-				// headless equivalent and keeps every asset path relative to media/.
-				// It also supports `.with({ query })`, which the document template
-				// uses to cache-bust the stylesheet, so wrap it in a small object.
+				// headless equivalent. It also supports `.with({ query })`, which the
+				// document template uses to cache-bust the stylesheet.
 				asWebviewUri: (uri) => {
-					const url = `${mediaRoot}/${uri.fsPath.split("/media/").pop()}`;
+					const url = pathToFileURL(uri.fsPath).href;
 					return { toString: () => url, with: () => url };
 				},
 			},

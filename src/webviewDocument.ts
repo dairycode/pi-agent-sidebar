@@ -6,14 +6,15 @@ export function createWebviewDocument(
 	extensionUri: vscode.Uri,
 ): string {
 	const nonce = randomBytes(24).toString("base64url");
+	const webviewRoot = vscode.Uri.joinPath(extensionUri, "dist", "webview");
 	const scriptUri = webview.asWebviewUri(
-		vscode.Uri.joinPath(extensionUri, "media", "main.js"),
+		vscode.Uri.joinPath(webviewRoot, "main.js"),
 	);
 	const styleUri = webview
-		.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "main.css"))
+		.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "main.css"))
 		.with({ query: `v=${nonce}` });
 	const codiconUri = webview.asWebviewUri(
-		vscode.Uri.joinPath(extensionUri, "media", "codicons", "codicon.css"),
+		vscode.Uri.joinPath(webviewRoot, "codicons", "codicon.css"),
 	);
 
 	return `<!doctype html>

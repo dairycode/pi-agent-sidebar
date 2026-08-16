@@ -15,7 +15,7 @@ async function loadTranscript() {
 	const output = path.join(temporaryDirectory, "bundle", "transcript.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "webview", "transcript.ts")],
+		entryPoints: [path.join(root, "webview", "transcript", "renderer.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

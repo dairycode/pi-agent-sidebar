@@ -15,7 +15,7 @@ async function loadValidation() {
 	const output = path.join(temporaryDirectory, "bundle", "validation.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "rpcValidation.ts")],
+		entryPoints: [path.join(root, "src", "rpc", "rpcValidation.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

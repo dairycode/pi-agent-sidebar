@@ -2,7 +2,7 @@ import type {
 	FileComposerReference,
 	JsonRecord,
 	SelectionComposerReference,
-} from "./shared/protocol.js";
+} from "./protocol.js";
 
 export interface FileReferencePayload {
 	path: string;

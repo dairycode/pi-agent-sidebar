@@ -19,7 +19,7 @@ async function loadComposerReferences() {
 	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "composerReferences.ts")],
+		entryPoints: [path.join(root, "shared", "composerReferences.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

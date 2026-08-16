@@ -15,7 +15,7 @@ async function loadStreaming() {
 	const output = path.join(temporaryDirectory, "bundle", "streaming.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "webview", "streaming.ts")],
+		entryPoints: [path.join(root, "webview", "transcript", "streaming.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

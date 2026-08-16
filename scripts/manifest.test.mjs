@@ -54,7 +54,7 @@ test("manifest preserves public command IDs and selection keybindings", async ()
 });
 
 test("inline composer references use font color without decoration", async () => {
-	const css = await readFile("media/main.css", "utf8");
+	const css = await readFile("webview/main.css", "utf8");
 	const match = css.match(/\.composer-reference-highlight\s*\{([^}]+)\}/u);
 	assert.ok(match, "composer-reference-highlight rule is missing");
 	const rule = match[1];

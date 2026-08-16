@@ -1,8 +1,8 @@
-import { formatComposerReferenceLocation } from "../src/composerReferences.js";
+import { formatComposerReferenceLocation } from "../../shared/composerReferences.js";
 import type {
 	ComposerReference,
 	WebviewToHostMessage,
-} from "../src/shared/protocol.js";
+} from "../../shared/protocol.js";
 import {
 	insertManagedReference,
 	isManagedReferenceValid,
@@ -11,7 +11,7 @@ import {
 	referenceAtOffset,
 	removeManagedReferences,
 	type ManagedComposerReference,
-} from "./composerModel.js";
+} from "./model.js";
 
 export interface ComposerPendingAction {
 	type: string;

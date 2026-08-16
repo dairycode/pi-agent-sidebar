@@ -3,8 +3,11 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
 import { AsyncQueue } from "./asyncQueue.js";
-import { AttachmentStore, imageMimeTypeFromPath } from "./attachmentStore.js";
-import { probePiBinary } from "./binaryProbe.js";
+import {
+	AttachmentStore,
+	imageMimeTypeFromPath,
+} from "../services/attachmentStore.js";
+import { probePiBinary } from "../rpc/binaryProbe.js";
 import {
 	formatFileReferenceMarker,
 	formatSelectionReferenceMarker,
@@ -14,9 +17,9 @@ import {
 	uniqueComposerReferenceMarker,
 	type FileReferencePayload,
 	type SelectionReferencePayload,
-} from "./composerReferences.js";
-import { PiRpcClient } from "./piRpcClient.js";
-import { buildPrompt } from "./promptBuilder.js";
+} from "../../shared/composerReferences.js";
+import { PiRpcClient } from "../rpc/piRpcClient.js";
+import { buildPrompt } from "../services/promptBuilder.js";
 import {
 	parseCommandsResponse,
 	parseMessagesResponse,
@@ -26,12 +29,12 @@ import {
 	parseSessionChangeResult,
 	parseThinkingLevelsResponse,
 	validateRpcEvent,
-} from "./rpcValidation.js";
+} from "../rpc/rpcValidation.js";
 import {
 	deleteProjectSession,
 	listProjectSessions,
 	resolveSessionDirectory,
-} from "./sessionStore.js";
+} from "../services/sessionStore.js";
 import {
 	parseWebviewMessage,
 	MAX_COMPOSER_REFERENCE_COUNT,
@@ -42,12 +45,12 @@ import {
 	type PiState,
 	type PiStats,
 	type SelectionComposerReference,
-} from "./shared/protocol.js";
-import { createWebviewDocument } from "./webviewDocument.js";
+} from "../../shared/protocol.js";
+import { createWebviewDocument } from "../webviewDocument.js";
 import {
 	parseDroppedResource,
 	WorkspaceResources,
-} from "./workspaceResources.js";
+} from "../services/workspaceResources.js";
 
 const VIEW_TYPE = "piAgentSidebar.chatView";
 const MAX_COMPOSER_REFERENCE_BYTES = 64 * 1024;
@@ -185,7 +188,7 @@ export class PiViewProvider
 		view.webview.options = {
 			enableScripts: true,
 			localResourceRoots: [
-				vscode.Uri.joinPath(this.context.extensionUri, "media"),
+				vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview"),
 			],
 		};
 		view.webview.html = this.getHtml(view.webview);

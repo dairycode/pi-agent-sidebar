@@ -3,7 +3,7 @@
 import { open, readFile, readdir, stat, unlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { PiContentBlock, SessionSummary } from "./shared/protocol.js";
+import type { PiContentBlock, SessionSummary } from "../../shared/protocol.js";
 
 const MAX_SESSION_FILES = 40;
 const MAX_FULL_READ_BYTES = 2 * 1024 * 1024;

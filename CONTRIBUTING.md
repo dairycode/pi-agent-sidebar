@@ -73,16 +73,22 @@ Run `npm run verify` before submitting a pull request.
 
 ## Project Structure
 
-- `src/` — VS Code extension host, pi RPC client, stores, validation, and
-  workspace integrations.
-- `webview/` — browser-side UI state, rendering, composer behavior, and drag and
-  drop handling.
-- `src/shared/protocol.ts` — typed and validated messages crossing the Webview
-  boundary.
+- `src/extension.ts` — VS Code extension entry point.
+- `src/provider/` — Webview provider and serialized provider operations.
+- `src/rpc/` — pi process probing, RPC transport, and response validation.
+- `src/services/` — attachments, prompt construction, sessions, and workspace
+  resources.
+- `src/webviewDocument.ts` — Host-side Webview HTML and Content Security Policy.
+- `webview/composer/` — browser-side composer state and reference ranges.
+- `webview/transcript/` — transcript rendering and streaming delta assembly.
+- `webview/main.ts`, `webview/main.css`, and `webview/resourceDrop.ts` — Webview
+  entry point, styles, and drag-and-drop parsing.
+- `shared/` — platform-neutral protocol types and composer reference helpers used
+  by both the Extension Host and Webview.
+- `assets/` — source-controlled extension icons.
 - `scripts/` — tests, build scripts, preview tooling, and RPC fixtures.
-- `media/` — Webview styles and static assets.
-- `dist/extension.js`, `media/main.js`, and `media/codicons/` — generated build
-  outputs; do not edit or commit them manually.
+- `dist/extension.js` and `dist/webview/` — generated build outputs; do not edit
+  or commit them manually.
 
 ## Design and Security Guidelines
 

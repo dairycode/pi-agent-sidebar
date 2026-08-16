@@ -21,7 +21,7 @@ async function loadAttachmentStore() {
 	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "attachmentStore.ts")],
+		entryPoints: [path.join(root, "src", "services", "attachmentStore.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",
@@ -92,8 +92,14 @@ test("file attachments and image limits are tracked independently", async () => 
 			mimeType: "image/png",
 		}));
 		store.registerSelected([...files, ...images]);
-		assert.equal(store.list().filter((item) => item.kind === "file").length, 16);
-		assert.equal(store.list().filter((item) => item.kind === "image").length, 4);
+		assert.equal(
+			store.list().filter((item) => item.kind === "file").length,
+			16,
+		);
+		assert.equal(
+			store.list().filter((item) => item.kind === "image").length,
+			4,
+		);
 		assert.throws(
 			() =>
 				store.registerSelected([

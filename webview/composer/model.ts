@@ -1,11 +1,11 @@
 import {
 	expandComposerReferenceRemovalRange,
 	insertComposerReferenceMarker,
-} from "../src/composerReferences.js";
+} from "../../shared/composerReferences.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	type ComposerReference,
-} from "../src/shared/protocol.js";
+} from "../../shared/protocol.js";
 
 export type ManagedComposerReference = ComposerReference & {
 	start: number;
@@ -33,10 +33,7 @@ export function parsePersistedReferences(
 	value: unknown,
 	text: string,
 ): ManagedComposerReference[] {
-	if (
-		!Array.isArray(value) ||
-		value.length > MAX_COMPOSER_REFERENCE_COUNT
-	)
+	if (!Array.isArray(value) || value.length > MAX_COMPOSER_REFERENCE_COUNT)
 		return [];
 	const references: ManagedComposerReference[] = [];
 	const seen = new Set<string>();

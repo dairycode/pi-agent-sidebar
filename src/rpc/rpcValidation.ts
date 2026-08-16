@@ -6,7 +6,7 @@ import type {
 	PiModel,
 	PiState,
 	PiStats,
-} from "./shared/protocol.js";
+} from "../../shared/protocol.js";
 
 const MAX_MESSAGES = 5_000;
 const MAX_CONTENT_BLOCKS = 10_000;

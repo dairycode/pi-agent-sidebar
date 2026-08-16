@@ -8,7 +8,7 @@ import {
 	serializeSelectionReferencePayload,
 	type FileReferencePayload,
 	type SelectionReferencePayload,
-} from "./composerReferences.js";
+} from "../../shared/composerReferences.js";
 
 const MAX_MESSAGE_LENGTH = 1_000_000;
 

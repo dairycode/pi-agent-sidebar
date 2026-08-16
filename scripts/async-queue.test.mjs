@@ -15,7 +15,7 @@ test("AsyncQueue serializes mutations and continues after rejection", async () =
 	const output = path.join(temporaryDirectory, "bundle", "async-queue.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "asyncQueue.ts")],
+		entryPoints: [path.join(root, "src", "provider", "asyncQueue.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

@@ -46,7 +46,7 @@ test("session history reads and safely deletes custom-directory sessions", async
 	);
 
 	await build({
-		entryPoints: [path.join(root, "src", "sessionStore.ts")],
+		entryPoints: [path.join(root, "src", "services", "sessionStore.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

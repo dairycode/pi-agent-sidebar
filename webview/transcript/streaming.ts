@@ -2,7 +2,7 @@ import type {
 	JsonRecord,
 	PiContentBlock,
 	PiMessage,
-} from "../src/shared/protocol.js";
+} from "../../shared/protocol.js";
 
 function objectValue(value: unknown): JsonRecord {
 	return value && typeof value === "object" && !Array.isArray(value)

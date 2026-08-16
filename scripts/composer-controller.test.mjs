@@ -19,7 +19,7 @@ async function loadComposerController() {
 	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "webview", "composerController.ts")],
+		entryPoints: [path.join(root, "webview", "composer", "controller.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

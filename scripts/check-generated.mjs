@@ -7,9 +7,10 @@ import process from "node:process";
 const root = process.cwd();
 const generated = [
 	path.join("dist", "extension.js"),
-	path.join("media", "main.js"),
-	path.join("media", "codicons", "codicon.css"),
-	path.join("media", "codicons", "codicon.ttf"),
+	path.join("dist", "webview", "main.js"),
+	path.join("dist", "webview", "main.css"),
+	path.join("dist", "webview", "codicons", "codicon.css"),
+	path.join("dist", "webview", "codicons", "codicon.ttf"),
 ];
 
 function buildInto(directory) {

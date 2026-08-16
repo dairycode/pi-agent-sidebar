@@ -15,7 +15,7 @@ async function loadPromptBuilder() {
 	const output = path.join(temporaryDirectory, "bundle", "prompt-builder.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "promptBuilder.ts")],
+		entryPoints: [path.join(root, "src", "services", "promptBuilder.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

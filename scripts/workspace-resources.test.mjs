@@ -19,7 +19,7 @@ async function loadWorkspaceResources() {
 	);
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "workspaceResources.ts")],
+		entryPoints: [path.join(root, "src", "services", "workspaceResources.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

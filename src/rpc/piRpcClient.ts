@@ -4,7 +4,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { StringDecoder } from "node:string_decoder";
-import type { JsonRecord } from "./shared/protocol.js";
+import type { JsonRecord } from "../../shared/protocol.js";
 
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;

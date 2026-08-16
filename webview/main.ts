@@ -1,14 +1,14 @@
 import DOMPurify from "dompurify";
-import { formatComposerReferenceLocation } from "../src/composerReferences.js";
-import type { ManagedComposerReference } from "./composerModel.js";
-import { ComposerController } from "./composerController.js";
-import { applyAssistantMessageDelta } from "./streaming.js";
+import { formatComposerReferenceLocation } from "../shared/composerReferences.js";
+import type { ManagedComposerReference } from "./composer/model.js";
+import { ComposerController } from "./composer/controller.js";
+import { applyAssistantMessageDelta } from "./transcript/streaming.js";
 import {
 	contentText,
 	extractResultDiff,
 	friendlyToolName,
 	messageHtml,
-} from "./transcript.js";
+} from "./transcript/renderer.js";
 import {
 	containsDroppedResources,
 	extractDroppedResources,
@@ -27,7 +27,7 @@ import {
 	type PiStats,
 	type SessionSummary,
 	type WebviewToHostMessage,
-} from "../src/shared/protocol.js";
+} from "../shared/protocol.js";
 
 declare function acquireVsCodeApi<T = unknown>(): {
 	postMessage(message: WebviewToHostMessage): void;

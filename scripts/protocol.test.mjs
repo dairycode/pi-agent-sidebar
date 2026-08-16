@@ -15,7 +15,7 @@ async function loadProtocol() {
 	const output = path.join(temporaryDirectory, "bundle", "protocol.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "src", "shared", "protocol.ts")],
+		entryPoints: [path.join(root, "shared", "protocol.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

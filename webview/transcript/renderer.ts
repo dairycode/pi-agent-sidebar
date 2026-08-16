@@ -3,12 +3,12 @@ import { marked } from "marked";
 import {
 	parseFileReferencePayload,
 	parseSelectionReferencePayload,
-} from "../src/composerReferences.js";
+} from "../../shared/composerReferences.js";
 import type {
 	JsonRecord,
 	PiContentBlock,
 	PiMessage,
-} from "../src/shared/protocol.js";
+} from "../../shared/protocol.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 

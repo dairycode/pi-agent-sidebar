@@ -15,7 +15,7 @@ async function loadComposerModel() {
 	const output = path.join(temporaryDirectory, "bundle", "composer-model.mjs");
 	await mkdir(path.dirname(output), { recursive: true });
 	await build({
-		entryPoints: [path.join(root, "webview", "composerModel.ts")],
+		entryPoints: [path.join(root, "webview", "composer", "model.ts")],
 		outfile: output,
 		bundle: true,
 		platform: "node",

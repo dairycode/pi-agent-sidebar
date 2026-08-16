@@ -31,7 +31,7 @@ async function loadPiRpcClient() {
 function fakeClient(PiRpcClient) {
 	return new PiRpcClient({
 		binary: process.execPath,
-		args: [path.join(root, "scripts", "fixtures", "fake-rpc.mjs")],
+		args: [path.join(root, "test", "fixtures", "fake-rpc.mjs")],
 		cwd: root,
 		env: process.env,
 	});

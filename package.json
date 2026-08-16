@@ -249,7 +249,7 @@
     "build": "node scripts/build.mjs",
     "watch": "node scripts/build.mjs --watch",
     "typecheck": "tsc --noEmit",
-    "test:unit": "node --test scripts/*.test.mjs",
+    "test:unit": "node --test test/unit/host/*.test.mjs test/unit/shared/*.test.mjs test/unit/webview/*.test.mjs test/integration/*.test.mjs",
     "preview": "npm run build && node scripts/preview.mjs",
     "test:rpc": "node scripts/rpc-smoke.mjs",
     "test:rpc:live": "node scripts/rpc-smoke.mjs",
@@ -264,13 +264,15 @@
       "src/extension.ts",
       "webview/main.ts",
       "scripts/*.mjs",
-      "scripts/**/*.mjs"
+      "scripts/**/*.mjs",
+      "test/**/*.mjs"
     ],
     "project": [
       "src/**/*.ts",
       "webview/**/*.ts",
       "shared/**/*.ts",
-      "scripts/**/*.mjs"
+      "scripts/**/*.mjs",
+      "test/**/*.mjs"
     ],
     "ignoreDependencies": [
       "@vscode/codicons"

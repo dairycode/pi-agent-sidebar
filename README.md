@@ -8,7 +8,7 @@ Source: <https://github.com/dairycode/pi-agent-sidebar>
 
 ## Preview
 
-![Pi Agent Sidebar running in the VS Code auxiliary sidebar](https://origin.picgo.net/2026/08/16/snapshot147b71b09191df9c.png)
+![Pi Agent Sidebar running in the VS Code auxiliary sidebar](https://origin.picgo.net/2026/08/18/snapshot4076d266fb8a69e2.png)
 
 ## Features
 

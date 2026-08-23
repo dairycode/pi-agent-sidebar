@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2
+
+- Route passive pi notifications, such as background log-cleanup summaries, to
+  the Pi Agent output log instead of VS Code notification popups. Warnings,
+  errors, and prompts that require user interaction remain visible.
+
 ## 0.5.1
 
 - Highlight complete, valid slash commands such as `/compact` in blue once pi

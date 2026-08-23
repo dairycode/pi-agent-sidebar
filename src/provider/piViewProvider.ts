@@ -44,6 +44,7 @@ import {
 	WorkspaceResources,
 } from "../services/workspaceResources.js";
 import { WorkspaceFileSearch } from "../services/workspaceFileSearch.js";
+import { notificationDestination } from "./notificationPolicy.js";
 
 const VIEW_TYPE = "piAgentSidebar.chatView";
 const LONG_COMMAND_TIMEOUT_MS = 10 * 60_000;
@@ -936,11 +937,12 @@ export class PiViewProvider
 			if (method === "notify") {
 				const message =
 					typeof event.message === "string" ? event.message : "Pi notification";
-				if (event.notifyType === "error")
+				const destination = notificationDestination(event.notifyType);
+				if (destination === "error")
 					void vscode.window.showErrorMessage(message);
-				else if (event.notifyType === "warning")
+				else if (destination === "warning")
 					void vscode.window.showWarningMessage(message);
-				else void vscode.window.showInformationMessage(message);
+				else this.output.appendLine(`[pi notification] ${message}`);
 				return;
 			}
 			if (method === "set_editor_text" && typeof event.text === "string") {

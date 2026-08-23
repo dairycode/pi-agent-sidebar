@@ -6,6 +6,7 @@ import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
+import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
 import {
 	contentText,
 	extractResultDiff,
@@ -132,6 +133,10 @@ const elements = {
 	emptyDetail: element<HTMLElement>("empty-detail"),
 	connectionDot: element<HTMLElement>("connection-dot"),
 	connectionBanner: element<HTMLElement>("connection-banner"),
+	pinnedPrompt: element<HTMLElement>("pinned-prompt"),
+	pinnedPromptBody: element<HTMLButtonElement>("pinned-prompt-body"),
+	pinnedPromptText: element<HTMLElement>("pinned-prompt-text"),
+	pinnedPromptToggle: element<HTMLButtonElement>("pinned-prompt-toggle"),
 	sessionTitle: element<HTMLElement>("session-title"),
 	renameSessionButton: element<HTMLButtonElement>("rename-session-button"),
 	historyButton: element<HTMLButtonElement>("history-button"),
@@ -267,6 +272,23 @@ const mentionController = new MentionController({
 resizeInput();
 renderComposerHighlights();
 
+/**
+ * Sticky label naming the turn the transcript is scrolled into.
+ *
+ * The prompt list is read lazily rather than captured once: renderMessages()
+ * replaces every message node, so a cached NodeList would go stale on each
+ * render.
+ */
+const pinnedPrompt = new PinnedPromptController({
+	viewport: elements.transcript,
+	prompts: () => [
+		...elements.messages.querySelectorAll<HTMLElement>(".user-message"),
+	],
+	row: elements.pinnedPrompt,
+	text: elements.pinnedPromptText,
+	toggle: elements.pinnedPromptToggle,
+});
+
 window.addEventListener(
 	"message",
 	(event: MessageEvent<HostToWebviewMessage>) => {
@@ -377,6 +399,21 @@ elements.input.addEventListener("blur", () =>
 
 elements.input.addEventListener("scroll", syncPromptHighlightScroll);
 window.addEventListener("resize", syncPromptHighlightScroll);
+
+// The pinned turn label is driven by scroll position, which fires no state
+// change, so it is re-evaluated here as well as in render().
+elements.transcript.addEventListener("scroll", () => pinnedPrompt.sync(), {
+	passive: true,
+});
+window.addEventListener("resize", () => pinnedPrompt.sync());
+
+elements.pinnedPromptBody.addEventListener("click", () =>
+	pinnedPrompt.revealActivePrompt(),
+);
+
+elements.pinnedPromptToggle.addEventListener("click", () =>
+	pinnedPrompt.toggleExpanded(),
+);
 const promptHighlightResizeObserver = new ResizeObserver(
 	syncPromptHighlightScroll,
 );
@@ -1007,6 +1044,9 @@ function render(): void {
 	focusComposerIfRequested();
 
 	if (nearBottom) scrollTranscriptToBottom();
+	// Runs after renderMessages() replaced the message nodes, so the controller
+	// re-resolves its target element rather than holding a detached one.
+	pinnedPrompt.sync();
 }
 
 /**

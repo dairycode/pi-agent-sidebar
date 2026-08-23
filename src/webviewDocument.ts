@@ -49,6 +49,14 @@ export function createWebviewDocument(
 
     <main id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off">
       <div id="connection-banner" class="connection-banner" hidden></div>
+      <div id="pinned-prompt-slot" class="pinned-prompt-slot">
+        <div id="pinned-prompt" class="pinned-prompt" hidden>
+          <button id="pinned-prompt-body" class="pinned-prompt-body" type="button" title="Scroll to this message" aria-label="Scroll to this message">
+            <span id="pinned-prompt-text" class="pinned-prompt-text"></span>
+          </button>
+          <button id="pinned-prompt-toggle" class="pinned-prompt-toggle icon-button" type="button" hidden aria-expanded="false" aria-controls="pinned-prompt-text" title="Expand this message" aria-label="Expand this message"><i class="codicon codicon-chevron-down" aria-hidden="true"></i></button>
+        </div>
+      </div>
       <section id="empty-state" class="empty-state">
         <svg class="empty-logo" viewBox="0 0 256 256" width="54" height="54" aria-hidden="true">
           <rect width="256" height="256" rx="48" fill="#d97757"/>

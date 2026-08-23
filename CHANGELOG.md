@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+- Pin the prompt whose turn the transcript is scrolled into, so a long reply
+  never leaves "what did I ask to get this?" unanswered. Scrolling back through
+  history relabels the bar with each earlier prompt and it disappears above the
+  first one. The bar collapses to a single line with an expand toggle when the
+  prompt overflows, caps its expanded height and scrolls internally instead of
+  displacing the transcript, and clicking it jumps to the prompt it names.
+
 ## 0.5.2
 
 - Add folders to the composer from Explorer's context menu, by holding `Shift`

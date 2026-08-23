@@ -6,6 +6,112 @@
 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 }
 
+/* Zero-height sticky rail. The pinned row is absolutely positioned inside it so
+   showing the row cannot add flow height — otherwise every message below would
+   shift down the moment it appears, which reads as a scroll jump. */
+.pinned-prompt-slot {
+	position: sticky;
+	z-index: 6;
+	top: 0;
+	height: 0;
+	min-width: 0;
+}
+
+/* Flush top bar rather than a floating card. Inset from the top, the row left an
+   8px gap that the scrolling message behind it showed through, so a half-clipped
+   line peeked out above the pinned text and read as a misplaced overlay. Sitting
+   on the edge with square corners makes it part of the chrome instead.
+
+   The left inset matches the real message body: `.messages` padding (8px) plus
+   `.user-message`'s 2px accent border and 11px padding puts its text at 21px, so
+   this row's own 2px border leaves 19px of padding to land on the same column. */
+.pinned-prompt {
+	position: absolute;
+	top: 0;
+	right: 0;
+	left: 0;
+	display: flex;
+	/* Centred while collapsed: the 28px toggle is taller than one line of text, so
+	   flex-start let the button set the row height and stranded all the slack below
+	   the text — visibly tight on top, loose underneath. */
+	align-items: center;
+	gap: 4px;
+	min-width: 0;
+	padding: 8px 8px 8px 19px;
+	border-bottom: 1px solid var(--pi-border-subtle);
+	border-left: 2px solid var(--pi-accent);
+	/* Opaque: messages scroll directly behind this, so any translucency would
+	   show them bleeding through the pinned text. */
+	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	box-shadow: 0 2px 6px
+		color-mix(in srgb, var(--vscode-widget-shadow, #000) 16%, transparent);
+}
+
+.pinned-prompt[hidden] {
+	display: none;
+}
+
+.pinned-prompt-body {
+	flex: 1;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.pinned-prompt-body:focus-visible {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: 2px;
+}
+
+.pinned-prompt-text {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+	line-height: 1.55;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* Expanded: wrap and scroll internally instead of pushing the transcript down.
+   Capped so a long prompt can never own most of the viewport. The toggle moves
+   back to the top so it sits beside the first line rather than floating in the
+   middle of a tall block. */
+.pinned-prompt.is-expanded {
+	align-items: flex-start;
+}
+
+.pinned-prompt.is-expanded .pinned-prompt-text {
+	max-height: min(30vh, 220px);
+	overflow-y: auto;
+	overflow-wrap: break-word;
+	text-overflow: clip;
+	white-space: pre-wrap;
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.pinned-prompt .pinned-prompt-toggle {
+	flex: 0 0 auto;
+}
+
+.pinned-prompt-toggle[hidden] {
+	display: none;
+}
+
+.pinned-prompt.is-expanded .pinned-prompt-toggle .codicon {
+	transform: rotate(180deg);
+}
+
+/* Reference chips inside the pinned row are informational only; the row's own
+   click scrolls to the message, so they must not look separately actionable. */
+.pinned-prompt .composer-reference-highlight {
+	cursor: inherit;
+}
+
 .empty-state {
 	display: flex;
 	flex-direction: column;

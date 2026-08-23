@@ -4,12 +4,11 @@ import path from "node:path";
 import {
 	MAX_ATTACHMENT_COUNT,
 	MAX_IMAGE_ATTACHMENT_COUNT,
+	MAX_IMAGE_BYTES,
+	MAX_TOTAL_IMAGE_BYTES,
 	type AttachmentRef,
 	type PastedImage,
 } from "../../shared/protocol.js";
-
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-export const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 
 const PASTED_IMAGE_EXTENSIONS = new Map([
 	["image/png", ".png"],

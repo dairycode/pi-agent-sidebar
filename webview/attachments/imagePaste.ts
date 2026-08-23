@@ -1,5 +1,7 @@
 import {
 	MAX_IMAGE_ATTACHMENT_COUNT,
+	MAX_IMAGE_BYTES,
+	MAX_TOTAL_IMAGE_BYTES,
 	type PastedImage,
 } from "../../shared/protocol.js";
 
@@ -9,8 +11,6 @@ const SUPPORTED_CLIPBOARD_IMAGE_TYPES = new Set([
 	"image/gif",
 	"image/webp",
 ]);
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 
 export interface ImagePasteDependencies {
 	attachedImageCount: () => number;
@@ -26,10 +26,12 @@ export async function handleImagePaste(
 ): Promise<void> {
 	const clipboard = event.clipboardData;
 	if (!clipboard) return;
-	const files = [...clipboard.items]
-		.filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-		.map((item) => item.getAsFile())
-		.filter((file): file is File => Boolean(file));
+	const files: File[] = [];
+	for (const item of clipboard.items) {
+		if (item.kind !== "file" || !item.type.startsWith("image/")) continue;
+		const file = item.getAsFile();
+		if (file) files.push(file);
+	}
 	if (files.length === 0) return;
 	event.preventDefault();
 

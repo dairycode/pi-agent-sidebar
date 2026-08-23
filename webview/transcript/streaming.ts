@@ -3,20 +3,11 @@ import type {
 	PiContentBlock,
 	PiMessage,
 } from "../../shared/protocol.js";
-
-function objectValue(value: unknown): JsonRecord {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as JsonRecord)
-		: {};
-}
-
-function stringValue(value: unknown): string {
-	return typeof value === "string" ? value : "";
-}
-
-function numberValue(value: unknown): number {
-	return typeof value === "number" ? value : 0;
-}
+import {
+	numberValue,
+	objectValue,
+	stringValue,
+} from "../../shared/jsonValues.js";
 
 /**
  * Applies a `message_update` delta (`assistantMessageEvent`) to the in-flight

@@ -6,6 +6,7 @@ import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
+import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
 import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
 import {
 	contentText,
@@ -2229,25 +2230,11 @@ function asMessage(value: unknown): PiMessage | undefined {
 	return typeof message.role === "string" ? message : undefined;
 }
 
-function objectValue(value: unknown): JsonRecord {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as JsonRecord)
-		: {};
-}
-
-function stringValue(value: unknown): string {
-	return typeof value === "string" ? value : "";
-}
-
 function cleanExtensionText(value: string): string {
 	return value
 		.replace(ANSI_ESCAPE_PATTERN, "")
 		.replace(ORPHAN_SGR_PATTERN, "")
 		.trim();
-}
-
-function numberValue(value: unknown): number {
-	return typeof value === "number" ? value : 0;
 }
 
 function stringArray(value: unknown): string[] {

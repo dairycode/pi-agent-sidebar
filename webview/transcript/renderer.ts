@@ -9,6 +9,7 @@ import type {
 	PiContentBlock,
 	PiMessage,
 } from "../../shared/protocol.js";
+import { objectValue, stringValue } from "../../shared/jsonValues.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -365,16 +366,6 @@ export function extractResultDiff(result: unknown): string {
 	const record = objectValue(result);
 	const details = objectValue(record.details);
 	return stringValue(details.diff);
-}
-
-function objectValue(value: unknown): JsonRecord {
-	return value && typeof value === "object" && !Array.isArray(value)
-		? (value as JsonRecord)
-		: {};
-}
-
-function stringValue(value: unknown): string {
-	return typeof value === "string" ? value : "";
 }
 
 function escapeHtml(value: string): string {

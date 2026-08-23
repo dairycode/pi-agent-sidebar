@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1
+
+- Share the image size limits and the JSON coercion helpers between the webview
+  and the host instead of keeping separate copies. The per-image and per-batch
+  ceilings previously lived in two files, so changing one without the other let
+  the webview accept a paste the host would then reject.
+
 ## 0.6.0
 
 - Pin the prompt whose turn the transcript is scrolled into, so a long reply

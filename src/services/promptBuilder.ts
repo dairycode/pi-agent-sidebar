@@ -1,8 +1,5 @@
-import {
-	MAX_TOTAL_IMAGE_BYTES,
-	type AttachmentStore,
-	type ResolvedAttachment,
-} from "./attachmentStore.js";
+import type { AttachmentStore, ResolvedAttachment } from "./attachmentStore.js";
+import { MAX_TOTAL_IMAGE_BYTES } from "../../shared/protocol.js";
 import {
 	serializeContextValue,
 	serializeSelectionReferencePayload,

@@ -978,9 +978,7 @@ export class PiViewProvider
 				});
 				await this.notifyExtensionUiResponse(
 					client,
-					value === undefined
-						? { type: "extension_ui_response", id, cancelled: true }
-						: { type: "extension_ui_response", id, value },
+					extensionUiValueResponse(id, value),
 				);
 				return;
 			}
@@ -1011,9 +1009,7 @@ export class PiViewProvider
 				});
 				await this.notifyExtensionUiResponse(
 					client,
-					value === undefined
-						? { type: "extension_ui_response", id, cancelled: true }
-						: { type: "extension_ui_response", id, value },
+					extensionUiValueResponse(id, value),
 				);
 				return;
 			}
@@ -1036,9 +1032,10 @@ export class PiViewProvider
 				);
 				await this.notifyExtensionUiResponse(
 					client,
-					choice === "Submit"
-						? { type: "extension_ui_response", id, value: document.getText() }
-						: { type: "extension_ui_response", id, cancelled: true },
+					extensionUiValueResponse(
+						id,
+						choice === "Submit" ? document.getText() : undefined,
+					),
 				);
 				return;
 			}
@@ -1070,7 +1067,6 @@ export class PiViewProvider
 		if (this.client !== client || !client.isRunning) return;
 		await client.notify(response);
 	}
-
 	private handleSnapshotError(error: unknown): void {
 		const detail = `Unable to refresh the pi session: ${toErrorMessage(error)}`;
 		this.output.appendLine(`[snapshot] ${detail}`);
@@ -1424,4 +1420,22 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Builds the reply for a pi extension-UI request that either produced a value or
+ * was dismissed.
+ *
+ * `select`, `input`, and `editor` all share this shape: VS Code returns
+ * `undefined` when the user cancels, and pi expects `cancelled: true` rather
+ * than a missing value. Keeping it in one place stops the three call sites from
+ * drifting into subtly different envelopes.
+ */
+function extensionUiValueResponse(
+	id: string,
+	value: string | undefined,
+): JsonRecord {
+	return value === undefined
+		? { type: "extension_ui_response", id, cancelled: true }
+		: { type: "extension_ui_response", id, value };
 }

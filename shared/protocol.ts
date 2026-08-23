@@ -247,6 +247,13 @@ const MAX_PASTED_IMAGE_DATA_LENGTH = 16 * 1024 * 1024 + 16;
 export const MAX_IMAGE_ATTACHMENT_COUNT = 4;
 export const MAX_ATTACHMENT_COUNT = 20;
 export const MAX_COMPOSER_REFERENCE_COUNT = 10;
+/**
+ * Per-image and per-batch ceilings, shared so the webview rejects an oversized
+ * paste with the same limits the host enforces. Independent copies in the
+ * webview and the host could drift apart silently.
+ */
+export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_TOTAL_IMAGE_BYTES = 12 * 1024 * 1024;
 
 export function parseWebviewMessage(
 	value: unknown,

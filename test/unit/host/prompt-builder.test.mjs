@@ -3,7 +3,6 @@ import path from "node:path";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadPromptBuilder() {
 	return loadBundledModule({
 		entry: "src/services/promptBuilder.ts",
@@ -55,6 +54,15 @@ test("prompt builder preserves structured context order and prompt text", async 
 				},
 			},
 			{
+				summary: { kind: "directory" },
+				payload: {
+					path: "/workspace/src/provider",
+					uri: "file:///workspace/src/provider",
+					displayPath: "src/provider",
+					marker: "@src/provider/",
+				},
+			},
+			{
 				summary: { kind: "selection" },
 				payload: {
 					path: "/workspace/src/selected.ts",
@@ -73,7 +81,7 @@ test("prompt builder preserves structured context order and prompt text", async 
 			},
 		];
 		const result = await loaded.module.buildPrompt(
-			"Compare @src/file.ts with @src/selected.ts#2",
+			"Compare @src/file.ts, @src/provider/, and @src/selected.ts#2",
 			[attachment("file", "/workspace/package.json")],
 			references,
 			store,
@@ -89,6 +97,12 @@ test("prompt builder preserves structured context order and prompt text", async 
 		assert.ok(
 			result.message.indexOf('- file: {"path":"/workspace/src/file.ts"') <
 				result.message.indexOf(
+					'- directory: {"path":"/workspace/src/provider"',
+				),
+		);
+		assert.ok(
+			result.message.indexOf('- directory: {"path":"/workspace/src/provider"') <
+				result.message.indexOf(
 					'- selection: {"path":"/workspace/src/selected.ts"',
 				),
 		);
@@ -96,7 +110,7 @@ test("prompt builder preserves structured context order and prompt text", async 
 		assert.match(result.message, /- symbol: .*selected/u);
 		assert.match(
 			result.message,
-			/<\/pi-context>\n\nCompare @src\/file\.ts with @src\/selected\.ts#2$/u,
+			/<\/pi-context>\n\nCompare @src\/file\.ts, @src\/provider\/, and @src\/selected\.ts#2$/u,
 		);
 	} finally {
 		await loaded.dispose();
@@ -138,6 +152,32 @@ test("prompt builder supplies context-specific defaults and encodes images", asy
 			attachmentStore(),
 		);
 		assert.match(referenceResult.message, /Inspect the referenced file\.$/u);
+
+		const directoryStore = attachmentStore();
+		const directoryResult = await loaded.module.buildPrompt(
+			" ",
+			[],
+			[
+				{
+					summary: { kind: "directory" },
+					payload: {
+						path: "/workspace/src",
+						uri: "file:///workspace/src",
+						displayPath: "src",
+						marker: "@src/",
+					},
+				},
+			],
+			directoryStore,
+		);
+		assert.ok(
+			directoryResult.message.includes('- directory: {"path":"/workspace/src"'),
+		);
+		assert.match(
+			directoryResult.message,
+			/Inspect the referenced directory\.$/u,
+		);
+		assert.deepEqual(directoryStore.validated, []);
 	} finally {
 		await loaded.dispose();
 	}

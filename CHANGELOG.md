@@ -2,6 +2,13 @@
 
 ## 0.5.2
 
+- Add folders to the composer from Explorer's context menu, by holding `Shift`
+  while dragging them into the sidebar, or through the `@` browser. Selecting a
+  folder keeps path browsing active; typing whitespace to end the token turns
+  the chosen folder into a reference without removing the typed separator. A
+  complete manually typed `@path/` follows the same host-confirmed flow. Folder
+  references pass only the directory path to pi, do not eagerly read or expand
+  its contents, and reveal the folder in Explorer when opened.
 - Route passive pi notifications, such as background log-cleanup summaries, to
   the Pi Agent output log instead of VS Code notification popups. Warnings,
   errors, and prompts that require user interaction remain visible.

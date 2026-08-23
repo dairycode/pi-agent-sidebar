@@ -1,5 +1,6 @@
 import {
 	formatComposerReferenceLocation,
+	formatDirectoryReferenceMarker,
 	formatFileReferenceMarker,
 	insertComposerReferenceMarker,
 } from "../../shared/composerReferences.js";
@@ -285,21 +286,46 @@ export class ComposerController {
 		start: number,
 		end: number,
 	): string {
+		return this.stageResourceReference("file", displayPath, start, end);
+	}
+
+	public stageDirectoryReference(
+		displayPath: string,
+		start: number,
+		end: number,
+	): string {
+		return this.stageResourceReference("directory", displayPath, start, end);
+	}
+
+	private stageResourceReference(
+		kind: "file" | "directory",
+		displayPath: string,
+		start: number,
+		end: number,
+	): string {
 		const previousText = this.options.editor.value;
+		const previousCaret = this.options.editor.selectionStart;
 		const textWithoutQuery = `${previousText.slice(0, start)}${previousText.slice(end)}`;
-		const marker = formatFileReferenceMarker(displayPath);
+		const marker =
+			kind === "directory"
+				? formatDirectoryReferenceMarker(displayPath)
+				: formatFileReferenceMarker(displayPath);
 		const insertion = insertComposerReferenceMarker(
 			textWithoutQuery,
 			start,
 			marker,
 		);
 		this.options.editor.value = insertion.text;
-		this.options.editor.setSelectionRange(insertion.caret, insertion.caret);
+		const caret =
+			previousCaret > end
+				? insertion.markerEnd + (previousCaret - end)
+				: insertion.caret;
+		this.options.editor.setSelectionRange(caret, caret);
 		this.reconcileInput();
 
-		const id = `pending-file-${++this.pendingReferenceSequence}`;
+		const id = `pending-${kind}-${++this.pendingReferenceSequence}`;
 		this.pendingReferences.push({
-			kind: "file",
+			kind,
 			id,
 			revision: 0,
 			marker,
@@ -307,7 +333,7 @@ export class ComposerController {
 			start: insertion.markerStart,
 			end: insertion.markerEnd,
 		});
-		this.rememberedCaret = insertion.caret;
+		this.rememberedCaret = caret;
 		this.persist();
 		this.options.refreshEditorView();
 		this.options.invalidate();

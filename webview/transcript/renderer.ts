@@ -134,9 +134,12 @@ interface InlineMarker {
 }
 
 function contextInlineMarker(line: string): InlineMarker | undefined {
-	const filePrefix = "- file: ";
-	if (line.startsWith(filePrefix)) {
-		const value = line.slice(filePrefix.length);
+	const resourcePrefixes = ["- file: ", "- directory: "] as const;
+	const resourcePrefix = resourcePrefixes.find((prefix) =>
+		line.startsWith(prefix),
+	);
+	if (resourcePrefix) {
+		const value = line.slice(resourcePrefix.length);
 		const reference = parseFileReferencePayload(value);
 		if (reference) {
 			return {
@@ -146,12 +149,20 @@ function contextInlineMarker(line: string): InlineMarker | undefined {
 			};
 		}
 		try {
-			const filePath = JSON.parse(value) as unknown;
-			if (typeof filePath !== "string") return { label: "@file" };
-			const name = filePath.split(/[/\\]/u).pop() || filePath;
-			return { label: `@${name}` };
+			const resourcePath = JSON.parse(value) as unknown;
+			if (typeof resourcePath !== "string") {
+				return {
+					label: resourcePrefix === "- directory: " ? "@folder/" : "@file",
+				};
+			}
+			const name = resourcePath.split(/[/\\]/u).pop() || resourcePath;
+			return {
+				label: resourcePrefix === "- directory: " ? `@${name}/` : `@${name}`,
+			};
 		} catch {
-			return { label: "@file" };
+			return {
+				label: resourcePrefix === "- directory: " ? "@folder/" : "@file",
+			};
 		}
 	}
 	if (line.startsWith("- symbol: ") || line.startsWith("- diagnostics: ")) {

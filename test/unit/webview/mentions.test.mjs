@@ -10,6 +10,13 @@ async function loadMentionController() {
 	});
 }
 
+async function loadComposerController() {
+	return loadBundledModule({
+		entry: "webview/composer/controller.ts",
+		name: "mention-composer-controller",
+	});
+}
+
 class FakeClassList {
 	constructor(element) {
 		this.element = element;
@@ -130,6 +137,19 @@ const files = [
 	},
 ];
 
+const currentSrcDirectory = {
+	kind: "directory",
+	displayPath: "src",
+	uri: "file:///w/src",
+	current: true,
+};
+
+const srcEntries = [
+	currentSrcDirectory,
+	{ kind: "directory", displayPath: "src/provider" },
+	...files,
+];
+
 const rootEntries = [
 	{ kind: "directory", displayPath: "src" },
 	{
@@ -187,11 +207,12 @@ function createHarness(MentionController, overrides = {}) {
 		document,
 		...overrides,
 	});
-	const type = (value, caret = value.length) => {
+	const type = (value, caret = value.length, afterInput = false) => {
 		editor.value = value;
 		editor.selectionStart = caret;
 		editor.selectionEnd = caret;
-		controller.sync();
+		if (afterInput) controller.syncAfterInput();
+		else controller.sync();
 	};
 	return {
 		controller,
@@ -241,16 +262,16 @@ test("an at token requests files and results open the popup", async () => {
 	}
 });
 
-test("selecting a directory rewrites the token and requests only its next level", async () => {
+test("selecting a directory keeps browsing until whitespace ends the token", async () => {
 	const loaded = await loadMentionController();
 	try {
 		const state = createHarness(loaded.module.MentionController);
 		state.type("inspect @");
 		state.controller.applyResults(1, "", rootEntries);
-		const rows = state.list.querySelectorAll(".mention-row");
-		assert.equal(rows[0].classList.contains("is-directory"), true);
-		assert.equal(rows[0].children[1].textContent, "src/");
-		assert.equal(rows[0].children.length, 3, "folders include a chevron");
+		const rootRows = state.list.querySelectorAll(".mention-row");
+		assert.equal(rootRows[0].classList.contains("is-directory"), true);
+		assert.equal(rootRows[0].children[1].textContent, "src/");
+		assert.equal(rootRows[0].children.length, 3, "folders include a chevron");
 
 		assert.equal(
 			state.controller.handleKeydown({ key: "Enter", preventDefault() {} }),
@@ -260,14 +281,257 @@ test("selecting a directory rewrites the token and requests only its next level"
 		assert.deepEqual(state.navigations, [
 			{ directoryPath: "src", token: { start: 8, end: 9, query: "" } },
 		]);
-		assert.deepEqual(state.commits, []);
 		assert.deepEqual(state.requests, [
 			{ requestId: 1, query: "" },
 			{ requestId: 2, query: "src/" },
 		]);
-		assert.deepEqual(state.announcements, ["Browsing src"]);
+
+		state.controller.applyResults(2, "src/", srcEntries);
+		assert.deepEqual(state.commits, []);
+		assert.equal(state.controller.isOpen, true);
+		assert.deepEqual(
+			state.list
+				.querySelectorAll(".mention-row")
+				.map((row) => row.children[1].textContent),
+			["provider/", "main.ts", "util.ts"],
+		);
+
+		state.type("inspect @src/ ", undefined, true);
+		assert.deepEqual(state.commits, [
+			{
+				file: currentSrcDirectory,
+				token: { start: 8, end: 13, query: "src/" },
+			},
+		]);
+		assert.equal(state.editor.value, "inspect @src/ ");
+		assert.equal(state.controller.isOpen, false);
+		assert.deepEqual(state.announcements, ["Browsing src", "Added src"]);
 	} finally {
 		await loaded.dispose();
+	}
+});
+
+test("an empty selected directory commits when whitespace ends the token", async () => {
+	const loaded = await loadMentionController();
+	try {
+		const state = createHarness(loaded.module.MentionController);
+		state.type("@");
+		state.controller.applyResults(1, "", rootEntries);
+		state.controller.handleKeydown({ key: "Enter", preventDefault() {} });
+
+		state.controller.applyResults(2, "src/", [currentSrcDirectory]);
+		assert.equal(state.controller.isOpen, false);
+		assert.deepEqual(state.commits, []);
+
+		state.type("@src/\n", undefined, true);
+		assert.deepEqual(state.commits, [
+			{
+				file: currentSrcDirectory,
+				token: { start: 0, end: 5, query: "src/" },
+			},
+		]);
+		assert.equal(state.editor.value, "@src/\n");
+		assert.deepEqual(state.announcements, ["Browsing src", "Added src"]);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("directory browsing can continue after selecting a folder", async () => {
+	const loaded = await loadMentionController();
+	try {
+		const state = createHarness(loaded.module.MentionController);
+		state.type("@");
+		state.controller.applyResults(1, "", rootEntries);
+		state.controller.handleKeydown({ key: "Enter", preventDefault() {} });
+		state.controller.applyResults(2, "src/", srcEntries);
+
+		assert.equal(
+			state.controller.handleKeydown({ key: "Enter", preventDefault() {} }),
+			true,
+		);
+		assert.equal(state.editor.value, "@src/provider/");
+		assert.deepEqual(state.commits, []);
+		assert.deepEqual(
+			state.navigations.map(({ directoryPath }) => directoryPath),
+			["src", "src/provider"],
+		);
+		assert.deepEqual(
+			state.requests.map(({ query }) => query),
+			["", "src/", "src/provider/"],
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a manually typed directory path lists its children like Enter does", async () => {
+	const loaded = await loadMentionController();
+	try {
+		const state = createHarness(loaded.module.MentionController);
+		state.type("inspect @src/");
+		state.controller.applyResults(1, "src/", srcEntries);
+
+		// Reaching `@src/` by typing the slash must show the same rows as reaching
+		// it with Enter; only the current-directory row itself stays hidden.
+		assert.equal(state.controller.isOpen, true);
+		assert.deepEqual(
+			state.list
+				.querySelectorAll(".mention-row")
+				.map((row) => row.children[1].textContent),
+			["provider/", "main.ts", "util.ts"],
+		);
+		assert.deepEqual(state.commits, []);
+
+		// The staged directory is still what whitespace commits.
+		state.type("inspect @src/ ", undefined, true);
+		assert.deepEqual(state.commits, [
+			{
+				file: currentSrcDirectory,
+				token: { start: 8, end: 13, query: "src/" },
+			},
+		]);
+		assert.equal(state.editor.value, "inspect @src/ ");
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a confirmed manually typed directory waits for real whitespace", async () => {
+	const loaded = await loadMentionController();
+	try {
+		const state = createHarness(loaded.module.MentionController);
+		state.type("inspect @src/");
+		assert.deepEqual(state.requests, [{ requestId: 1, query: "src/" }]);
+
+		state.controller.applyResults(1, "src/", [currentSrcDirectory, ...files]);
+		assert.deepEqual(state.commits, []);
+		assert.equal(state.editor.value, "inspect @src/");
+
+		state.type("inspect @src/ ", undefined, true);
+		assert.deepEqual(state.commits, [
+			{
+				file: currentSrcDirectory,
+				token: { start: 8, end: 13, query: "src/" },
+			},
+		]);
+		assert.equal(state.editor.value, "inspect @src/ ");
+		assert.deepEqual(state.navigations, []);
+		assert.deepEqual(state.announcements, ["Added src"]);
+		assert.equal(state.controller.isOpen, false);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("whitespace and following text survive when directory confirmation is late", async () => {
+	const loaded = await loadMentionController();
+	try {
+		const state = createHarness(loaded.module.MentionController);
+		state.type("inspect @src/");
+		state.type("inspect @src/ ", undefined, true);
+		assert.deepEqual(state.requests, [
+			{ requestId: 1, query: "src/" },
+			{ requestId: 2, query: "src/" },
+		]);
+		assert.deepEqual(state.commits, []);
+
+		state.type("inspect @src/ keep typing", undefined, true);
+		state.controller.applyResults(2, "src/", [currentSrcDirectory, ...files]);
+		assert.deepEqual(state.commits, [
+			{
+				file: currentSrcDirectory,
+				token: { start: 8, end: 13, query: "src/" },
+			},
+		]);
+		assert.equal(state.editor.value, "inspect @src/ keep typing");
+		assert.deepEqual(state.announcements, ["Added src"]);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("the real composer commit chain preserves typed whitespace and following text", async () => {
+	const [mentionLoaded, composerLoaded] = await Promise.all([
+		loadMentionController(),
+		loadComposerController(),
+	]);
+	try {
+		const document = new FakeDocument();
+		const editor = {
+			value: "inspect @src/",
+			selectionStart: "inspect @src/".length,
+			selectionEnd: "inspect @src/".length,
+			focus() {},
+			setSelectionRange(start, end) {
+				this.selectionStart = start;
+				this.selectionEnd = end;
+			},
+		};
+		const composer = new composerLoaded.module.ComposerController({
+			editor,
+			persist() {},
+			post() {},
+			announce() {},
+			invalidate() {},
+			refreshEditorView() {},
+			isEditorActive: () => true,
+			pendingActions: () => [],
+		});
+		const requests = [];
+		const mention = new mentionLoaded.module.MentionController({
+			panel: document.createElement("div"),
+			list: document.createElement("div"),
+			editor,
+			requestFiles: (requestId, query) => requests.push({ requestId, query }),
+			commit: (resource, token) =>
+				composer.stageDirectoryReference(
+					resource.displayPath,
+					token.start,
+					token.end,
+				),
+			navigate() {},
+			announce() {},
+			isEnabled: () => true,
+			position() {},
+			isProtectedOffset: (offset) =>
+				Boolean(composer.referenceAtOffset(offset)),
+			document,
+		});
+
+		mention.sync();
+		editor.value = "inspect @src/ ";
+		editor.setSelectionRange(editor.value.length, editor.value.length);
+		composer.handleInput();
+		mention.syncAfterInput();
+		editor.value += "keep typing";
+		editor.setSelectionRange(editor.value.length, editor.value.length);
+		composer.handleInput();
+		mention.syncAfterInput();
+
+		assert.deepEqual(requests, [
+			{ requestId: 1, query: "src/" },
+			{ requestId: 2, query: "src/" },
+		]);
+		mention.applyResults(2, "src/", [currentSrcDirectory]);
+		assert.equal(editor.value, "inspect @src/ keep typing");
+		assert.equal(editor.selectionStart, editor.value.length);
+		assert.equal(composer.managedReferences().length, 1);
+
+		composer.applyIncoming([
+			{
+				kind: "directory",
+				id: "directory-reference",
+				revision: 0,
+				marker: "@src/",
+				displayPath: "src",
+			},
+		]);
+		assert.equal(editor.value, "inspect @src/ keep typing");
+		assert.equal(editor.selectionStart, editor.value.length);
+		assert.equal(composer.references.length, 1);
+	} finally {
+		await Promise.all([mentionLoaded.dispose(), composerLoaded.dispose()]);
 	}
 });
 

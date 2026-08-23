@@ -99,6 +99,7 @@ function editorFor(document, selected) {
 }
 
 function installVscodeState() {
+	const executedCommands = [];
 	const state = {
 		workspaceFolders: [{ name: "workspace", uri: uri("/workspace") }],
 		diagnostics: new Map(),
@@ -116,10 +117,13 @@ function installVscodeState() {
 		showTextDocument: async () => {
 			throw new Error("not configured");
 		},
-		executeCommand: async () => undefined,
+		executeCommand: async (...args) => {
+			executedCommands.push(args);
+			return undefined;
+		},
 	};
 	globalThis.__composerReferenceVscodeMock = state;
-	return state;
+	return { state, executedCommands };
 }
 
 function output() {
@@ -247,19 +251,68 @@ test("identity-safe consume does not remove a newer revision", async () => {
 	}
 });
 
-test("registerFiles enforces the shared count limit and remove is revision-safe", async () => {
+test("directory references keep only path metadata and reveal in Explorer", async () => {
+	const loaded = await loadStore();
+	try {
+		const { state, executedCommands } = installVscodeState();
+		let opened = false;
+		state.openTextDocument = async () => {
+			opened = true;
+			throw new Error("directories must not open as text");
+		};
+		const store = new loaded.module.ComposerReferenceStore(output());
+		const directoryUri = uri("/workspace/src");
+		store.registerResources([{ uri: directoryUri, kind: "directory" }]);
+
+		const summary = store.summaries()[0];
+		assert.equal(summary.kind, "directory");
+		assert.equal(summary.marker, "@src/");
+		const text = `Inspect ${summary.marker}`;
+		const start = text.indexOf(summary.marker);
+		const [submitted] = store.resolve(
+			[
+				{
+					id: summary.id,
+					revision: 0,
+					start,
+					end: start + summary.marker.length,
+				},
+			],
+			text,
+		);
+		assert.deepEqual(submitted.reference.payload, {
+			path: "/workspace/src",
+			uri: "file:///workspace/src",
+			displayPath: "src",
+			marker: "@src/",
+		});
+
+		await store.open(summary.id);
+		assert.equal(opened, false);
+		assert.deepEqual(executedCommands, [["revealInExplorer", directoryUri]]);
+	} finally {
+		delete globalThis.__composerReferenceVscodeMock;
+		await loaded.dispose();
+	}
+});
+
+test("registerResources enforces the shared count limit and remove is revision-safe", async () => {
 	const loaded = await loadStore();
 	try {
 		installVscodeState();
 		const store = new loaded.module.ComposerReferenceStore(output());
-		store.registerFiles(
-			Array.from({ length: 10 }, (_, index) =>
-				uri(`/workspace/src/file-${index}.ts`),
-			),
+		store.registerResources(
+			Array.from({ length: 10 }, (_, index) => ({
+				uri: uri(`/workspace/src/file-${index}.ts`),
+				kind: "file",
+			})),
 		);
 		assert.equal(store.summaries().length, 10);
 		assert.throws(
-			() => store.registerFiles([uri("/workspace/src/overflow.ts")]),
+			() =>
+				store.registerResources([
+					{ uri: uri("/workspace/src/overflow.ts"), kind: "file" },
+				]),
 			/Add at most 10 references/u,
 		);
 		const first = store.summaries()[0];

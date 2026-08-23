@@ -6,6 +6,11 @@ interface WorkspaceReferencePath {
 	relativePath: string;
 }
 
+export interface ValidatedWorkspaceResource {
+	uri: vscode.Uri;
+	kind: "file" | "directory";
+}
+
 export function splitWorkspaceReferencePath(
 	displayPath: string,
 	workspaceFolderNames: readonly string[],
@@ -47,6 +52,20 @@ export class WorkspaceResources {
 	public async validateFiles(
 		uris: readonly vscode.Uri[],
 	): Promise<vscode.Uri[]> {
+		const resources = await this.validateReferences(uris);
+		const directory = resources.find(
+			(resource) => resource.kind === "directory",
+		);
+		if (directory) {
+			const label = path.basename(directory.uri.fsPath) || directory.uri.fsPath;
+			throw new Error(`${label} is not a regular file.`);
+		}
+		return resources.map((resource) => resource.uri);
+	}
+
+	public async validateReferences(
+		uris: readonly vscode.Uri[],
+	): Promise<ValidatedWorkspaceResource[]> {
 		await this.requireWorkspaceFolder();
 		const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
 		const uniqueUris = [
@@ -68,7 +87,7 @@ export class WorkspaceResources {
 					);
 				if (!supported || !uri.fsPath) {
 					throw new Error(
-						"Only files available to this VS Code workspace can be added.",
+						"Only files and folders available to this VS Code workspace can be added.",
 					);
 				}
 
@@ -79,11 +98,13 @@ export class WorkspaceResources {
 				} catch (error) {
 					throw new Error(`Unable to add ${label}: ${toErrorMessage(error)}`);
 				}
-				if ((fileStat.type & vscode.FileType.File) === 0) {
-					throw new Error(`${label} is not a regular file.`);
+				if ((fileStat.type & vscode.FileType.File) !== 0) {
+					return { uri, kind: "file" as const };
 				}
-
-				return uri;
+				if ((fileStat.type & vscode.FileType.Directory) !== 0) {
+					return { uri, kind: "directory" as const };
+				}
+				throw new Error(`${label} is not a regular file or folder.`);
 			}),
 		);
 	}
@@ -111,7 +132,7 @@ export class WorkspaceResources {
 			return;
 		}
 		try {
-			await this.showTextResource(resource, line);
+			await this.showResource(resource, line);
 		} catch {
 			void vscode.window.showWarningMessage(
 				`Unable to open ${resource.toString(true)}.`,
@@ -150,10 +171,24 @@ export class WorkspaceResources {
 			return;
 		}
 		try {
-			await this.showTextResource(target, line);
+			await this.showResource(target, line);
 		} catch {
 			void vscode.window.showWarningMessage(`Unable to open ${normalized}.`);
 		}
+	}
+
+	private async showResource(
+		resource: vscode.Uri,
+		line?: number,
+	): Promise<void> {
+		if (resource.scheme !== "untitled") {
+			const resourceStat = await vscode.workspace.fs.stat(resource);
+			if ((resourceStat.type & vscode.FileType.Directory) !== 0) {
+				await vscode.commands.executeCommand("revealInExplorer", resource);
+				return;
+			}
+		}
+		await this.showTextResource(resource, line);
 	}
 
 	private async showTextResource(

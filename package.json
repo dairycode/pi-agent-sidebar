@@ -108,7 +108,7 @@
       },
       {
         "command": "piAgentSidebar.addFilesToInput",
-        "title": "Pi Agent: Add Files to Input"
+        "title": "Pi Agent: Add Files or Folders to Input"
       }
     ],
     "submenus": [
@@ -128,7 +128,7 @@
       "explorer/context": [
         {
           "command": "piAgentSidebar.addFilesToInput",
-          "when": "!explorerResourceIsFolder && (resourceScheme == file || resourceScheme == vscode-remote)",
+          "when": "resourceScheme == file || resourceScheme == vscode-remote",
           "group": "navigation@100"
         }
       ],

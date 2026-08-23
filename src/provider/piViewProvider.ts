@@ -1300,8 +1300,8 @@ export class PiViewProvider
 	private async registerComposerReferences(
 		uris: readonly vscode.Uri[],
 	): Promise<void> {
-		const fileUris = await this.workspaceResources.validateFiles(uris);
-		this.composerReferenceStore.registerFiles(fileUris);
+		const resources = await this.workspaceResources.validateReferences(uris);
+		this.composerReferenceStore.registerResources(resources);
 	}
 
 	private async syncAttachments(): Promise<void> {

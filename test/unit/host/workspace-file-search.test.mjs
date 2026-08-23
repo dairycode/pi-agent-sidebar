@@ -17,11 +17,29 @@ async function loadWorkspaceFileSearch() {
 					buildApi.onLoad({ filter: /.*/, namespace: "mock-vscode" }, () => ({
 						loader: "js",
 						contents: `
+							const state = () => globalThis.__workspaceFileSearchVscodeMock;
+							const makeUri = (path) => ({
+								path,
+								fsPath: "/workspace/" + path,
+								toString: () => "file:///workspace/" + path,
+							});
+							export const Uri = {
+								joinPath: (_base, ...segments) => makeUri(segments.join("/")),
+							};
+							export const FileType = { File: 1, Directory: 2 };
 							export const workspace = {
-								workspaceFolders: [{ name: "app" }],
+								workspaceFolders: [{ name: "app", uri: makeUri("") }],
 								getWorkspaceFolder: () => ({ name: "app" }),
 								asRelativePath: (uri) => uri.path,
-								findFiles: async () => [],
+								findFiles: async () => state()?.files ?? [],
+								fs: {
+									stat: async (uri) => ({
+										type: state()?.directories?.has(uri.path) ? 2 : 1,
+										ctime: 0,
+										mtime: 0,
+										size: 0,
+									}),
+								},
 								createFileSystemWatcher: () => ({
 									dispose() {},
 									onDidCreate: () => ({ dispose() {} }),
@@ -131,6 +149,30 @@ test("directory entries are deduplicated, directories sort first, and limits app
 			1,
 		);
 	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a complete directory query returns a host-confirmed current directory", async () => {
+	const loaded = await loadWorkspaceFileSearch();
+	try {
+		globalThis.__workspaceFileSearchVscodeMock = {
+			files: [],
+			directories: new Set(["test"]),
+		};
+		const search = new loaded.module.WorkspaceFileSearch();
+		assert.deepEqual(await search.search("test/"), [
+			{
+				kind: "directory",
+				displayPath: "test",
+				uri: "file:///workspace/test",
+				current: true,
+			},
+		]);
+		assert.deepEqual(await search.search("missing/"), []);
+		search.dispose();
+	} finally {
+		delete globalThis.__workspaceFileSearchVscodeMock;
 		await loaded.dispose();
 	}
 });

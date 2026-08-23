@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import * as vscode from "vscode";
 import {
+	formatDirectoryReferenceMarker,
 	formatFileReferenceMarker,
 	formatSelectionReferenceMarker,
 	nearestOffset,
@@ -13,6 +14,7 @@ import {
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	type ComposerReference,
+	type DirectoryComposerReference,
 	type FileComposerReference,
 	type SelectionComposerReference,
 } from "../../shared/protocol.js";
@@ -36,6 +38,13 @@ interface CapturedFileReference {
 	key: string;
 }
 
+interface CapturedDirectoryReference {
+	summary: DirectoryComposerReference;
+	payload: FileReferencePayload;
+	uri: vscode.Uri;
+	key: string;
+}
+
 interface CapturedSelectionReference {
 	summary: SelectionComposerReference;
 	payload: SelectionReferencePayload;
@@ -50,6 +59,7 @@ interface CapturedSelectionReference {
 
 export type CapturedComposerReference =
 	| CapturedFileReference
+	| CapturedDirectoryReference
 	| CapturedSelectionReference;
 
 export interface SubmittedComposerReference {
@@ -194,10 +204,17 @@ export class ComposerReferenceStore {
 	}
 
 	public captureFile(uri: vscode.Uri): string {
-		const key = `file:${uri.toString()}`;
+		return this.captureResource(uri, "file");
+	}
+
+	public captureDirectory(uri: vscode.Uri): string {
+		return this.captureResource(uri, "directory");
+	}
+
+	private captureResource(uri: vscode.Uri, kind: "file" | "directory"): string {
+		const key = `${kind}:${uri.toString()}`;
 		const existing = [...this.references.values()].find(
-			(reference): reference is CapturedFileReference =>
-				reference.summary.kind === "file" && reference.key === key,
+			(reference) => reference.summary.kind === kind && reference.key === key,
 		);
 		if (existing) return existing.summary.id;
 		if (this.references.size >= MAX_COMPOSER_REFERENCE_COUNT) {
@@ -209,7 +226,9 @@ export class ComposerReferenceStore {
 		const displayPath = this.displayPath(uri);
 		const id = randomUUID();
 		const marker = uniqueComposerReferenceMarker(
-			formatFileReferenceMarker(displayPath),
+			kind === "directory"
+				? formatDirectoryReferenceMarker(displayPath)
+				: formatFileReferenceMarker(displayPath),
 			id,
 			new Set(
 				[...this.references.values()].map(
@@ -217,43 +236,51 @@ export class ComposerReferenceStore {
 				),
 			),
 		);
-		this.references.set(id, {
-			summary: {
-				kind: "file",
-				id,
-				revision: 0,
-				marker,
-				displayPath,
-			},
-			payload: {
-				path: uri.fsPath || uri.toString(true),
-				uri: uri.toString(),
-				displayPath,
-				marker,
-			},
-			uri,
-			key,
-		});
+		const payload = {
+			path: uri.fsPath || uri.toString(true),
+			uri: uri.toString(),
+			displayPath,
+			marker,
+		};
+		// `kind` is a union here, so one spread cannot satisfy either summary type;
+		// the branches differ only in the literal that narrows them.
+		const base = { id, revision: 0, marker, displayPath };
+		this.references.set(
+			id,
+			kind === "directory"
+				? { summary: { kind, ...base }, payload, uri, key }
+				: { summary: { kind, ...base }, payload, uri, key },
+		);
 		return id;
 	}
 
-	public registerFiles(uris: readonly vscode.Uri[]): void {
-		const pendingFileCount = uris.filter((uri) => {
-			const key = `file:${uri.toString()}`;
+	public registerResources(
+		resources: ReadonlyArray<{
+			uri: vscode.Uri;
+			kind: "file" | "directory";
+		}>,
+	): void {
+		const pendingResourceCount = resources.filter(({ uri, kind }) => {
+			const key = `${kind}:${uri.toString()}`;
 			return ![...this.references.values()].some(
-				(reference) =>
-					reference.summary.kind === "file" && reference.key === key,
+				(reference) => reference.summary.kind === kind && reference.key === key,
 			);
 		}).length;
 		if (
-			this.references.size + pendingFileCount >
+			this.references.size + pendingResourceCount >
 			MAX_COMPOSER_REFERENCE_COUNT
 		) {
 			throw new Error(
 				`Add at most ${MAX_COMPOSER_REFERENCE_COUNT} references per message.`,
 			);
 		}
-		for (const uri of uris) this.captureFile(uri);
+		for (const { uri, kind } of resources) {
+			if (kind === "directory") {
+				this.captureDirectory(uri);
+			} else {
+				this.captureFile(uri);
+			}
+		}
 	}
 
 	public async enrichWithSymbol(
@@ -288,6 +315,10 @@ export class ComposerReferenceStore {
 		const reference = this.references.get(id);
 		if (!reference) return;
 		try {
+			if (reference.summary.kind === "directory") {
+				await vscode.commands.executeCommand("revealInExplorer", reference.uri);
+				return;
+			}
 			const document = await vscode.workspace.openTextDocument(reference.uri);
 			const editor = await vscode.window.showTextDocument(document, {
 				preview: true,

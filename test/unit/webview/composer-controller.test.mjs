@@ -126,6 +126,74 @@ test("staged file references are highlighted before the host adopts them", async
 	}
 });
 
+test("staged directory references are highlighted before the host adopts them", async () => {
+	const loaded = await loadComposerController();
+	try {
+		const harness = createHarness(
+			loaded.module.ComposerController,
+			"inspect @test/",
+		);
+		const pendingId = harness.controller.stageDirectoryReference("test", 8, 14);
+
+		assert.equal(harness.editor.value, "inspect @test/ ");
+		assert.equal(harness.controller.referenceCount, 1);
+		assert.equal(harness.controller.isPendingReference(pendingId), true);
+		assert.deepEqual(
+			harness.controller.managedReferences().map((reference) => ({
+				kind: reference.kind,
+				marker: reference.marker,
+				displayPath: reference.displayPath,
+			})),
+			[{ kind: "directory", marker: "@test/", displayPath: "test" }],
+		);
+
+		const stagedText = harness.editor.value;
+		const changed = harness.controller.applyIncoming([
+			{
+				kind: "directory",
+				id: "directory-reference",
+				revision: 0,
+				marker: "@test/",
+				displayPath: "test",
+			},
+		]);
+		assert.equal(harness.editor.value, stagedText);
+		assert.equal(harness.controller.references[0].kind, "directory");
+		assert.equal(harness.controller.hasPendingReferences, false);
+		assert.equal(changed[0].start, "inspect ".length);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("staged directory references preserve whitespace terminators and caret", async () => {
+	const loaded = await loadComposerController();
+	try {
+		for (const terminator of [" ", "  ", "\t", "\n"]) {
+			const initialText = `inspect @test/${terminator}`;
+			const harness = createHarness(
+				loaded.module.ComposerController,
+				initialText,
+			);
+			const pendingId = harness.controller.stageDirectoryReference(
+				"test",
+				8,
+				14,
+			);
+
+			assert.equal(harness.editor.value, initialText);
+			assert.equal(harness.editor.selectionStart, initialText.length);
+			assert.equal(harness.controller.isPendingReference(pendingId), true);
+			assert.equal(
+				harness.editor.value.slice("inspect @test/".length),
+				terminator,
+			);
+		}
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("failed staged file references are removed cleanly", async () => {
 	const loaded = await loadComposerController();
 	try {

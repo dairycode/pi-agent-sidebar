@@ -53,7 +53,16 @@ export class WorkspaceFileSearch implements vscode.Disposable {
 	}
 
 	public async search(query: string): Promise<WorkspaceEntrySuggestion[]> {
-		return listWorkspaceEntries(await this.load(), query);
+		const entries = listWorkspaceEntries(await this.load(), query);
+		const currentDirectory = await resolveCurrentDirectory(query);
+		return currentDirectory
+			? [
+					currentDirectory,
+					...entries.filter(
+						(entry) => entry.displayPath !== currentDirectory.displayPath,
+					),
+				].slice(0, MAX_WORKSPACE_ENTRY_SUGGESTIONS)
+			: entries;
 	}
 
 	private async load(): Promise<WorkspaceFileCandidate[]> {
@@ -157,6 +166,43 @@ export function listWorkspaceEntries(
 	return [...entries.values()]
 		.sort((left, right) => compareEntries(left, right, nameQuery))
 		.slice(0, limit);
+}
+
+async function resolveCurrentDirectory(
+	query: string,
+): Promise<WorkspaceEntrySuggestion | undefined> {
+	if (!query.replace(/\\/gu, "/").endsWith("/")) return undefined;
+	const displayPath = normalizeQuery(query).replace(/\/+$/u, "");
+	if (!displayPath || displayPath.split("/").includes("..")) return undefined;
+
+	const folders = vscode.workspace.workspaceFolders ?? [];
+	let folder: vscode.WorkspaceFolder | undefined;
+	let relativePath = displayPath;
+	if (folders.length > 1) {
+		const separator = displayPath.indexOf("/");
+		const folderName =
+			separator >= 0 ? displayPath.slice(0, separator) : displayPath;
+		folder = folders.find((candidate) => candidate.name === folderName);
+		if (!folder) return undefined;
+		relativePath = separator >= 0 ? displayPath.slice(separator + 1) : "";
+	} else {
+		folder = folders[0];
+	}
+	if (!folder || !relativePath) return undefined;
+
+	const uri = vscode.Uri.joinPath(folder.uri, ...relativePath.split("/"));
+	try {
+		const stat = await vscode.workspace.fs.stat(uri);
+		if ((stat.type & vscode.FileType.Directory) === 0) return undefined;
+		return {
+			kind: "directory",
+			displayPath,
+			uri: uri.toString(),
+			current: true,
+		};
+	} catch {
+		return undefined;
+	}
 }
 
 function normalizeQuery(query: string): string {

@@ -34,7 +34,7 @@ import {
 	type PiStats,
 	type SessionSummary,
 	type WebviewToHostMessage,
-	type WorkspaceFileSuggestion,
+	type WorkspaceReferenceSuggestion,
 } from "../shared/protocol.js";
 
 declare function acquireVsCodeApi<T = unknown>(): {
@@ -347,7 +347,7 @@ window.addEventListener("blur", () => {
 elements.input.addEventListener("input", () => {
 	composerController.handleInput();
 	syncInlineCommandPalette();
-	mentionController.sync();
+	mentionController.syncAfterInput();
 });
 
 elements.input.addEventListener("keyup", (event) => {
@@ -438,7 +438,7 @@ window.addEventListener("dragenter", (event) => {
 	if (resourceDragDepth === 0) {
 		elements.resourceDropOverlay.hidden = false;
 		elements.app.classList.add("is-resource-drag");
-		announce("Drop files to add as context");
+		announce("Drop files or folders to add as context");
 	}
 	resourceDragDepth += 1;
 });
@@ -462,7 +462,7 @@ window.addEventListener("drop", (event) => {
 	clearResourceDragState();
 	const resources = extractDroppedResources(dataTransfer);
 	if (resources.length === 0) {
-		showToast("Could not read the dropped VS Code files", "error");
+		showToast("Could not read the dropped VS Code resources", "error");
 		return;
 	}
 	const availableReferenceCount = Math.max(
@@ -1930,12 +1930,16 @@ function positionMentionPanel(): void {
  * existing reference already owns the highlighted marker.
  */
 function addMentionReference(
-	file: WorkspaceFileSuggestion,
+	resource: WorkspaceReferenceSuggestion,
 	token: { start: number; end: number },
 ): void {
 	const alreadyReferenced = composerController
 		.managedReferences()
-		.some((reference) => reference.displayPath === file.displayPath);
+		.some(
+			(reference) =>
+				reference.kind === resource.kind &&
+				reference.displayPath === resource.displayPath,
+		);
 	if (
 		!alreadyReferenced &&
 		composerController.referenceCount >= MAX_COMPOSER_REFERENCE_COUNT
@@ -1951,14 +1955,21 @@ function addMentionReference(
 		elements.input.focus();
 		return;
 	}
-	const stagedReferenceId = composerController.stageFileReference(
-		file.displayPath,
-		token.start,
-		token.end,
-	);
+	const stagedReferenceId =
+		resource.kind === "directory"
+			? composerController.stageDirectoryReference(
+					resource.displayPath,
+					token.start,
+					token.end,
+				)
+			: composerController.stageFileReference(
+					resource.displayPath,
+					token.start,
+					token.end,
+				);
 	elements.input.focus();
 	runAction("addResources", {
-		resources: [file.uri],
+		resources: [resource.uri],
 		stagedReferenceId,
 	});
 }

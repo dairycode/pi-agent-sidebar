@@ -1,4 +1,5 @@
 import type {
+	DirectoryComposerReference,
 	FileComposerReference,
 	JsonRecord,
 	SelectionComposerReference,
@@ -61,12 +62,17 @@ export function nearestOffset(anchor: number, ...candidates: number[]): number {
 export function formatComposerReferenceLocation(
 	reference:
 		| Pick<FileComposerReference, "kind" | "displayPath">
+		| Pick<DirectoryComposerReference, "kind" | "displayPath">
 		| Pick<
 				SelectionComposerReference,
 				"kind" | "displayPath" | "startLine" | "endLine"
 		  >,
 ): string {
 	if (reference.kind === "file") return reference.displayPath;
+	if (reference.kind === "directory")
+		return reference.displayPath.endsWith("/")
+			? reference.displayPath
+			: `${reference.displayPath}/`;
 	return reference.endLine === reference.startLine
 		? `${reference.displayPath}:${reference.startLine}`
 		: `${reference.displayPath}:${reference.startLine}-${reference.endLine}`;
@@ -74,6 +80,11 @@ export function formatComposerReferenceLocation(
 
 export function formatFileReferenceMarker(displayPath: string): string {
 	return `@${displayPath.replace(/[\r\n]+/gu, " ")}`;
+}
+
+export function formatDirectoryReferenceMarker(displayPath: string): string {
+	const path = displayPath.replace(/[\r\n]+/gu, " ");
+	return `@${path.endsWith("/") ? path : `${path}/`}`;
 }
 
 export function formatSelectionReferenceMarker(

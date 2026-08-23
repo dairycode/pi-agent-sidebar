@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadComposerModel() {
 	return loadBundledModule({
 		entry: "webview/composer/model.ts",
@@ -97,7 +96,7 @@ test("composer edits shift intact spans and detach only an edited marker", async
 	}
 });
 
-test("file references persist without selection-only fields", async () => {
+test("file and directory references persist without selection-only fields", async () => {
 	const loaded = await loadComposerModel();
 	try {
 		const reference = {
@@ -119,6 +118,27 @@ test("file references persist without selection-only fields", async () => {
 				inserted.text,
 			),
 			inserted.references,
+		);
+
+		const directory = {
+			kind: "directory",
+			id: "directory-reference",
+			revision: 0,
+			marker: "@src/",
+			displayPath: "src",
+		};
+		const directoryInserted = loaded.module.insertManagedReference(
+			"inspect",
+			0,
+			directory,
+			[],
+		);
+		assert.deepEqual(
+			loaded.module.parsePersistedReferences(
+				directoryInserted.references,
+				directoryInserted.text,
+			),
+			directoryInserted.references,
 		);
 	} finally {
 		await loaded.dispose();

@@ -23,18 +23,19 @@ thinking levels from themed pickers in the composer
 - **Conversation control** — queue follow-up prompts while pi is working, or
 abort the active run; transient provider errors (overload, rate limit, 5xx,
 interrupted streams) are retried automatically
-- **Composer references** — use Explorer's **Pi Agent: Add Files to Input**
-	action, or hold `Shift` and drag files from VS Code Explorer anywhere over
-	the Pi sidebar, to insert clickable inline `@path` references
+- **Composer references** — use Explorer's **Pi Agent: Add Files or Folders to Input**
+ action, or hold `Shift` and drag files or folders from VS Code Explorer
+ anywhere over the Pi sidebar, to insert clickable inline `@path` references;
+ folder references pass only the directory path so pi can inspect it on demand
 - **Selection references** — select code and press `Cmd+Esc` / `Ctrl+Esc` to
-	insert an inline `@path#line` reference at the caret; `Cmd`/`Ctrl`-click or
-	`F12` jumps back to either kind of source reference
+ insert an inline `@path#line` reference at the caret; `Cmd`/`Ctrl`-click or
+ `F12` jumps back to either kind of source reference
 - **Attachments** — use the composer's `+` button to attach files or images as
-	chips; pasted PNG, JPEG, GIF, and WebP images use the same attachment flow
+ chips; pasted PNG, JPEG, GIF, and WebP images use the same attachment flow
 - **Editor integration** — a right-click `Pi Agent` submenu explains the
-	selection, adds it to the composer without a preset instruction, refactors
-	it, generates tests, explains reported problems, or explains the whole file,
-	plus a `Fix with Pi` quick fix for the diagnostic under the cursor
+ selection, adds it to the composer without a preset instruction, refactors
+ it, generates tests, explains reported problems, or explains the whole file,
+ plus a `Fix with Pi` quick fix for the diagnostic under the cursor
 - **Slash commands** — type `/` in the composer to browse pi's extension
 commands, prompt templates, and skills, grouped by source with live filtering
 - **File mentions** — type `@` to browse one workspace level at a time; pick

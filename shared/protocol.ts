@@ -56,8 +56,10 @@ export interface PiCommand extends JsonRecord {
  * `displayPath` is the workspace-relative path from the root, which doubles as
  * the text the composer writes when descending.
  *
- * Only files carry a `uri`: a directory is never registered as a reference, it
- * just rewrites the query.
+ * Files always carry a canonical `uri`. A directory row normally navigates to
+ * the next level; a `current` directory row carries its canonical `uri` and can
+ * be committed as a composer reference when the user types a complete path
+ * ending in `/`.
  */
 export interface WorkspaceFileSuggestion {
 	kind: "file";
@@ -68,11 +70,17 @@ export interface WorkspaceFileSuggestion {
 export interface WorkspaceDirectorySuggestion {
 	kind: "directory";
 	displayPath: string;
+	uri?: string;
+	current?: true;
 }
 
 export type WorkspaceEntrySuggestion =
 	| WorkspaceFileSuggestion
 	| WorkspaceDirectorySuggestion;
+
+export type WorkspaceReferenceSuggestion =
+	| WorkspaceFileSuggestion
+	| (WorkspaceDirectorySuggestion & { uri: string; current: true });
 
 export interface PiState extends JsonRecord {
 	model?: PiModel | null;
@@ -122,6 +130,10 @@ export interface FileComposerReference extends ComposerReferenceBase {
 	kind: "file";
 }
 
+export interface DirectoryComposerReference extends ComposerReferenceBase {
+	kind: "directory";
+}
+
 export interface SelectionComposerReference extends ComposerReferenceBase {
 	kind: "selection";
 	startLine: number;
@@ -130,6 +142,7 @@ export interface SelectionComposerReference extends ComposerReferenceBase {
 
 export type ComposerReference =
 	| FileComposerReference
+	| DirectoryComposerReference
 	| SelectionComposerReference;
 
 export interface PastedImage {

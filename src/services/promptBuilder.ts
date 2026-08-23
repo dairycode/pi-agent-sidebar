@@ -25,6 +25,11 @@ export interface PromptFileReference {
 	payload: FileReferencePayload;
 }
 
+export interface PromptDirectoryReference {
+	summary: { kind: "directory" };
+	payload: FileReferencePayload;
+}
+
 export interface PromptSelectionReference {
 	summary: { kind: "selection" };
 	payload: SelectionReferencePayload;
@@ -32,7 +37,10 @@ export interface PromptSelectionReference {
 	symbol?: string;
 }
 
-export type PromptReference = PromptFileReference | PromptSelectionReference;
+export type PromptReference =
+	| PromptFileReference
+	| PromptDirectoryReference
+	| PromptSelectionReference;
 
 export interface BuiltPrompt {
 	message: string;
@@ -74,6 +82,10 @@ export async function buildPrompt(
 		(reference): reference is PromptFileReference =>
 			reference.summary.kind === "file",
 	);
+	const directoryReferences = references.filter(
+		(reference): reference is PromptDirectoryReference =>
+			reference.summary.kind === "directory",
+	);
 	const selectionReferences = references.filter(
 		(reference): reference is PromptSelectionReference =>
 			reference.summary.kind === "selection",
@@ -82,6 +94,9 @@ export async function buildPrompt(
 		...files.map((file) => `- file: ${serializeContextValue(file)}`),
 		...fileReferences.map(
 			(reference) => `- file: ${serializeContextValue(reference.payload)}`,
+		),
+		...directoryReferences.map(
+			(reference) => `- directory: ${serializeContextValue(reference.payload)}`,
 		),
 		...selectionReferences.map(
 			(reference) =>
@@ -121,6 +136,8 @@ export async function buildPrompt(
 		if (files.length > 0) promptText = "Inspect the attached file.";
 		else if (fileReferences.length > 0)
 			promptText = "Inspect the referenced file.";
+		else if (directoryReferences.length > 0)
+			promptText = "Inspect the referenced directory.";
 		else if (selectionReferences.length > 0)
 			promptText = "Inspect the selected code.";
 		else if (images.length > 0) promptText = "Inspect the attached image.";

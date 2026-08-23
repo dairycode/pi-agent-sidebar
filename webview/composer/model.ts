@@ -49,16 +49,18 @@ export function parsePersistedReferences(
 			typeof candidate.marker !== "string" ||
 			candidate.marker.length === 0 ||
 			typeof candidate.displayPath !== "string" ||
-			(candidate.kind !== "file" && candidate.kind !== "selection") ||
+			(candidate.kind !== "file" &&
+				candidate.kind !== "directory" &&
+				candidate.kind !== "selection") ||
 			typeof candidate.start !== "number" ||
 			typeof candidate.end !== "number"
 		) {
 			return [];
 		}
 		let reference: ManagedComposerReference;
-		if (candidate.kind === "file") {
+		if (candidate.kind === "file" || candidate.kind === "directory") {
 			reference = {
-				kind: "file",
+				kind: candidate.kind,
 				id: candidate.id,
 				revision: candidate.revision,
 				marker: candidate.marker,

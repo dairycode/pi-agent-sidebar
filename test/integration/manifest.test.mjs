@@ -36,7 +36,7 @@ test("manifest preserves public command IDs and selection keybindings", async ()
 	assert.deepEqual(manifest.contributes.menus["explorer/context"], [
 		{
 			command: "piAgentSidebar.addFilesToInput",
-			when: "!explorerResourceIsFolder && (resourceScheme == file || resourceScheme == vscode-remote)",
+			when: "resourceScheme == file || resourceScheme == vscode-remote",
 			group: "navigation@100",
 		},
 	]);

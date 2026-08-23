@@ -49,6 +49,12 @@ test("user transcript markers retain canonical URI and selection line", async ()
 			displayPath: "src/file.ts",
 			marker: "@src/file.ts",
 		};
+		const directory = {
+			path: "/workspace/src/provider",
+			uri: "file:///workspace/src/provider",
+			displayPath: "src/provider",
+			marker: "@src/provider/",
+		};
 		const selection = {
 			path: "/workspace/src/selected.ts",
 			uri: "file:///workspace/src/selected.ts",
@@ -62,10 +68,11 @@ test("user transcript markers retain canonical URI and selection line", async ()
 		const content = [
 			"<pi-context>",
 			`- file: ${JSON.stringify(file)}`,
+			`- directory: ${JSON.stringify(directory)}`,
 			`- selection: ${JSON.stringify(selection)}`,
 			"</pi-context>",
 			"",
-			"Compare @src/file.ts with @src/selected.ts#4",
+			"Compare @src/file.ts, @src/provider/, and @src/selected.ts#4",
 		].join("\n");
 		const html = loaded.module.messageHtml(
 			{ role: "user", content },
@@ -81,11 +88,15 @@ test("user transcript markers retain canonical URI and selection line", async ()
 		);
 		assert.match(
 			html,
+			/data-resource-uri="file:\/\/\/workspace\/src\/provider"[^>]*>@src\/provider\//u,
+		);
+		assert.match(
+			html,
 			/data-resource-uri="file:\/\/\/workspace\/src\/selected\.ts" data-workspace-line="4"/u,
 		);
 		assert.match(
 			html,
-			/Compare .*@src\/file\.ts.* with .*@src\/selected\.ts#4/u,
+			/Compare .*@src\/file\.ts.*, .*@src\/provider\/.*, and .*@src\/selected\.ts#4/u,
 		);
 	} finally {
 		await loaded.dispose();

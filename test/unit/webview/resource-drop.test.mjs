@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadResourceDrop() {
 	return loadBundledModule({
 		entry: "webview/resourceDrop.ts",
@@ -29,12 +28,14 @@ test("VS Code resource drags are detected and deduplicated", async () => {
 				"file:///workspace/src/main.ts",
 				"file:///workspace/src/main.ts",
 				"file:///workspace/src/view.ts",
+				"file:///workspace/src/components",
 			]),
 		});
 		assert.equal(loaded.module.containsDroppedResources(transfer), true);
 		assert.deepEqual(loaded.module.extractDroppedResources(transfer), [
 			"file:///workspace/src/main.ts",
 			"file:///workspace/src/view.ts",
+			"file:///workspace/src/components",
 		]);
 	} finally {
 		await loaded.dispose();

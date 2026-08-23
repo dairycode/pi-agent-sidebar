@@ -1,6 +1,6 @@
 import type {
 	WorkspaceEntrySuggestion,
-	WorkspaceFileSuggestion,
+	WorkspaceReferenceSuggestion,
 } from "../../shared/protocol.js";
 
 export interface MentionToken {
@@ -22,8 +22,8 @@ export interface MentionControllerOptions {
 	editor: MentionEditor;
 	/** Asks the host for entries at the directory level encoded by `query`. */
 	requestFiles(requestId: number, query: string): void;
-	/** Turns a highlighted file into a composer reference. */
-	commit(file: WorkspaceFileSuggestion, token: MentionToken): void;
+	/** Turns a confirmed file or directory into a composer reference. */
+	commit(resource: WorkspaceReferenceSuggestion, token: MentionToken): void;
 	/** Rewrites the token to `@directory/` before browsing the next level. */
 	navigate(directoryPath: string, token: MentionToken): void;
 	announce(message: string): void;
@@ -41,7 +41,12 @@ export interface MentionControllerOptions {
  * field, arrows move the highlight, and Enter/Tab pick a row. Unlike a global
  * file search, each response contains only the current directory's immediate
  * children. Picking a directory rewrites the token to `@path/` and requests the
- * next level; only picking a file creates a composer reference.
+ * next level. The host-confirmed directory stays pending while the user browses;
+ * typing whitespace to end the token commits that directory as a reference.
+ * Continuing the path clears the pending directory and keeps browsing. A
+ * complete directory path typed directly follows the same rule: the host only
+ * confirms it, and the user's whitespace commits it without synthesizing or
+ * removing any separator characters.
  *
  * File lists are too large to push into the webview, so every token change asks
  * the host and results are matched back by request id.
@@ -59,6 +64,10 @@ export class MentionController {
 	private activeKey: string | undefined;
 	private requestCounter = 0;
 	private latestRequestId = -1;
+	private pendingDirectory:
+		| { resource: WorkspaceReferenceSuggestion; token: MentionToken }
+		| undefined;
+	private endedDirectoryToken: MentionToken | undefined;
 
 	public constructor(private readonly options: MentionControllerOptions) {
 		this.document = options.document ?? document;
@@ -68,7 +77,12 @@ export class MentionController {
 		return this.open;
 	}
 
-	/** Re-evaluates the token under the caret after an edit or caret move. */
+	/**
+	 * Re-evaluates the token under the caret after a caret move.
+	 *
+	 * Callers that just moved the caret use this; a real text edit goes through
+	 * syncAfterInput() instead, because only an edit can end a `@path/` token.
+	 */
 	public sync(): void {
 		if (!this.options.isEnabled()) {
 			this.dismiss();
@@ -79,6 +93,39 @@ export class MentionController {
 			this.dismiss();
 			return;
 		}
+		this.trackToken(token);
+	}
+
+	/**
+	 * Re-evaluates the token after a text edit.
+	 *
+	 * Typing whitespace ends a `@path/` token, which is what commits the
+	 * directory it names. The terminator itself is never consumed or synthesized:
+	 * committing only replaces the token span.
+	 */
+	public syncAfterInput(): void {
+		if (!this.options.isEnabled()) {
+			this.dismiss();
+			return;
+		}
+		const token = this.mentionToken();
+		if (token) {
+			this.trackToken(token);
+			return;
+		}
+		if (this.resolveEndedDirectory()) return;
+		this.dismiss();
+	}
+
+	/** Requests the level the caret's token names, dropping stale directory state. */
+	private trackToken(token: MentionToken): void {
+		this.endedDirectoryToken = undefined;
+		if (
+			this.pendingDirectory &&
+			this.pendingDirectory.token.query !== token.query
+		) {
+			this.pendingDirectory = undefined;
+		}
 		// A repeat of the same token (a plain caret nudge inside it) still needs a
 		// request when nothing is on screen yet, but not when rows are already up.
 		if (this.open && this.token?.query === token.query) {
@@ -86,9 +133,37 @@ export class MentionController {
 			return;
 		}
 		this.token = token;
+		this.requestLevel(token.query);
+	}
+
+	/**
+	 * Handles a caret that just left a `@path/` token.
+	 *
+	 * Returns true once the directory is committed, already awaiting its
+	 * confirmation, or newly sent for one, so the caller leaves the state alone.
+	 */
+	private resolveEndedDirectory(): boolean {
+		if (this.commitPendingDirectory()) return true;
+		if (
+			this.endedDirectoryToken &&
+			this.tokenStillEndsAtWhitespace(this.endedDirectoryToken)
+		) {
+			// Still waiting on the host; keep the token so the answer can commit it.
+			this.closePopup();
+			return true;
+		}
+		const endedToken = this.tokenEndingBeforeCaret();
+		if (!endedToken) return false;
+		this.endedDirectoryToken = endedToken;
+		this.closePopup();
+		this.requestLevel(endedToken.query);
+		return true;
+	}
+
+	private requestLevel(query: string): void {
 		this.requestCounter += 1;
 		this.latestRequestId = this.requestCounter;
-		this.options.requestFiles(this.latestRequestId, token.query);
+		this.options.requestFiles(this.latestRequestId, query);
 	}
 
 	public applyResults(
@@ -97,22 +172,47 @@ export class MentionController {
 		entries: WorkspaceEntrySuggestion[],
 	): void {
 		if (requestId !== this.latestRequestId) return;
+		const currentDirectory = entries.find(isCurrentDirectoryReference);
+		const endedToken = this.endedDirectoryToken;
+		if (endedToken && endedToken.query === query) {
+			this.endedDirectoryToken = undefined;
+			if (currentDirectory && this.tokenStillEndsAtWhitespace(endedToken)) {
+				this.closePopup();
+				this.options.commit(currentDirectory, endedToken);
+				this.options.announce(`Added ${currentDirectory.displayPath}`);
+			} else {
+				this.dismiss();
+			}
+			return;
+		}
 		const token = this.mentionToken();
 		if (!token || token.query !== query) {
 			this.dismiss();
 			return;
 		}
 		this.token = token;
-		if (entries.length === 0) {
-			this.dismiss();
+		// A confirmed directory is staged the same way however the caret got here —
+		// Enter on a row or a manually typed trailing `/`. Neither closes the popup,
+		// so both keep listing this level's children while the directory waits for
+		// whitespace to commit it.
+		if (currentDirectory) {
+			this.pendingDirectory = { resource: currentDirectory, token };
+		}
+		const visibleEntries = entries.filter(
+			(entry) => !isCurrentDirectoryReference(entry),
+		);
+		if (visibleEntries.length === 0) {
+			this.closePopup();
 			return;
 		}
-		this.entries = entries;
+		this.entries = visibleEntries;
 		if (
 			!this.activeKey ||
-			!entries.some((entry) => entryKey(entry) === this.activeKey)
+			!visibleEntries.some((entry) => entryKey(entry) === this.activeKey)
 		) {
-			this.activeKey = entries[0] ? entryKey(entries[0]) : undefined;
+			this.activeKey = visibleEntries[0]
+				? entryKey(visibleEntries[0])
+				: undefined;
 		}
 		this.render();
 		this.open = true;
@@ -121,14 +221,9 @@ export class MentionController {
 	}
 
 	public dismiss(): void {
-		this.token = undefined;
-		this.entries = [];
-		this.activeKey = undefined;
-		this.setActiveDescendant(undefined);
-		if (!this.open) return;
-		this.open = false;
-		this.options.panel.hidden = true;
-		this.options.list.replaceChildren();
+		this.pendingDirectory = undefined;
+		this.endedDirectoryToken = undefined;
+		this.closePopup();
 	}
 
 	public reposition(): void {
@@ -187,16 +282,71 @@ export class MentionController {
 	private select(entry: WorkspaceEntrySuggestion): void {
 		const token = this.token ?? this.mentionToken();
 		if (!token) return;
-		if (entry.kind === "directory") {
-			this.dismiss();
+		if (entry.kind === "directory" && !isCurrentDirectoryReference(entry)) {
+			this.pendingDirectory = undefined;
+			this.closePopup();
 			this.options.navigate(entry.displayPath, token);
 			this.options.announce(`Browsing ${entry.displayPath}`);
 			this.sync();
 			return;
 		}
+		if (!isReferenceSuggestion(entry)) return;
 		this.dismiss();
 		this.options.commit(entry, token);
 		this.options.announce(`Added ${entry.displayPath}`);
+	}
+
+	private tokenEndingBeforeCaret(): MentionToken | undefined {
+		const text = this.options.editor.value;
+		const caret = this.options.editor.selectionStart;
+		if (
+			typeof caret !== "number" ||
+			caret !== this.options.editor.selectionEnd ||
+			caret < 2 ||
+			!/\s/u.test(text[caret - 1] ?? "")
+		) {
+			return undefined;
+		}
+		let end = caret - 1;
+		while (end > 0 && /\s/u.test(text[end - 1] ?? "")) end -= 1;
+		let start = end;
+		while (start > 0 && !/\s/u.test(text[start - 1] ?? "")) start -= 1;
+		if (text[start] !== "@" || text[end - 1] !== "/") return undefined;
+		if (this.options.isProtectedOffset(start + 1)) return undefined;
+		return { start, end, query: text.slice(start + 1, end) };
+	}
+
+	private tokenStillEndsAtWhitespace(token: MentionToken): boolean {
+		const text = this.options.editor.value;
+		return (
+			text.slice(token.start, token.end) === `@${token.query}` &&
+			/^\s/u.test(text.slice(token.end))
+		);
+	}
+
+	private commitPendingDirectory(): boolean {
+		const pending = this.pendingDirectory;
+		if (!pending) return false;
+		if (!this.tokenStillEndsAtWhitespace(pending.token)) {
+			this.pendingDirectory = undefined;
+			return false;
+		}
+		this.pendingDirectory = undefined;
+		this.closePopup();
+		this.options.commit(pending.resource, pending.token);
+		this.options.announce(`Added ${pending.resource.displayPath}`);
+		return true;
+	}
+
+	private closePopup(): void {
+		this.token = undefined;
+		this.entries = [];
+		this.activeKey = undefined;
+		this.setActiveDescendant(undefined);
+		if (!this.open) return;
+		this.open = false;
+		this.options.panel.hidden = true;
+		this.options.list.replaceChildren();
 	}
 
 	private moveActive(delta: number): void {
@@ -281,6 +431,20 @@ export class MentionController {
 		if (rowId) host.setAttribute("aria-activedescendant", rowId);
 		else host.removeAttribute?.("aria-activedescendant");
 	}
+}
+
+function isCurrentDirectoryReference(
+	entry: WorkspaceEntrySuggestion,
+): entry is WorkspaceReferenceSuggestion & { kind: "directory" } {
+	return (
+		entry.kind === "directory" && entry.current === true && Boolean(entry.uri)
+	);
+}
+
+function isReferenceSuggestion(
+	entry: WorkspaceEntrySuggestion,
+): entry is WorkspaceReferenceSuggestion {
+	return entry.kind === "file" || isCurrentDirectoryReference(entry);
 }
 
 function entryKey(entry: WorkspaceEntrySuggestion): string {

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadComposerReferences() {
 	return loadBundledModule({
 		entry: "shared/composerReferences.ts",
@@ -10,7 +9,7 @@ async function loadComposerReferences() {
 	});
 }
 
-test("composer references format file and selection markers", async () => {
+test("composer references format file, directory, and selection markers", async () => {
 	const loaded = await loadComposerReferences();
 	try {
 		assert.deepEqual(loaded.module.selectedLineRange(4, 5, 0), {
@@ -40,6 +39,21 @@ test("composer references format file and selection markers", async () => {
 		assert.equal(
 			loaded.module.formatFileReferenceMarker("src/example.ts"),
 			"@src/example.ts",
+		);
+		assert.equal(
+			loaded.module.formatComposerReferenceLocation({
+				kind: "directory",
+				displayPath: "src/provider",
+			}),
+			"src/provider/",
+		);
+		assert.equal(
+			loaded.module.formatDirectoryReferenceMarker("src/provider"),
+			"@src/provider/",
+		);
+		assert.equal(
+			loaded.module.formatDirectoryReferenceMarker("src/provider/"),
+			"@src/provider/",
 		);
 		assert.equal(
 			loaded.module.formatSelectionReferenceMarker("src/example.ts", 5, 7),

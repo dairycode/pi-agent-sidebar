@@ -21,6 +21,69 @@ export interface TranscriptLiveTool {
 	output: string;
 	diff?: string;
 	startedAt: number;
+	/**
+	 * Bumped by the owner on every in-place mutation.
+	 *
+	 * Live tools are updated in place rather than replaced, so object identity
+	 * cannot tell `messageRenderSignature` that the output grew.
+	 */
+	revision: number;
+}
+
+/**
+ * True when `messageHtml` would produce markup for this message.
+ *
+ * Decided from the role alone so callers can drop invisible messages without
+ * paying for a markdown parse to discover the result is empty.
+ */
+export function isRenderableMessage(message: PiMessage): boolean {
+	switch (message.role) {
+		case "user":
+		case "assistant":
+		case "bashExecution":
+		case "compactionSummary":
+		case "branchSummary":
+			return true;
+		case "custom":
+			return message.display !== false;
+		default:
+			return false;
+	}
+}
+
+/**
+ * Everything `messageHtml` reads, condensed into a comparable string.
+ *
+ * This is what makes incremental transcript rendering possible: an unchanged
+ * signature means the existing DOM node is still correct, so the expensive path
+ * (markdown parse, sanitize, HTML parse, node replacement) is skipped. It must
+ * therefore cover every input `messageHtml` consults — a missed input shows up
+ * as a message that stops updating, so prefer over-invalidating when unsure.
+ *
+ * Message content is covered by `identityOf` rather than inspected: pi replaces
+ * message objects on every change instead of mutating them, so a per-object
+ * identity marker is both cheaper and more exact than hashing content.
+ */
+export function messageRenderSignature(
+	message: PiMessage,
+	results: ReadonlyMap<string, PiMessage>,
+	liveTools: ReadonlyMap<string, TranscriptLiveTool>,
+	streaming: boolean,
+	identityOf: (message: PiMessage) => string,
+): string {
+	const parts = [`m${identityOf(message)}`, streaming ? "s1" : "s0"];
+	const blocks = Array.isArray(message.content) ? message.content : [];
+	for (const block of blocks) {
+		if (block.type !== "toolCall" || !block.id) continue;
+		const live = liveTools.get(block.id);
+		const result = results.get(block.id);
+		parts.push(
+			`t${block.id}:${live ? `${live.status}.${live.revision}` : "-"}:${
+				result ? `${identityOf(result)}.${result.isError ? 1 : 0}` : "-"
+			}`,
+		);
+	}
+	return parts.join("|");
 }
 
 export function messageHtml(
@@ -54,13 +117,11 @@ export function messageHtml(
 				status: message.exitCode === 0 ? "success" : "error",
 				output: stringValue(message.output),
 				startedAt: 0,
+				revision: 0,
 			},
 		)}</div>`;
 	}
-	if (
-		message.role === "compactionSummary" ||
-		message.role === "branchSummary"
-	) {
+	if (message.role === "compactionSummary" || message.role === "branchSummary") {
 		return '<div class="context-divider"><i class="codicon codicon-fold"></i> Context summarized</div>';
 	}
 	if (message.role === "custom" && message.display !== false) {
@@ -101,8 +162,7 @@ function markerSpanHtml(marker: InlineMarker): string {
 }
 
 function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
-	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
-		[];
+	const inline: Array<{ start: number; end: number; marker: InlineMarker }> = [];
 	const leftover: InlineMarker[] = [];
 	let searchFrom = 0;
 	for (const marker of markers) {
@@ -281,8 +341,7 @@ function renderDiffBlock(diff: string): string {
 	const rows = shown
 		.map((line) => {
 			const marker = line.charAt(0);
-			const kind =
-				marker === "+" ? "add" : marker === "-" ? "remove" : "context";
+			const kind = marker === "+" ? "add" : marker === "-" ? "remove" : "context";
 			return `<div class="diff-line diff-${kind}"><span class="diff-text">${escapeHtml(line) || "&nbsp;"}</span></div>`;
 		})
 		.join("");

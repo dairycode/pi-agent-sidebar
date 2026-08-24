@@ -4,9 +4,24 @@
 	overflow-x: hidden;
 	overflow-y: auto;
 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+	/* Let the browser hold the reader's position when content above the viewport
+	   changes height. Only worth asking for because the transcript now reuses
+	   message nodes across renders: anchoring needs a stable node to anchor to,
+	   and the previous full rebuild replaced every one of them each frame. */
+	overflow-anchor: auto;
 }
 
-/* Zero-height sticky rail. The pinned row is absolutely positioned inside it so
+/* One wrapper per message, so the container's child order matches the entry
+   order the reconciler tracks. `contents` keeps it out of layout entirely, so
+   `.messages`' flex gap still applies to the messages themselves. */
+.message-slot {
+	display: contents;
+}
+
+/* The sticky rail must never be picked as the scroll anchor: it does not move
+   with the content, so anchoring to it would defeat the purpose.
+
+   Zero-height sticky rail. The pinned row is absolutely positioned inside it so
    showing the row cannot add flow height — otherwise every message below would
    shift down the moment it appears, which reads as a scroll jump. */
 .pinned-prompt-slot {
@@ -15,6 +30,7 @@
 	top: 0;
 	height: 0;
 	min-width: 0;
+	overflow-anchor: none;
 }
 
 /* Flush top bar rather than a floating card. Inset from the top, the row left an

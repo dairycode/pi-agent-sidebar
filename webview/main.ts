@@ -8,11 +8,18 @@ import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
 import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
 import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
+import { ScrollAnchor } from "./transcript/scrollAnchor.js";
+import {
+	TranscriptView,
+	type TranscriptEntry,
+} from "./transcript/transcriptView.js";
 import {
 	contentText,
 	extractResultDiff,
 	friendlyToolName,
+	isRenderableMessage,
 	messageHtml,
+	messageRenderSignature,
 } from "./transcript/renderer.js";
 import {
 	containsDroppedResources,
@@ -58,6 +65,8 @@ interface LiveTool {
 	output: string;
 	diff?: string;
 	startedAt: number;
+	/** Bumped on every in-place edit so render signatures see the change. */
+	revision: number;
 }
 
 interface PendingAction {
@@ -111,6 +120,7 @@ const pendingActions = new Map<string, PendingAction>();
 const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
 let renderQueued = false;
+let transcriptMeasureQueued = false;
 let pendingSubmit = false;
 let composerFocusRequestId: number | undefined;
 let composerFocusQueued = false;
@@ -122,6 +132,8 @@ let resourceDragDepth = 0;
 
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
+/** Older messages are dropped from the DOM rather than rendered off-screen. */
+const MAX_RENDERED_MESSAGES = 150;
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/gu;
 const ORPHAN_SGR_PATTERN = /\[(?:\d{1,3}(?:;\d{1,3})*)m/gu;
 
@@ -259,11 +271,7 @@ const mentionController = new MentionController({
 		post({ type: "listWorkspaceFiles", requestId, query }),
 	commit: (file, token) => addMentionReference(file, token),
 	navigate: (directoryPath, token) =>
-		composerController.replaceRange(
-			token.start,
-			token.end,
-			`@${directoryPath}/`,
-		),
+		composerController.replaceRange(token.start, token.end, `@${directoryPath}/`),
 	announce,
 	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
 	position: positionMentionPanel,
@@ -289,6 +297,99 @@ const pinnedPrompt = new PinnedPromptController({
 	text: elements.pinnedPromptText,
 	toggle: elements.pinnedPromptToggle,
 });
+
+/**
+ * Owns the "should new content pull the view down" decision for the transcript.
+ *
+ * Streaming appends to the transcript every frame, so this is what keeps an
+ * upward scroll from being undone by the next delta.
+ */
+const scrollAnchor = new ScrollAnchor({ viewport: elements.transcript });
+
+const transcriptView = new TranscriptView<Element>({
+	container: elements.messages,
+	createNode: (entry, previous) => createMessageNode(entry, previous),
+});
+
+/**
+ * Stable per-message identity for transcript keys and render signatures.
+ *
+ * Two different things are needed, and conflating them breaks the transcript in
+ * opposite directions:
+ *
+ * - `key` identifies the *slot*. It must survive pi replacing a message object,
+ *   which happens on every streaming delta and again at `message_end`. A key
+ *   that changes per delta would make the reconciler drop and rebuild the node
+ *   each frame, losing the disclosure state the reader had opened.
+ * - `version` marks *content*. It must change whenever the object is replaced,
+ *   or the render signature would look unchanged and the streaming message
+ *   would never repaint.
+ *
+ * Keyed by object identity because pi replaces messages rather than mutating
+ * them, which makes identity both cheaper and more exact than hashing content.
+ */
+interface MessageIdentity {
+	key: number;
+	version: number;
+}
+
+const messageIdentities = new WeakMap<PiMessage, MessageIdentity>();
+let nextMessageKey = 0;
+
+function messageIdentity(message: PiMessage): MessageIdentity {
+	const existing = messageIdentities.get(message);
+	if (existing) return existing;
+	nextMessageKey += 1;
+	const identity: MessageIdentity = { key: nextMessageKey, version: 0 };
+	messageIdentities.set(message, identity);
+	return identity;
+}
+
+/**
+ * Carries a message's slot identity to the object that supersedes it.
+ *
+ * Called wherever pi hands over a new object for a message already on screen:
+ * each streaming delta, the authoritative copy at `message_end`, and the
+ * aborted copy when a run is interrupted. Without this the node would be
+ * rebuilt from scratch at each handover.
+ */
+function inheritMessageIdentity(
+	from: PiMessage | undefined,
+	to: PiMessage,
+): void {
+	if (!from || from === to) return;
+	const previous = messageIdentities.get(from);
+	if (!previous) return;
+	messageIdentities.set(to, {
+		key: previous.key,
+		version: previous.version + 1,
+	});
+}
+
+/** Identity marker for render signatures: changes on any content replacement. */
+function messageSignaturePart(message: PiMessage): string {
+	const identity = messageIdentity(message);
+	return `${identity.key}.${identity.version}`;
+}
+
+function messageKey(message: PiMessage): string {
+	return `message-${messageIdentity(message).key}`;
+}
+
+/**
+ * Inputs shared by every node built in one `renderMessages` pass.
+ *
+ * Held here rather than threaded through `TranscriptEntry` so entries stay small
+ * enough to compare cheaply.
+ */
+interface MessageRenderContext {
+	/** Keyed lookup, so building a node costs no scan of the visible list. */
+	byKey: ReadonlyMap<string, PiMessage>;
+	omitted: number;
+	resultMap: ReadonlyMap<string, PiMessage>;
+}
+
+let pendingMessageRender: MessageRenderContext | undefined;
 
 window.addEventListener(
 	"message",
@@ -403,9 +504,46 @@ window.addEventListener("resize", syncPromptHighlightScroll);
 
 // The pinned turn label is driven by scroll position, which fires no state
 // change, so it is re-evaluated here as well as in render().
-elements.transcript.addEventListener("scroll", () => pinnedPrompt.sync(), {
-	passive: true,
-});
+elements.transcript.addEventListener(
+	"scroll",
+	() => {
+		scrollAnchor.noteScroll();
+		pinnedPrompt.sync();
+	},
+	{ passive: true },
+);
+
+// Gesture listeners exist so an upward drag detaches the transcript from its
+// bottom edge on the very first event, before any scrolling has happened.
+// Waiting for the resulting scroll event would let one streaming frame pin the
+// view back to the bottom mid-gesture, which is what made scrolling up feel
+// like it was fighting back.
+elements.transcript.addEventListener(
+	"wheel",
+	(event) => scrollAnchor.noteUserIntent(event.deltaY),
+	{ passive: true },
+);
+
+let touchAnchorY: number | undefined;
+elements.transcript.addEventListener(
+	"touchstart",
+	(event) => {
+		touchAnchorY = event.touches[0]?.clientY;
+	},
+	{ passive: true },
+);
+elements.transcript.addEventListener(
+	"touchmove",
+	(event) => {
+		const currentY = event.touches[0]?.clientY;
+		if (currentY === undefined || touchAnchorY === undefined) return;
+		// Dragging a finger down moves content down, which scrolls up: the sign is
+		// inverted relative to the wheel convention noteUserIntent expects.
+		scrollAnchor.noteUserIntent(touchAnchorY - currentY);
+		touchAnchorY = currentY;
+	},
+	{ passive: true },
+);
 window.addEventListener("resize", () => pinnedPrompt.sync());
 
 elements.pinnedPromptBody.addEventListener("click", () =>
@@ -449,8 +587,7 @@ elements.input.addEventListener("keydown", (event) => {
 		const reference = composerController.referenceAtOffset(
 			elements.input.selectionStart,
 		);
-		if (!reference || composerController.isPendingReference(reference.id))
-			return;
+		if (!reference || composerController.isPendingReference(reference.id)) return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
 		return;
@@ -576,9 +713,7 @@ elements.sessionList.addEventListener("keydown", (event) => {
 		return;
 	}
 	const nextIndex =
-		event.key === "ArrowDown"
-			? Math.min(index + 1, rows.length - 1)
-			: index - 1;
+		event.key === "ArrowDown" ? Math.min(index + 1, rows.length - 1) : index - 1;
 	rows[nextIndex]?.querySelector<HTMLButtonElement>(".session-open")?.focus();
 });
 elements.newSessionButton.addEventListener("click", () => {
@@ -605,8 +740,7 @@ elements.messages.addEventListener("click", (event) => {
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
-			copyButton.closest(".code-block")?.querySelector("code")?.textContent ??
-			"";
+			copyButton.closest(".code-block")?.querySelector("code")?.textContent ?? "";
 		void navigator.clipboard
 			.writeText(code)
 			.then(() => showToast("Copied", "info"));
@@ -754,6 +888,10 @@ function applySnapshot(
 	if (sessionChanged) {
 		extensionStatuses.clear();
 		extensionWidgets.clear();
+		// Nothing in a different session's transcript can be reused, and the reader
+		// expects a fresh session to start at its newest message.
+		transcriptView.clear();
+		scrollAnchor.follow();
 	}
 	scheduleRender();
 }
@@ -778,6 +916,7 @@ function finishInterruptedRun(detail?: string): void {
 	ui.busy = false;
 	if (ui.streamingMessage) {
 		const interrupted = { ...ui.streamingMessage, stopReason: "aborted" };
+		inheritMessageIdentity(ui.streamingMessage, interrupted);
 		if (!hasEquivalentTail(ui.messages, interrupted))
 			ui.messages.push(interrupted);
 		ui.streamingMessage = undefined;
@@ -787,6 +926,7 @@ function finishInterruptedRun(detail?: string): void {
 			tool.status = "error";
 			if (!tool.output)
 				tool.output = detail || "Pi disconnected before this tool completed.";
+			tool.revision += 1;
 		}
 	}
 	extensionStatuses.clear();
@@ -862,14 +1002,20 @@ function reduceRpcEvent(event: JsonRecord): void {
 		}
 		case "message_update": {
 			if (event.assistantMessageEvent !== undefined && ui.streamingMessage) {
-				ui.streamingMessage = applyAssistantMessageDelta(
-					ui.streamingMessage,
-					event,
-				);
+				const previous = ui.streamingMessage;
+				ui.streamingMessage = applyAssistantMessageDelta(previous, event);
+				// Each delta returns a new object. Handing the slot identity over keeps
+				// the reader's open tool disclosures alive: without it every frame would
+				// look like a brand new message and its node would be rebuilt from
+				// scratch rather than updated in place.
+				inheritMessageIdentity(previous, ui.streamingMessage);
 			} else {
 				// Older pi builds sent a cumulative message snapshot here.
 				const message = asMessage(event.message);
-				if (message) ui.streamingMessage = message;
+				if (message) {
+					inheritMessageIdentity(ui.streamingMessage, message);
+					ui.streamingMessage = message;
+				}
 			}
 			break;
 		}
@@ -877,6 +1023,9 @@ function reduceRpcEvent(event: JsonRecord): void {
 			const message = asMessage(event.message);
 			if (!message) break;
 			if (message.role === "assistant") {
+				// The authoritative copy replaces the streamed partial, so it has to
+				// take over the same transcript slot.
+				inheritMessageIdentity(ui.streamingMessage, message);
 				if (!hasEquivalentTail(ui.messages, message)) ui.messages.push(message);
 				ui.streamingMessage = undefined;
 			} else if (
@@ -897,6 +1046,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 				status: "running",
 				output: "",
 				startedAt: Date.now(),
+				revision: 0,
 			});
 			break;
 		}
@@ -904,7 +1054,13 @@ function reduceRpcEvent(event: JsonRecord): void {
 			const id = stringValue(event.toolCallId);
 			const tool = liveTools.get(id);
 			if (!tool) break;
-			tool.output = extractResultText(event.partialResult);
+			const output = extractResultText(event.partialResult);
+			// Streaming tools re-send output that has not grown. Skipping the bump
+			// keeps the render signature stable, so the transcript reuses the node
+			// instead of rebuilding it for an identical result.
+			if (output === tool.output) break;
+			tool.output = output;
+			tool.revision += 1;
 			break;
 		}
 		case "tool_execution_end": {
@@ -917,13 +1073,12 @@ function reduceRpcEvent(event: JsonRecord): void {
 				id,
 				name: toolName,
 				args:
-					Object.keys(eventArgs).length > 0
-						? eventArgs
-						: (existing?.args ?? {}),
+					Object.keys(eventArgs).length > 0 ? eventArgs : (existing?.args ?? {}),
 				status,
 				output: extractResultText(event.result),
 				diff: extractResultDiff(event.result),
 				startedAt: existing?.startedAt ?? Date.now(),
+				revision: (existing?.revision ?? 0) + 1,
 			});
 			announce(
 				`${friendlyToolName(toolName)} ${status === "error" ? "failed" : "completed"}`,
@@ -992,11 +1147,6 @@ function scheduleRender(): void {
 }
 
 function render(): void {
-	const nearBottom =
-		elements.transcript.scrollHeight -
-			elements.transcript.scrollTop -
-			elements.transcript.clientHeight <
-		96;
 	const hasMessages =
 		ui.messages.length > 0 || Boolean(ui.streamingMessage) || pendingSubmit;
 	const title = deriveSessionTitle();
@@ -1044,10 +1194,11 @@ function render(): void {
 	reflowComposerTools();
 	focusComposerIfRequested();
 
-	if (nearBottom) scrollTranscriptToBottom();
-	// Runs after renderMessages() replaced the message nodes, so the controller
-	// re-resolves its target element rather than holding a detached one.
-	pinnedPrompt.sync();
+	// Bottom-pinning happens after every DOM write in this pass, so the height it
+	// reads is final. Whether it runs at all is the ScrollAnchor's decision, which
+	// was already made from scroll events and reader gestures.
+	scrollAnchor.stickToBottomIfFollowing();
+	scheduleTranscriptMeasure();
 }
 
 /**
@@ -1081,9 +1232,15 @@ function reflowComposerTools(): void {
 	tools.classList.add("is-minimal");
 }
 
-function scrollTranscriptToBottom(): void {
-	elements.transcript.scrollTop = elements.transcript.scrollHeight;
-	for (const image of elements.messages.querySelectorAll<HTMLImageElement>(
+/**
+ * Re-pins the bottom once an image finishes loading.
+ *
+ * An image contributes no height until it decodes, so a transcript that was
+ * flush with the bottom drifts away from it the moment one lands. Bound per
+ * image, once, and only while following.
+ */
+function bindImageReflow(root: ParentNode): void {
+	for (const image of root.querySelectorAll<HTMLImageElement>(
 		".message-image",
 	)) {
 		if (image.complete || image.dataset.scrollBound === "true") continue;
@@ -1091,11 +1248,32 @@ function scrollTranscriptToBottom(): void {
 		image.addEventListener(
 			"load",
 			() => {
-				elements.transcript.scrollTop = elements.transcript.scrollHeight;
+				scrollAnchor.stickToBottomIfFollowing();
+				scheduleTranscriptMeasure();
 			},
 			{ once: true },
 		);
 	}
+}
+
+/**
+ * Defers the pinned label's layout reads to after the browser has laid out this
+ * frame's DOM writes.
+ *
+ * `pinnedPrompt.sync()` reads `getBoundingClientRect` for each rendered prompt.
+ * Called straight after the writes in `render()`, every one of those reads
+ * forces a synchronous re-layout of freshly invalidated content, which is the
+ * read/write interleaving that made streaming frames overrun their budget.
+ * Running it in its own rAF costs one frame of label latency and removes the
+ * forced layout entirely.
+ */
+function scheduleTranscriptMeasure(): void {
+	if (transcriptMeasureQueued) return;
+	transcriptMeasureQueued = true;
+	requestAnimationFrame(() => {
+		transcriptMeasureQueued = false;
+		pinnedPrompt.sync();
+	});
 }
 
 function renderConnectionBanner(): void {
@@ -1114,34 +1292,20 @@ function renderConnectionBanner(): void {
 		const restart = document.createElement("button");
 		restart.type = "button";
 		restart.className = "text-button";
-		restart.append(
-			createCodicon("refresh"),
-			document.createTextNode(" Restart"),
-		);
+		restart.append(createCodicon("refresh"), document.createTextNode(" Restart"));
 		restart.addEventListener("click", () => runAction("restart"));
 		elements.connectionBanner.append(restart);
 	}
 }
 
+/**
+ * Reconciles the transcript against `ui.messages` plus the in-flight reply.
+ *
+ * Only messages whose render signature changed are rebuilt. During streaming
+ * that is the last message and nothing else, so history nodes stay in the DOM
+ * untouched and the reader's scroll position keeps its anchor.
+ */
 function renderMessages(): void {
-	const openToolKeys = new Set(
-		[
-			...elements.messages.querySelectorAll<HTMLDetailsElement>(
-				".tool-call[open]",
-			),
-		]
-			.map((details) => details.dataset.toolKey)
-			.filter((key): key is string => Boolean(key)),
-	);
-	const openThinkingKeys = new Set(
-		[
-			...elements.messages.querySelectorAll<HTMLDetailsElement>(
-				".thinking-block[open]:not(.streaming)",
-			),
-		]
-			.map((details) => details.dataset.thinkingKey)
-			.filter((key): key is string => Boolean(key)),
-	);
 	const resultMap = buildToolResultMap();
 	const streamingMessage = ui.streamingMessage;
 	// pi opens assistant messages with an empty `content: []` and fills them
@@ -1162,39 +1326,122 @@ function renderMessages(): void {
 		streamingVisible && streamingMessage
 			? [...ui.messages, streamingMessage]
 			: ui.messages;
-	const visible = allMessages.slice(-150);
-	const omitted = allMessages.length - visible.length;
-	let html =
-		omitted > 0
-			? `<div class="history-omitted">${omitted} earlier messages omitted</div>`
-			: "";
+	// Invisible roles (tool results, hidden custom messages) render to an empty
+	// string. Dropping them here keeps the entry list aligned one-to-one with the
+	// container's children, which is what lets reconciliation address nodes by
+	// position, and stops them consuming the render cap.
+	const renderable = allMessages.filter(isRenderableMessage);
+	const visible = renderable.slice(-MAX_RENDERED_MESSAGES);
+	const omitted = renderable.length - visible.length;
 
-	for (const [index, message] of visible.entries())
-		html += messageHtml(
-			message,
-			resultMap,
-			liveTools,
-			message === ui.streamingMessage,
-			`message-${omitted + index}`,
-		);
-	elements.messages.replaceChildren(...sanitizedNodes(html));
-	for (const details of elements.messages.querySelectorAll<HTMLDetailsElement>(
-		".tool-call[data-tool-key]",
-	)) {
-		if (details.dataset.toolKey && openToolKeys.has(details.dataset.toolKey))
-			details.open = true;
+	const entries: TranscriptEntry[] = [];
+	if (omitted > 0) {
+		entries.push({
+			key: "history-omitted",
+			signature: `omitted:${omitted}`,
+		});
 	}
-	for (const details of elements.messages.querySelectorAll<HTMLDetailsElement>(
-		".thinking-block[data-thinking-key]:not(.streaming)",
-	)) {
-		if (
-			details.dataset.thinkingKey &&
-			openThinkingKeys.has(details.dataset.thinkingKey)
-		)
-			details.open = true;
+	// Keyed by identity rather than index: `slice(-150)` shifts every index by one
+	// as history grows past the cap, which would invalidate all 150 nodes on the
+	// message that crosses the boundary.
+	const byKey = new Map<string, PiMessage>();
+	for (const message of visible) {
+		const key = messageKey(message);
+		byKey.set(key, message);
+		entries.push({
+			key,
+			signature: messageRenderSignature(
+				message,
+				resultMap,
+				liveTools,
+				message === ui.streamingMessage,
+				messageSignaturePart,
+			),
+		});
 	}
 
-	for (const pre of elements.messages.querySelectorAll("pre")) {
+	pendingMessageRender = { byKey, omitted, resultMap };
+	transcriptView.update(entries);
+	pendingMessageRender = undefined;
+}
+
+/**
+ * Builds one message's DOM node, carrying over the disclosure state of the node
+ * it replaces.
+ *
+ * Reads the pass-wide inputs from `pendingMessageRender` because TranscriptView
+ * hands back only the entry it was given; keeping the entry to a key and a
+ * signature is what makes reconciliation cheap to compare.
+ */
+function createMessageNode(
+	entry: TranscriptEntry,
+	previous: Element | undefined,
+): Element {
+	const context = pendingMessageRender;
+	if (!context)
+		throw new Error("createMessageNode called outside renderMessages");
+	if (entry.key === "history-omitted") {
+		const node = document.createElement("div");
+		node.className = "history-omitted";
+		node.textContent = `${context.omitted} earlier messages omitted`;
+		return node;
+	}
+
+	const message = context.byKey.get(entry.key);
+	if (!message) throw new Error(`No message for transcript key ${entry.key}`);
+	// The same stable key feeds messageHtml's per-block keys. A positional index
+	// would shift for every message once history passes the render cap, which
+	// would silently collapse reasoning blocks the reader had opened.
+	const html = messageHtml(
+		message,
+		context.resultMap,
+		liveTools,
+		message === ui.streamingMessage,
+		entry.key,
+	);
+
+	// One wrapper per message keeps the container's child list aligned with the
+	// entry list, which is what lets reconciliation address nodes positionally.
+	const node = document.createElement("div");
+	node.className = "message-slot";
+	node.replaceChildren(...sanitizedNodes(html));
+	restoreDisclosureState(node, previous);
+	enhanceCodeBlocks(node);
+	linkifyWorkspacePaths(node);
+	bindImageReflow(node);
+	return node;
+}
+
+/**
+ * Carries `<details>` open state across a rebuild.
+ *
+ * Disclosure state lives only in the DOM, so replacing a node would silently
+ * collapse a tool output the reader had opened. Streaming reasoning blocks are
+ * excluded: their open state is driven by the streaming flag itself.
+ */
+function restoreDisclosureState(
+	node: Element,
+	previous: Element | undefined,
+): void {
+	if (!previous) return;
+	const openKeys = new Set<string>();
+	for (const details of previous.querySelectorAll<HTMLDetailsElement>(
+		".tool-call[open][data-tool-key], .thinking-block[open]:not(.streaming)[data-thinking-key]",
+	)) {
+		const key = details.dataset.toolKey ?? details.dataset.thinkingKey;
+		if (key) openKeys.add(key);
+	}
+	if (openKeys.size === 0) return;
+	for (const details of node.querySelectorAll<HTMLDetailsElement>(
+		".tool-call[data-tool-key], .thinking-block:not(.streaming)[data-thinking-key]",
+	)) {
+		const key = details.dataset.toolKey ?? details.dataset.thinkingKey;
+		if (key && openKeys.has(key)) details.open = true;
+	}
+}
+
+function enhanceCodeBlocks(root: ParentNode): void {
+	for (const pre of root.querySelectorAll("pre")) {
 		if (pre.parentElement?.classList.contains("tool-output")) continue;
 		if (pre.parentElement?.classList.contains("code-block")) continue;
 		// The button must live outside the scrolling <pre> so horizontal scrolling
@@ -1213,8 +1460,6 @@ function renderMessages(): void {
 		button.append(createCodicon("copy"));
 		wrapper.append(button);
 	}
-
-	linkifyWorkspacePaths();
 }
 
 const WORKSPACE_PATH_PATTERN =
@@ -1224,32 +1469,31 @@ const WORKSPACE_PATH_PATTERN =
  * Walk rendered assistant/user message text nodes and turn `path/to/file.ts`
  * or `path/to/file.ts:42` tokens into clickable spans. Code blocks, links,
  * and already-processed nodes are skipped so inline code stays literal.
+ *
+ * Scoped to one freshly built message node rather than the whole transcript:
+ * walking every text node in 150 messages on each streaming frame is exactly
+ * the per-frame cost that made scrolling stutter, and history has already been
+ * linkified in the pass that built it.
  */
-function linkifyWorkspacePaths(): void {
-	const walker = document.createTreeWalker(
-		elements.messages,
-		NodeFilter.SHOW_TEXT,
-		{
-			acceptNode(node): number {
-				const parent = node.parentElement;
-				if (!parent) return NodeFilter.FILTER_REJECT;
-				// Skip code BLOCKS (pre), links, tool/thinking widgets, and
-				// already-linkified spans. Inline <code> is allowed so paths that
-				// pi wraps in backticks still become clickable.
-				if (
-					parent.closest(
-						"pre, a, .tool-call, .thinking-block, [data-workspace-path]",
-					)
-				) {
-					return NodeFilter.FILTER_REJECT;
-				}
-				WORKSPACE_PATH_PATTERN.lastIndex = 0;
-				return WORKSPACE_PATH_PATTERN.test(node.nodeValue ?? "")
-					? NodeFilter.FILTER_ACCEPT
-					: NodeFilter.FILTER_REJECT;
-			},
+function linkifyWorkspacePaths(root: Element): void {
+	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+		acceptNode(node): number {
+			const parent = node.parentElement;
+			if (!parent) return NodeFilter.FILTER_REJECT;
+			// Skip code BLOCKS (pre), links, tool/thinking widgets, and
+			// already-linkified spans. Inline <code> is allowed so paths that
+			// pi wraps in backticks still become clickable.
+			if (
+				parent.closest("pre, a, .tool-call, .thinking-block, [data-workspace-path]")
+			) {
+				return NodeFilter.FILTER_REJECT;
+			}
+			WORKSPACE_PATH_PATTERN.lastIndex = 0;
+			return WORKSPACE_PATH_PATTERN.test(node.nodeValue ?? "")
+				? NodeFilter.FILTER_ACCEPT
+				: NodeFilter.FILTER_REJECT;
 		},
-	);
+	});
 	const targets: Text[] = [];
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 		targets.push(node as Text);
@@ -1308,9 +1552,7 @@ function renderAttachments(): void {
 		remove.setAttribute("aria-label", `Remove ${attachment.label}`);
 		remove.append(createCodicon("close"));
 		remove.addEventListener("click", () => {
-			ui.attachments = ui.attachments.filter(
-				(item) => item.id !== attachment.id,
-			);
+			ui.attachments = ui.attachments.filter((item) => item.id !== attachment.id);
 			post({ type: "removeAttachment", id: attachment.id });
 			scheduleRender();
 		});
@@ -1446,8 +1688,7 @@ function renderWidgets(): void {
 function renderRuntimeMeta(): void {
 	const parts: string[] = [];
 	const context = ui.stats?.contextUsage?.percent;
-	if (typeof context === "number")
-		parts.push(`${Math.round(context)}% context`);
+	if (typeof context === "number") parts.push(`${Math.round(context)}% context`);
 	if (typeof ui.stats?.cost === "number" && ui.stats.cost > 0)
 		parts.push(`$${ui.stats.cost.toFixed(3)}`);
 	const text = parts.join(" · ");
@@ -1553,9 +1794,7 @@ function renderSessions(): void {
 			: "Open the session to rename it";
 		renameButton.setAttribute(
 			"aria-label",
-			session.active
-				? `Rename ${session.title}`
-				: "Open the session to rename it",
+			session.active ? `Rename ${session.title}` : "Open the session to rename it",
 		);
 		renameButton.append(createCodicon("edit"));
 		renameButton.addEventListener("click", () => openRenamePrompt());
@@ -1677,9 +1916,7 @@ function renderCommands(): void {
 		const empty = document.createElement("div");
 		empty.className = "command-list-empty";
 		empty.textContent =
-			ui.commands.length === 0
-				? "No commands available"
-				: "No matching commands";
+			ui.commands.length === 0 ? "No commands available" : "No matching commands";
 		elements.commandList.replaceChildren(empty);
 		setCommandActiveDescendant(undefined);
 		return;
@@ -1792,8 +2029,7 @@ function moveActiveCommand(delta: number): void {
 		? renderedCommandNames.indexOf(activeCommandName)
 		: -1;
 	const next =
-		(current + delta + renderedCommandNames.length) %
-		renderedCommandNames.length;
+		(current + delta + renderedCommandNames.length) % renderedCommandNames.length;
 	activeCommandName = renderedCommandNames[next];
 	highlightActiveCommand();
 }
@@ -2050,6 +2286,9 @@ function sendPrompt(): void {
 	dismissCommandPalette();
 	mentionController.dismiss();
 	pendingSubmit = true;
+	// Sending is an explicit "show me what happens next", so it re-attaches the
+	// transcript to its bottom edge even if the reader had scrolled up.
+	scrollAnchor.follow();
 	runAction("submit", {
 		text,
 		attachmentIds: ui.attachments.map((attachment) => attachment.id),

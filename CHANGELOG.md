@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.2
+
+- Keep scrolling smooth while a reply streams in. The transcript was rebuilt
+  wholesale on every frame — all 150 rendered messages re-parsed from markdown,
+  re-sanitized, and every node in the scroll container replaced — so a streaming
+  reply spent the frame budget re-rendering history that had not changed, and
+  left the browser no stable node to anchor the scroll position to. Messages now
+  keep one node each and are rebuilt only when their own content changes, so a
+  streaming reply touches a single node per frame.
+- Stop short upward scrolls from snapping back to the bottom mid-stream."Follow
+  the newest message" was decided purely from distance to the bottom edge, with
+  a 96px allowance, so a small upward drag still looked like sitting at the
+  bottom and the next delta pulled the reader back down. Upward wheel and touch
+  gestures now detach the view immediately, before any scrolling happens, and
+  only arriving back at the bottom re-attaches it. Sending a message or switching
+  session still jumps to the newest message.
+- Measure the pinned turn label in its own frame instead of straight after the
+  transcript is written, so reading each prompt's position no longer forces a
+  synchronous re-layout of content that was just invalidated.
+
 ## 0.6.1
 
 - Share the image size limits and the JSON coercion helpers between the webview

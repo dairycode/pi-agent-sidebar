@@ -1,4 +1,4 @@
-# AGENT guide
+# AGENTS guide
 
 Guidance for AI agents and contributors working on this repository.
 

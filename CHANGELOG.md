@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.3
+
+- Remove the confirmation dialogs for starting a new session and deleting a
+  history session. Neither action needs a guard: pi keeps the current
+  conversation in session history when a new session starts, so nothing is
+  ever discarded, and deleting a history entry is routine list management.
+  Both now take effect immediately; the rename prompt is unchanged.
+- Stop the pristine first screen from showing a vertical scrollbar. The empty
+  placeholder occupied the full transcript height while the message list below
+  it kept its reserved top/bottom padding even with no children, so the empty
+  session always carried about 48px of phantom scrollable overflow. The
+  placeholder now fills the transcript out of flow and contributes no scroll
+  height of its own.
+
 ## 0.6.2
 
 - Keep scrolling smooth while a reply streams in. The transcript was rebuilt

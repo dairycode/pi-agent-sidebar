@@ -99,15 +99,6 @@
 	background: var(--pi-accent-hover);
 }
 
-.danger-button {
-	color: #fff;
-	background: color-mix(in srgb, var(--pi-danger) 78%, #000);
-}
-
-.danger-button:hover {
-	background: var(--pi-danger);
-}
-
 .secondary-button {
 	color: var(--vscode-button-secondaryForeground);
 	background: var(--vscode-button-secondaryBackground);

@@ -25,10 +25,7 @@ import {
 	containsDroppedResources,
 	extractDroppedResources,
 } from "./resourceDrop.js";
-import {
-	ModalController,
-	type ConfirmDialogOptions,
-} from "./ui/modalController.js";
+import { ModalController } from "./ui/modalController.js";
 import { positionPopupAbove } from "./ui/popupPosition.js";
 import { SelectController } from "./ui/selectController.js";
 import {
@@ -75,10 +72,6 @@ interface PendingAction {
 	attachmentIds?: string[];
 	referenceSnapshots?: ManagedComposerReference[];
 	stagedReferenceId?: string;
-}
-
-interface ConfirmOptions extends ConfirmDialogOptions {
-	dismissHistory?: boolean;
 }
 
 interface UiState {
@@ -271,7 +264,11 @@ const mentionController = new MentionController({
 		post({ type: "listWorkspaceFiles", requestId, query }),
 	commit: (file, token) => addMentionReference(file, token),
 	navigate: (directoryPath, token) =>
-		composerController.replaceRange(token.start, token.end, `@${directoryPath}/`),
+		composerController.replaceRange(
+			token.start,
+			token.end,
+			`@${directoryPath}/`,
+		),
 	announce,
 	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
 	position: positionMentionPanel,
@@ -587,7 +584,8 @@ elements.input.addEventListener("keydown", (event) => {
 		const reference = composerController.referenceAtOffset(
 			elements.input.selectionStart,
 		);
-		if (!reference || composerController.isPendingReference(reference.id)) return;
+		if (!reference || composerController.isPendingReference(reference.id))
+			return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
 		return;
@@ -713,22 +711,16 @@ elements.sessionList.addEventListener("keydown", (event) => {
 		return;
 	}
 	const nextIndex =
-		event.key === "ArrowDown" ? Math.min(index + 1, rows.length - 1) : index - 1;
+		event.key === "ArrowDown"
+			? Math.min(index + 1, rows.length - 1)
+			: index - 1;
 	rows[nextIndex]?.querySelector<HTMLButtonElement>(".session-open")?.focus();
 });
-elements.newSessionButton.addEventListener("click", () => {
-	if (ui.messages.length > 0) {
-		openConfirm({
-			title: "New session",
-			message: "The current conversation stays available in session history.",
-			confirmLabel: "New Session",
-			dismissHistory: true,
-			onConfirm: () => runAction("newSession"),
-		});
-	} else {
-		runAction("newSession");
-	}
-});
+// No confirmation: pi keeps the current conversation in session history, so
+// starting a new session never discards anything.
+elements.newSessionButton.addEventListener("click", () =>
+	runAction("newSession"),
+);
 elements.renameSessionButton.addEventListener("click", () =>
 	openRenamePrompt(),
 );
@@ -740,7 +732,8 @@ elements.messages.addEventListener("click", (event) => {
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
-			copyButton.closest(".code-block")?.querySelector("code")?.textContent ?? "";
+			copyButton.closest(".code-block")?.querySelector("code")?.textContent ??
+			"";
 		void navigator.clipboard
 			.writeText(code)
 			.then(() => showToast("Copied", "info"));
@@ -1073,7 +1066,9 @@ function reduceRpcEvent(event: JsonRecord): void {
 				id,
 				name: toolName,
 				args:
-					Object.keys(eventArgs).length > 0 ? eventArgs : (existing?.args ?? {}),
+					Object.keys(eventArgs).length > 0
+						? eventArgs
+						: (existing?.args ?? {}),
 				status,
 				output: extractResultText(event.result),
 				diff: extractResultDiff(event.result),
@@ -1292,7 +1287,10 @@ function renderConnectionBanner(): void {
 		const restart = document.createElement("button");
 		restart.type = "button";
 		restart.className = "text-button";
-		restart.append(createCodicon("refresh"), document.createTextNode(" Restart"));
+		restart.append(
+			createCodicon("refresh"),
+			document.createTextNode(" Restart"),
+		);
 		restart.addEventListener("click", () => runAction("restart"));
 		elements.connectionBanner.append(restart);
 	}
@@ -1484,7 +1482,9 @@ function linkifyWorkspacePaths(root: Element): void {
 			// already-linkified spans. Inline <code> is allowed so paths that
 			// pi wraps in backticks still become clickable.
 			if (
-				parent.closest("pre, a, .tool-call, .thinking-block, [data-workspace-path]")
+				parent.closest(
+					"pre, a, .tool-call, .thinking-block, [data-workspace-path]",
+				)
 			) {
 				return NodeFilter.FILTER_REJECT;
 			}
@@ -1552,7 +1552,9 @@ function renderAttachments(): void {
 		remove.setAttribute("aria-label", `Remove ${attachment.label}`);
 		remove.append(createCodicon("close"));
 		remove.addEventListener("click", () => {
-			ui.attachments = ui.attachments.filter((item) => item.id !== attachment.id);
+			ui.attachments = ui.attachments.filter(
+				(item) => item.id !== attachment.id,
+			);
 			post({ type: "removeAttachment", id: attachment.id });
 			scheduleRender();
 		});
@@ -1688,7 +1690,8 @@ function renderWidgets(): void {
 function renderRuntimeMeta(): void {
 	const parts: string[] = [];
 	const context = ui.stats?.contextUsage?.percent;
-	if (typeof context === "number") parts.push(`${Math.round(context)}% context`);
+	if (typeof context === "number")
+		parts.push(`${Math.round(context)}% context`);
 	if (typeof ui.stats?.cost === "number" && ui.stats.cost > 0)
 		parts.push(`$${ui.stats.cost.toFixed(3)}`);
 	const text = parts.join(" · ");
@@ -1775,15 +1778,11 @@ function renderSessions(): void {
 				: `Delete ${session.title}`,
 		);
 		deleteButton.append(createCodicon("trash"));
-		deleteButton.addEventListener("click", () => {
-			openConfirm({
-				title: "Delete session",
-				message: `Delete "${truncate(session.title, 72)}"? This cannot be undone.`,
-				confirmLabel: "Delete",
-				destructive: true,
-				onConfirm: () => runAction("deleteSession", { path: session.path }),
-			});
-		});
+		// Deliberately unconfirmed: deleting a history entry is a routine
+		// list-management action, and an extra modal makes cleanup tedious.
+		deleteButton.addEventListener("click", () =>
+			runAction("deleteSession", { path: session.path }),
+		);
 
 		const renameButton = document.createElement("button");
 		renameButton.type = "button";
@@ -1794,7 +1793,9 @@ function renderSessions(): void {
 			: "Open the session to rename it";
 		renameButton.setAttribute(
 			"aria-label",
-			session.active ? `Rename ${session.title}` : "Open the session to rename it",
+			session.active
+				? `Rename ${session.title}`
+				: "Open the session to rename it",
 		);
 		renameButton.append(createCodicon("edit"));
 		renameButton.addEventListener("click", () => openRenamePrompt());
@@ -1916,7 +1917,9 @@ function renderCommands(): void {
 		const empty = document.createElement("div");
 		empty.className = "command-list-empty";
 		empty.textContent =
-			ui.commands.length === 0 ? "No commands available" : "No matching commands";
+			ui.commands.length === 0
+				? "No commands available"
+				: "No matching commands";
 		elements.commandList.replaceChildren(empty);
 		setCommandActiveDescendant(undefined);
 		return;
@@ -2029,7 +2032,8 @@ function moveActiveCommand(delta: number): void {
 		? renderedCommandNames.indexOf(activeCommandName)
 		: -1;
 	const next =
-		(current + delta + renderedCommandNames.length) % renderedCommandNames.length;
+		(current + delta + renderedCommandNames.length) %
+		renderedCommandNames.length;
 	activeCommandName = renderedCommandNames[next];
 	highlightActiveCommand();
 }
@@ -2340,17 +2344,6 @@ function runAction(
 
 function post(message: WebviewToHostMessage): void {
 	vscode.postMessage(message);
-}
-
-function openConfirm(options: ConfirmOptions): void {
-	if (options.dismissHistory) dismissHistory();
-	modalController.openConfirm({
-		title: options.title,
-		message: options.message,
-		confirmLabel: options.confirmLabel,
-		destructive: options.destructive,
-		onConfirm: options.onConfirm,
-	});
 }
 
 /**

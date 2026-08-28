@@ -1,11 +1,3 @@
-export interface ConfirmDialogOptions {
-	title: string;
-	message: string;
-	confirmLabel: string;
-	onConfirm: () => void;
-	destructive?: boolean;
-}
-
 export interface TextPromptOptions {
 	title: string;
 	label: string;
@@ -38,29 +30,6 @@ export class ModalController {
 
 	public get isOpen(): boolean {
 		return !this.options.backdrop.hidden;
-	}
-
-	public openConfirm(options: ConfirmDialogOptions): void {
-		const dialog = this.createDialog(options.title);
-		const heading = this.document.createElement("h2");
-		heading.textContent = options.title;
-		const detail = this.document.createElement("p");
-		detail.textContent = options.message;
-		const actions = this.document.createElement("div");
-		actions.className = "modal-actions";
-		const cancel = this.createButton("Cancel", "secondary-button");
-		cancel.addEventListener("click", () => this.close());
-		const confirm = this.createButton(
-			options.confirmLabel,
-			options.destructive ? "danger-button" : "primary-button",
-		);
-		confirm.addEventListener("click", () => {
-			this.close();
-			options.onConfirm();
-		});
-		actions.append(cancel, confirm);
-		dialog.append(heading, detail, actions);
-		this.open(dialog, cancel);
 	}
 
 	public openTextPrompt(options: TextPromptOptions): void {

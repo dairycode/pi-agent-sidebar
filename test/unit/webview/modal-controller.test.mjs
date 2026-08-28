@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-const root = process.cwd();
-
 async function loadModalController() {
 	return loadBundledModule({
 		entry: "webview/ui/modalController.ts",
@@ -144,18 +142,19 @@ function createHarness(ModalController) {
 	return { controller, document, backdrop, inertRoots, returnFocus };
 }
 
-test("confirm modal owns inertness and restores focus before callback", async () => {
+test("modal owns inertness and restores focus before callback", async () => {
 	const loaded = await loadModalController();
 	try {
 		const state = createHarness(loaded.module.ModalController);
 		const observations = [];
-		state.controller.openConfirm({
-			title: "Delete session",
-			message: "This cannot be undone.",
-			confirmLabel: "Delete",
-			destructive: true,
-			onConfirm: () =>
+		state.controller.openTextPrompt({
+			title: "Rename session",
+			label: "Session name",
+			initialValue: "Old name",
+			confirmLabel: "Rename",
+			onSubmit: (value) =>
 				observations.push({
+					value,
 					open: state.controller.isOpen,
 					focus: state.document.activeElement,
 				}),
@@ -163,14 +162,18 @@ test("confirm modal owns inertness and restores focus before callback", async ()
 
 		assert.equal(state.controller.isOpen, true);
 		assert.ok(state.inertRoots.every((root) => root.inert));
-		assert.equal(state.document.activeElement.textContent, "Cancel");
-		const confirm = byText(state.backdrop, "Delete");
-		assert.equal(confirm.className, "danger-button");
+		const input = descendants(state.backdrop).find(
+			(element) => element.tagName === "INPUT",
+		);
+		assert.equal(state.document.activeElement, input);
+		const confirm = byText(state.backdrop, "Rename");
 		confirm.dispatch("click");
 
 		assert.equal(state.controller.isOpen, false);
 		assert.ok(state.inertRoots.every((root) => !root.inert));
-		assert.deepEqual(observations, [{ open: false, focus: state.returnFocus }]);
+		assert.deepEqual(observations, [
+			{ value: "Old name", open: false, focus: state.returnFocus },
+		]);
 	} finally {
 		delete globalThis.HTMLElement;
 		await loaded.dispose();
@@ -214,11 +217,12 @@ test("Escape and backdrop clicks close while inner clicks do not", async () => {
 	const loaded = await loadModalController();
 	try {
 		const state = createHarness(loaded.module.ModalController);
-		state.controller.openConfirm({
-			title: "Confirm",
-			message: "Continue?",
-			confirmLabel: "Continue",
-			onConfirm() {},
+		state.controller.openTextPrompt({
+			title: "Rename",
+			label: "Session name",
+			initialValue: "x",
+			confirmLabel: "Rename",
+			onSubmit() {},
 		});
 		const dialog = state.backdrop.children[0];
 		state.backdrop.dispatch("click", { target: dialog });
@@ -229,11 +233,12 @@ test("Escape and backdrop clicks close while inner clicks do not", async () => {
 		assert.equal(escape.prevented, 1);
 		assert.equal(state.controller.isOpen, false);
 
-		state.controller.openConfirm({
-			title: "Confirm",
-			message: "Continue?",
-			confirmLabel: "Continue",
-			onConfirm() {},
+		state.controller.openTextPrompt({
+			title: "Rename",
+			label: "Session name",
+			initialValue: "x",
+			confirmLabel: "Rename",
+			onSubmit() {},
 		});
 		state.backdrop.dispatch("click", { target: state.backdrop });
 		assert.equal(state.controller.isOpen, false);
@@ -247,19 +252,23 @@ test("Tab wraps focus within enabled modal controls", async () => {
 	const loaded = await loadModalController();
 	try {
 		const state = createHarness(loaded.module.ModalController);
-		state.controller.openConfirm({
-			title: "Confirm",
-			message: "Continue?",
-			confirmLabel: "Continue",
-			onConfirm() {},
+		state.controller.openTextPrompt({
+			title: "Rename session",
+			label: "Session name",
+			initialValue: "x",
+			confirmLabel: "Rename",
+			onSubmit() {},
 		});
+		const input = descendants(state.backdrop).find(
+			(element) => element.tagName === "INPUT",
+		);
 		const cancel = byText(state.backdrop, "Cancel");
-		const confirm = byText(state.backdrop, "Continue");
+		const confirm = byText(state.backdrop, "Rename");
 		confirm.focus();
 		const forward = keyboardEvent("Tab");
 		state.controller.handleKeydown(forward);
 		assert.equal(forward.prevented, 1);
-		assert.equal(state.document.activeElement, cancel);
+		assert.equal(state.document.activeElement, input);
 
 		const reverse = keyboardEvent("Tab", true);
 		state.controller.handleKeydown(reverse);
@@ -271,7 +280,7 @@ test("Tab wraps focus within enabled modal controls", async () => {
 		const single = keyboardEvent("Tab");
 		state.controller.handleKeydown(single);
 		assert.equal(single.prevented, 1);
-		assert.equal(state.document.activeElement, cancel);
+		assert.equal(state.document.activeElement, input);
 	} finally {
 		delete globalThis.HTMLElement;
 		await loaded.dispose();

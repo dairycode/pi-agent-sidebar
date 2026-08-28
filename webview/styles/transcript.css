@@ -128,14 +128,29 @@
 	cursor: inherit;
 }
 
+/* Out of flow: an empty transcript still contains `.messages`, whose 14/34px
+   padding survives even with no children, so an in-flow min-height: 100%
+   placeholder always overflowed the scroll container by that much and showed a
+   scrollbar on the pristine first screen. `.transcript` is position: relative,
+   so inset: 0 fills it exactly and the placeholder contributes no scroll
+   height of its own. */
 .empty-state {
+	position: absolute;
+	inset: 0;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	min-height: 100%;
 	padding: 28px 20px 76px;
 	text-align: center;
+}
+
+/* The connection banner is sticky at the top and can share the screen with the
+   placeholder (disconnected with no messages). It paints above (z-index 3), so
+   just keep the wordmark clear of it — including the short-pane layout in
+   responsive.css that top-aligns the placeholder. */
+.transcript:has(> .connection-banner:not([hidden])) .empty-state {
+	padding-top: 50px;
 }
 
 .empty-logo {
@@ -676,8 +691,7 @@
 
 .text-button,
 .primary-button,
-.secondary-button,
-.danger-button {
+.secondary-button {
 	min-height: 28px;
 	padding: 4px 9px;
 	border-radius: 4px;

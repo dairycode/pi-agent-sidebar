@@ -110,7 +110,7 @@ Run `npm run verify` before submitting a pull request.
 - Never commit credentials, session transcripts, workspace data, or local VSIX
   packages.
 
-See `AGENT.md` for the project's design principles and scope.
+See `AGENTS.md` for the project's design principles and scope.
 
 ## Tests
 

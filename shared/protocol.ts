@@ -25,35 +25,6 @@ export interface PiMessage extends JsonRecord {
 	display?: boolean;
 }
 
-/**
- * The append-only session entry returned by pi's `get_entries` command.
- * `id` and `parentId` are opaque pi-owned identities; the host must never
- * derive them from a transcript array index or message content.
- */
-export interface PiSessionEntry extends JsonRecord {
-	type: string;
-	id: string;
-	parentId: string | null;
-	timestamp: string;
-}
-
-export interface PiSessionEntries extends JsonRecord {
-	entries: PiSessionEntry[];
-	leafId: string | null;
-}
-
-export interface PiSessionTreeNode extends JsonRecord {
-	entry: PiSessionEntry;
-	children: PiSessionTreeNode[];
-	label?: string;
-	labelTimestamp?: string;
-}
-
-export interface PiSessionTree extends JsonRecord {
-	tree: PiSessionTreeNode[];
-	leafId: string | null;
-}
-
 /** A user message that pi explicitly says can be used as a fork cursor. */
 export interface ForkCandidate extends JsonRecord {
 	entryId: string;
@@ -72,8 +43,6 @@ export interface PiCapabilities {
 	clone: boolean;
 	fork: boolean;
 	forkMessages: boolean;
-	entries: boolean;
-	tree: boolean;
 }
 
 export interface PiTimeContext {
@@ -224,8 +193,6 @@ export interface SessionSummary {
 	excerpt: string;
 	createdAt: string;
 	lastActivityAt?: string;
-	firstActivityAt?: string;
-	messageCount?: number;
 	active: boolean;
 }
 
@@ -412,8 +379,7 @@ export function parseWebviewMessage(
 			128,
 		);
 		const references = parseReferenceIdentities(message.references);
-		if (!actionId || text === undefined || !attachmentIds || !references)
-			return;
+		if (!actionId || text === undefined || !attachmentIds || !references) return;
 		return { type, actionId, text, attachmentIds, references };
 	}
 	if (type === "forkSession") {

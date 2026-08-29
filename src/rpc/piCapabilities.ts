@@ -12,8 +12,6 @@ const OPTIMISTIC: PiCapabilities = {
 	clone: true,
 	fork: true,
 	forkMessages: true,
-	entries: true,
-	tree: true,
 };
 
 /**

@@ -41,10 +41,7 @@ test("Pi snapshot validation accepts supported records", async () => {
 test("Pi snapshot validation rejects malformed shapes and oversized content", async () => {
 	const loaded = await loadValidation();
 	try {
-		assert.throws(
-			() => loaded.module.parsePiState(null),
-			/must be an object/iu,
-		);
+		assert.throws(() => loaded.module.parsePiState(null), /must be an object/iu);
 		assert.throws(
 			() => loaded.module.parseMessagesResponse({ messages: "not-an-array" }),
 			/must be an array/iu,
@@ -265,124 +262,6 @@ test("fork candidates keep opaque entry ids and reject inferred identities", asy
 		assert.throws(
 			() => parseForkMessagesResponse({ messages: "nope" }),
 			/must be an array/iu,
-		);
-	} finally {
-		await loaded.dispose();
-	}
-});
-
-test("session entries preserve ids, parent links, and the leaf cursor", async () => {
-	const loaded = await loadValidation();
-	try {
-		const { parseSessionEntriesResponse } = loaded.module;
-		const parsed = parseSessionEntriesResponse({
-			entries: [
-				{
-					type: "message",
-					id: "user-one",
-					parentId: null,
-					timestamp: "2026-01-02T03:04:01.000Z",
-					message: { role: "user", content: "First prompt" },
-				},
-				{
-					type: "thinking_level_change",
-					id: "level-one",
-					parentId: "user-one",
-					timestamp: "2026-01-02T03:04:02.000Z",
-					thinkingLevel: "max",
-				},
-			],
-			leafId: "level-one",
-		});
-		assert.deepEqual(
-			parsed.entries.map((entry) => [entry.id, entry.parentId, entry.type]),
-			[
-				["user-one", null, "message"],
-				["level-one", "user-one", "thinking_level_change"],
-			],
-		);
-		assert.equal(parsed.leafId, "level-one");
-		// An empty session reports a null leaf rather than omitting the field.
-		assert.deepEqual(
-			parseSessionEntriesResponse({ entries: [], leafId: null }),
-			{ entries: [], leafId: null },
-		);
-		assert.throws(
-			() =>
-				parseSessionEntriesResponse({
-					entries: [
-						{ type: "message", parentId: null, timestamp: "2026-01-02" },
-					],
-					leafId: null,
-				}),
-			/id must be a string/iu,
-		);
-		assert.throws(
-			() =>
-				parseSessionEntriesResponse({
-					entries: [
-						{
-							type: "message",
-							id: "one",
-							parentId: null,
-							timestamp: "2026-01-02T03:04:01.000Z",
-						},
-						{
-							type: "message",
-							id: "one",
-							parentId: null,
-							timestamp: "2026-01-02T03:04:02.000Z",
-						},
-					],
-					leafId: "one",
-				}),
-			/duplicated/iu,
-		);
-		assert.throws(
-			() => parseSessionEntriesResponse({ entries: [], leafId: "" }),
-			/must not be empty/iu,
-		);
-	} finally {
-		await loaded.dispose();
-	}
-});
-
-test("session tree parsing is bounded in depth and node count", async () => {
-	const loaded = await loadValidation();
-	try {
-		const { parseSessionTreeResponse, MAX_SESSION_TREE_DEPTH } = loaded.module;
-		const entry = (id, parentId) => ({
-			type: "message",
-			id,
-			parentId,
-			timestamp: "2026-01-02T03:04:01.000Z",
-		});
-		const parsed = parseSessionTreeResponse({
-			tree: [
-				{
-					entry: entry("root", null),
-					children: [{ entry: entry("child", "root"), children: [] }],
-				},
-			],
-			leafId: "child",
-		});
-		assert.equal(parsed.tree[0].entry.id, "root");
-		assert.equal(parsed.tree[0].children[0].entry.id, "child");
-		assert.equal(parsed.leafId, "child");
-
-		// A pathological chain must fail loudly instead of blowing the stack.
-		let deep = { entry: entry("leaf-0", null), children: [] };
-		for (let index = 1; index <= MAX_SESSION_TREE_DEPTH + 2; index += 1) {
-			deep = { entry: entry(`node-${index}`, null), children: [deep] };
-		}
-		assert.throws(
-			() => parseSessionTreeResponse({ tree: [deep], leafId: "leaf-0" }),
-			/depth limit/iu,
-		);
-		assert.throws(
-			() =>
-				parseSessionTreeResponse({ tree: [{ children: [] }], leafId: null }),
-			/entry must be an object/iu,
 		);
 	} finally {
 		await loaded.dispose();

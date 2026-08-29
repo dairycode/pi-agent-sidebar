@@ -217,10 +217,7 @@ export class PiViewProvider
 		this.missedPostWhileHidden = false;
 		if (!this.client?.isRunning) return;
 		try {
-			await Promise.all([
-				this.syncAttachments(),
-				this.syncComposerReferences(),
-			]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
 		} catch (error) {
 			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
@@ -284,9 +281,7 @@ export class PiViewProvider
 		try {
 			if (kind === "explainFile") {
 				const { document } = editor;
-				if (
-					shouldSnapshotFileReference(document.uri.scheme, document.isDirty)
-				) {
+				if (shouldSnapshotFileReference(document.uri.scheme, document.isDirty)) {
 					const fullRange = new vscode.Selection(
 						document.positionAt(0),
 						document.positionAt(document.getText().length),
@@ -346,9 +341,7 @@ export class PiViewProvider
 			title: "Rename Pi Session",
 			prompt: "Enter a display name for the current session.",
 			value:
-				typeof this.state.sessionName === "string"
-					? this.state.sessionName
-					: "",
+				typeof this.state.sessionName === "string" ? this.state.sessionName : "",
 			ignoreFocusOut: true,
 		});
 		if (name === undefined) return;
@@ -453,10 +446,7 @@ export class PiViewProvider
 			await this.waitForSessionReplacement(client, generation, previous);
 			this.composerReferenceStore.consume(references);
 			await this.attachmentStore.removeResolved(attachments);
-			await Promise.all([
-				this.syncAttachments(),
-				this.syncComposerReferences(),
-			]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
 			await this.sendSessionList();
 			return true;
@@ -472,8 +462,7 @@ export class PiViewProvider
 		if (
 			this.workspaceFolder &&
 			folders.some(
-				(folder) =>
-					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+				(folder) => folder.uri.toString() === this.workspaceFolder?.uri.toString(),
 			)
 		) {
 			return;
@@ -535,10 +524,7 @@ export class PiViewProvider
 			switch (message.type) {
 				case "ready": {
 					this.webviewReady = true;
-					await Promise.all([
-						this.syncAttachments(),
-						this.syncComposerReferences(),
-					]);
+					await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 					const wasRunning = Boolean(this.client?.isRunning);
 					await this.ensureClient();
 					if (wasRunning) await this.refreshSnapshot();
@@ -561,9 +547,7 @@ export class PiViewProvider
 					break;
 				}
 				case "abort": {
-					await this.respondToAction(message.actionId, () =>
-						this.abortPrompt(),
-					);
+					await this.respondToAction(message.actionId, () => this.abortPrompt());
 					break;
 				}
 				case "newSession": {
@@ -578,9 +562,7 @@ export class PiViewProvider
 					break;
 				}
 				case "cloneSession": {
-					await this.respondToAction(message.actionId, () =>
-						this.cloneSession(),
-					);
+					await this.respondToAction(message.actionId, () => this.cloneSession());
 					break;
 				}
 				case "listForkCandidates": {
@@ -626,9 +608,7 @@ export class PiViewProvider
 					break;
 				}
 				case "compact": {
-					await this.respondToAction(message.actionId, () =>
-						this.compactSession(),
-					);
+					await this.respondToAction(message.actionId, () => this.compactSession());
 					break;
 				}
 				case "restart": {
@@ -1049,8 +1029,16 @@ export class PiViewProvider
 		);
 	}
 
+	/**
+	 * Guards the new-session handler against a double click.
+	 *
+	 * The assert runs before the handler enqueues its own mutation, so any
+	 * positive count means another session operation is already in flight; the
+	 * `> 1` form would let a second click through while the first is still
+	 * running and create a second, unintended session.
+	 */
 	private assertNoSessionMutationPending(): void {
-		if (this.sessionMutationPending > 1)
+		if (this.sessionMutationPending > 0)
 			throw new Error("A session operation is already in progress.");
 	}
 
@@ -1083,8 +1071,7 @@ export class PiViewProvider
 					previous.sessionId !== next.sessionId) ||
 				(previous.sessionFile !== undefined &&
 					next.sessionFile !== undefined &&
-					path.resolve(previous.sessionFile) !==
-						path.resolve(next.sessionFile));
+					path.resolve(previous.sessionFile) !== path.resolve(next.sessionFile));
 			const noIdentityToCompare =
 				!hadIdentity && !next.sessionId && !next.sessionFile;
 			if (expectedPathMatches || identityChanged || noIdentityToCompare) {
@@ -1135,8 +1122,7 @@ export class PiViewProvider
 			await this.post({
 				type: "bootstrap",
 				phase: "no-workspace",
-				detail:
-					"Trust this workspace to let pi read, edit, and run project files.",
+				detail: "Trust this workspace to let pi read, edit, and run project files.",
 			});
 			return;
 		}
@@ -1212,9 +1198,7 @@ export class PiViewProvider
 		try {
 			await client.request({ type: "set_auto_retry", enabled: autoRetry });
 		} catch (error) {
-			this.output.appendLine(
-				`[runtime] set_auto_retry: ${toErrorMessage(error)}`,
-			);
+			this.output.appendLine(`[runtime] set_auto_retry: ${toErrorMessage(error)}`);
 		}
 		await this.refreshSnapshot();
 	}
@@ -1277,8 +1261,7 @@ export class PiViewProvider
 				const message =
 					typeof event.message === "string" ? event.message : "Pi notification";
 				const destination = notificationDestination(event.notifyType);
-				if (destination === "error")
-					void vscode.window.showErrorMessage(message);
+				if (destination === "error") void vscode.window.showErrorMessage(message);
 				else if (destination === "warning")
 					void vscode.window.showWarningMessage(message);
 				else this.output.appendLine(`[pi notification] ${message}`);
@@ -1300,16 +1283,13 @@ export class PiViewProvider
 				return;
 			}
 			if (["setStatus", "setWidget"].includes(method)) {
-				if (this.client === client)
-					await this.post({ type: "rpcEvent", event });
+				if (this.client === client) await this.post({ type: "rpcEvent", event });
 				return;
 			}
 
 			if (method === "select") {
 				const options = Array.isArray(event.options)
-					? event.options.filter(
-							(item): item is string => typeof item === "string",
-						)
+					? event.options.filter((item): item is string => typeof item === "string")
 					: [];
 				const value = await vscode.window.showQuickPick(options, {
 					title: typeof event.title === "string" ? event.title : "Pi",
@@ -1341,9 +1321,7 @@ export class PiViewProvider
 				const value = await vscode.window.showInputBox({
 					title: typeof event.title === "string" ? event.title : "Pi input",
 					placeHolder:
-						typeof event.placeholder === "string"
-							? event.placeholder
-							: undefined,
+						typeof event.placeholder === "string" ? event.placeholder : undefined,
 					ignoreFocusOut: true,
 				});
 				await this.notifyExtensionUiResponse(
@@ -1359,12 +1337,9 @@ export class PiViewProvider
 				});
 				await vscode.window.showTextDocument(document, { preview: true });
 				const choice = await vscode.window.showInformationMessage(
-					typeof event.title === "string"
-						? event.title
-						: "Edit the pi response",
+					typeof event.title === "string" ? event.title : "Edit the pi response",
 					{
-						detail:
-							"Edit the opened document, then submit or cancel this request.",
+						detail: "Edit the opened document, then submit or cancel this request.",
 					},
 					"Submit",
 					"Cancel",
@@ -1672,8 +1647,7 @@ export class PiViewProvider
 		if (
 			this.workspaceFolder &&
 			folders.some(
-				(folder) =>
-					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+				(folder) => folder.uri.toString() === this.workspaceFolder?.uri.toString(),
 			)
 		) {
 			return this.workspaceFolder;

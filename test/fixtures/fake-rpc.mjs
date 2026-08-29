@@ -13,57 +13,6 @@ const FORK_MESSAGES = {
 	],
 };
 
-const ENTRIES = {
-	entries: [
-		{
-			type: "message",
-			id: "user-one",
-			parentId: null,
-			timestamp: "2026-01-02T03:04:01.000Z",
-			message: {
-				role: "user",
-				content: "First prompt",
-				timestamp: 1767323041000,
-			},
-		},
-		{
-			type: "message",
-			id: "assistant-one",
-			parentId: "user-one",
-			timestamp: "2026-01-02T03:04:02.000Z",
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "First answer" }],
-				timestamp: 1767323042000,
-				stopReason: "stop",
-			},
-		},
-		{
-			type: "session_info",
-			id: "info-one",
-			parentId: "assistant-one",
-			timestamp: "2026-01-02T03:04:05.000Z",
-			name: "Probe",
-		},
-	],
-	leafId: "info-one",
-};
-
-const TREE = {
-	tree: [
-		{
-			entry: ENTRIES.entries[0],
-			children: [
-				{
-					entry: ENTRIES.entries[1],
-					children: [{ entry: ENTRIES.entries[2], children: [] }],
-				},
-			],
-		},
-	],
-	leafId: "info-one",
-};
-
 function respond(command, payload) {
 	process.stdout.write(
 		`${JSON.stringify({
@@ -99,14 +48,6 @@ process.stdin.on("data", (chunk) => {
 		}
 		if (command.type === "get_fork_messages") {
 			respond(command, FORK_MESSAGES);
-			continue;
-		}
-		if (command.type === "get_entries") {
-			respond(command, ENTRIES);
-			continue;
-		}
-		if (command.type === "get_tree") {
-			respond(command, TREE);
 			continue;
 		}
 		if (command.type === "cancelled_mutation") {

@@ -8,7 +8,6 @@ import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
 import {
 	formatAbsoluteTime,
-	formatClockTime,
 	formatCost,
 	formatDaySeparator,
 	formatRelativeTime,
@@ -31,9 +30,7 @@ import {
 	friendlyToolName,
 	isRenderableMessage,
 	messageHtml,
-	messagePlainText,
 	messageRenderSignature,
-	quotedText,
 } from "./transcript/renderer.js";
 import {
 	containsDroppedResources,
@@ -135,8 +132,6 @@ const ui: UiState = {
 		clone: true,
 		fork: true,
 		forkMessages: true,
-		entries: true,
-		tree: true,
 	},
 	timeContext: { locale: "", hostNowMs: 0 },
 	clockSkewMs: 0,
@@ -848,13 +843,6 @@ window.addEventListener("resize", () => selectorController.reposition());
 
 elements.messages.addEventListener("click", (event) => {
 	const target = event.target as HTMLElement;
-	const actionButton = target.closest<HTMLButtonElement>(
-		"[data-message-action]",
-	);
-	if (actionButton) {
-		handleMessageAction(actionButton);
-		return;
-	}
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
@@ -1741,132 +1729,7 @@ function createMessageNode(
 	enhanceCodeBlocks(node);
 	linkifyWorkspacePaths(node);
 	bindImageReflow(node);
-	appendMessageFooter(node, message, entry.key);
 	return node;
-}
-
-/**
- * Whether messages carry a hover footer (timestamp, copy, quote).
- *
- * Off while the transcript is being matched to pi's own rendering: pi shows
- * neither, and the footer overlaps the gap above the next block, which reads as
- * a stray control floating between messages. Flip to `true` to bring it back —
- * the builder below and its delegated handlers are all still wired.
- */
-const SHOW_MESSAGE_FOOTER = false;
-
-/**
- * Adds the timestamp and per-message actions.
- *
- * Only user and settled assistant messages get a footer: a tool result or
- * hidden custom message would just add noise, and a streaming message has
- * neither a final time nor stable text to copy.
- *
- * Appended inside `.message`, not onto the slot: the slot is `display: contents`,
- * so a child of it would become a flex item of `.messages` and take the full
- * 20px inter-message gap.
- */
-function appendMessageFooter(
-	node: Element,
-	message: PiMessage,
-	messageKeyValue: string,
-): void {
-	if (!SHOW_MESSAGE_FOOTER) return;
-	if (message.role !== "user" && message.role !== "assistant") return;
-	if (message === ui.streamingMessage) return;
-	const host = node.querySelector(".message");
-	if (!host) return;
-
-	const footer = document.createElement("div");
-	footer.className = "message-footer";
-
-	const epochMs = normalizeEpochMs(message.timestamp);
-	if (epochMs !== undefined) {
-		const time = document.createElement("time");
-		time.className = "message-time";
-		time.dateTime = new Date(epochMs).toISOString();
-		// A wall-clock label, and deliberately no `data-epoch-ms`: the day is already
-		// established by the day separator, so this label never goes stale and must
-		// not be rewritten into a relative one by `refreshRelativeTimes`.
-		const locale = ui.timeContext.locale || undefined;
-		const absolute = formatAbsoluteTime(epochMs, locale);
-		time.textContent = formatClockTime(epochMs, locale);
-		time.title = absolute;
-		time.setAttribute("aria-label", absolute);
-		footer.append(time);
-	}
-
-	// Actions are only offered when there is body text to act on: an
-	// image-only or tool-only message has nothing to copy or quote.
-	if (messagePlainText(message).length > 0) {
-		const actions = document.createElement("div");
-		actions.className = "message-actions";
-		for (const [action, icon, label] of [
-			["copy", "copy", "Copy message"],
-			["quote", "reply", "Quote in input"],
-		] as const) {
-			const button = document.createElement("button");
-			button.type = "button";
-			button.className = "message-action icon-button";
-			button.title = label;
-			button.setAttribute("aria-label", label);
-			// The key is carried on the node so the delegated handler can find the
-			// original message; copying the text into an attribute would duplicate
-			// the whole message into the DOM.
-			button.dataset.messageAction = action;
-			button.dataset.messageKey = messageKeyValue;
-			button.append(createCodicon(icon));
-			actions.append(button);
-		}
-		footer.append(actions);
-	}
-
-	if (footer.childNodes.length > 0) host.append(footer);
-}
-
-/**
- * Runs one per-message action.
- *
- * The text is re-derived from the original message rather than read back from
- * the DOM, so it never carries button labels, timestamps, or tool chrome.
- */
-function handleMessageAction(button: HTMLButtonElement): void {
-	const key = button.dataset.messageKey;
-	const message = key ? messageByKey(key) : undefined;
-	const text = message ? messagePlainText(message) : "";
-	if (!text) {
-		showToast("This message has no text to use", "error");
-		return;
-	}
-	if (button.dataset.messageAction === "copy") {
-		void navigator.clipboard.writeText(text).then(
-			() => {
-				showToast("Message copied", "info");
-				announce("Message copied");
-			},
-			() => showToast("Could not copy the message", "error"),
-		);
-		return;
-	}
-	// Quoting appends to the draft instead of replacing it: the reader may
-	// already have typed the question the quote is meant to support.
-	const draft = elements.input.value;
-	const separator = draft.length === 0 || draft.endsWith("\n\n") ? "" : "\n\n";
-	composerController.setText(`${draft}${separator}${quotedText(text)}\n\n`);
-	announce("Message quoted in the input");
-}
-
-/**
- * Finds a rendered message by its transcript key.
- *
- * Resolved at click time rather than captured in a closure so a rebuilt node
- * cannot hold a stale message object.
- */
-function messageByKey(key: string): PiMessage | undefined {
-	for (const message of ui.messages) {
-		if (messageKey(message) === key) return message;
-	}
-	return undefined;
 }
 
 /**

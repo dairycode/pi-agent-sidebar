@@ -59,10 +59,7 @@ test("relative labels stay compact and never read as negative", async () => {
 		assert.equal(formatRelativeTime(now, now, "en-US"), "just now");
 		assert.equal(formatRelativeTime(now - 59_000, now, "en-US"), "just now");
 		assert.equal(formatRelativeTime(now - MINUTE, now, "en-US"), "1m ago");
-		assert.equal(
-			formatRelativeTime(now - 59 * MINUTE, now, "en-US"),
-			"59m ago",
-		);
+		assert.equal(formatRelativeTime(now - 59 * MINUTE, now, "en-US"), "59m ago");
 		assert.equal(formatRelativeTime(now - HOUR, now, "en-US"), "1h ago");
 		assert.equal(formatRelativeTime(now - 23 * HOUR, now, "en-US"), "23h ago");
 		// Past a day it becomes a short date rather than a growing hour count.
@@ -70,28 +67,6 @@ test("relative labels stay compact and never read as negative", async () => {
 		// Host/webview clock skew can put a message slightly in the future; that
 		// must read as the present, not as a negative age.
 		assert.equal(formatRelativeTime(now + 5_000, now, "en-US"), "just now");
-	} finally {
-		await loaded.dispose();
-	}
-});
-
-test("a message stamp is an absolute clock time, not a relative age", async () => {
-	const loaded = await loadMessageTime();
-	try {
-		const { formatClockTime } = loaded.module;
-		const at = Date.parse("2026-03-01T12:34:56.000Z");
-		// The transcript already carries day separators, so only the time of day is
-		// missing. Asserted in a fixed zone because the label is local by design.
-		const label = formatClockTime(at, "en-GB");
-		assert.match(label, /^\d{2}:\d{2}$/u);
-		// Never goes stale, so it needs no refresh pass: the same input gives the
-		// same label regardless of when it is rendered.
-		assert.equal(formatClockTime(at, "en-GB"), label);
-		// A malformed locale falls back rather than throwing, matching the other
-		// formatters. `!` is used because it is structurally invalid: something like
-		// `not-a-locale` parses as a valid tag and silently resolves to the default
-		// locale, so it would not exercise the fallback at all.
-		assert.match(formatClockTime(at, "!"), /\d{2}:\d{2}/u);
 	} finally {
 		await loaded.dispose();
 	}
@@ -171,28 +146,6 @@ test("usage formatting keeps null distinguishable from zero", async () => {
 		// A sub-cent cost keeps enough precision to not read as free.
 		assert.equal(formatCost(0.0002, "en-US"), "$0.0002");
 		assert.equal(formatCost(null, "en-US"), "—");
-	} finally {
-		await loaded.dispose();
-	}
-});
-
-test("duration is a wall-clock span and refuses impossible ranges", async () => {
-	const loaded = await loadMessageTime();
-	try {
-		const { formatDuration } = loaded.module;
-		const start = Date.parse("2026-03-01T12:00:00.000Z");
-		assert.equal(formatDuration(start, start + 30_000), "under a minute");
-		assert.equal(formatDuration(start, start + 5 * MINUTE), "5 min");
-		assert.equal(formatDuration(start, start + 2 * HOUR), "2 h");
-		assert.equal(
-			formatDuration(start, start + 2 * HOUR + 15 * MINUTE),
-			"2 h 15 min",
-		);
-		assert.equal(formatDuration(start, start + 3 * DAY), "3 d");
-		// An end before the start means the inputs cannot be trusted.
-		assert.equal(formatDuration(start, start - HOUR), undefined);
-		assert.equal(formatDuration(undefined, start), undefined);
-		assert.equal(formatDuration(start, undefined), undefined);
 	} finally {
 		await loaded.dispose();
 	}

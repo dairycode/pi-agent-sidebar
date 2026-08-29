@@ -96,10 +96,7 @@ async function readSessionLines(
 	const handle = await open(filePath, "r");
 	try {
 		const headLength = Math.min(size, HEAD_READ_BYTES);
-		const tailLength = Math.min(
-			Math.max(0, size - headLength),
-			TAIL_READ_BYTES,
-		);
+		const tailLength = Math.min(Math.max(0, size - headLength), TAIL_READ_BYTES);
 		const head = await readBytes(handle, headLength, 0);
 		const tailOffset = Math.max(0, size - tailLength);
 		const tail = await readBytes(handle, tailLength, tailOffset);
@@ -110,11 +107,7 @@ async function readSessionLines(
 		}
 		return {
 			lines: [
-				...splitCompleteLines(
-					head.toString("utf8"),
-					true,
-					head.at(-1) === 0x0a,
-				),
+				...splitCompleteLines(head.toString("utf8"), true, head.at(-1) === 0x0a),
 				...splitCompleteLines(
 					tail.toString("utf8"),
 					tailStartsAtLineBoundary,
@@ -187,15 +180,6 @@ function laterTimestamp(
 	return right.epochMs > left.epochMs ? right : left;
 }
 
-function earlierTimestamp(
-	left: SessionTimestamp | undefined,
-	right: SessionTimestamp | undefined,
-): SessionTimestamp | undefined {
-	if (!left) return right;
-	if (!right) return left;
-	return right.epochMs < left.epochMs ? right : left;
-}
-
 function activityTimestamp(
 	entry: Record<string, unknown>,
 ): SessionTimestamp | undefined {
@@ -246,9 +230,7 @@ async function parseSessionSummary(
 
 		let sessionName = "";
 		let firstUserMessage = "";
-		let firstActivity: SessionTimestamp | undefined;
 		let lastActivity: SessionTimestamp | undefined;
-		let messageCount = 0;
 		for (const line of sessionLines.lines.slice(1)) {
 			let parsedEntry: unknown;
 			try {
@@ -266,7 +248,6 @@ async function parseSessionSummary(
 			if (entry.type === "session_info" && typeof entry.name === "string")
 				sessionName = entry.name;
 			if (entry.type === "message") {
-				messageCount += 1;
 				if (!firstUserMessage) {
 					const message =
 						entry.message &&
@@ -281,7 +262,6 @@ async function parseSessionSummary(
 				}
 			}
 			const activity = activityTimestamp(entry);
-			firstActivity = earlierTimestamp(firstActivity, activity);
 			lastActivity = laterTimestamp(lastActivity, activity);
 		}
 
@@ -299,8 +279,6 @@ async function parseSessionSummary(
 			excerpt: excerpt.slice(0, 100),
 			createdAt: createdAt.value,
 			lastActivityAt: effectiveLastActivity.value,
-			...(firstActivity ? { firstActivityAt: firstActivity.value } : {}),
-			...(sessionLines.complete ? { messageCount } : {}),
 			active: activePath === filePath,
 		};
 	} catch {
@@ -346,14 +324,12 @@ export async function listProjectSessions(
 	return sessions
 		.filter((session): session is SessionSummary => Boolean(session))
 		.sort((left, right) => {
-			const leftActivity =
-				Date.parse(left.lastActivityAt ?? left.createdAt) || 0;
+			const leftActivity = Date.parse(left.lastActivityAt ?? left.createdAt) || 0;
 			const rightActivity =
 				Date.parse(right.lastActivityAt ?? right.createdAt) || 0;
 			return (
 				rightActivity - leftActivity ||
-				(Date.parse(right.createdAt) || 0) -
-					(Date.parse(left.createdAt) || 0) ||
+				(Date.parse(right.createdAt) || 0) - (Date.parse(left.createdAt) || 0) ||
 				left.path.localeCompare(right.path)
 			);
 		});

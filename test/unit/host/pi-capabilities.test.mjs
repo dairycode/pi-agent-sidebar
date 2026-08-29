@@ -56,8 +56,6 @@ test("capability tracker starts optimistic and only downgrades on real evidence"
 			clone: true,
 			fork: true,
 			forkMessages: true,
-			entries: true,
-			tree: true,
 		});
 
 		// An argument error leaves the capability enabled.
@@ -79,10 +77,13 @@ test("capability tracker starts optimistic and only downgrades on real evidence"
 		tracker.reset();
 		assert.equal(tracker.isAvailable("clone"), true);
 
-		tracker.recordFailure("tree", new Error("Unknown command: get_tree"));
-		assert.equal(tracker.isAvailable("tree"), false);
-		tracker.recordSuccess("tree");
-		assert.equal(tracker.isAvailable("tree"), true);
+		tracker.recordFailure(
+			"forkMessages",
+			new Error("Unknown command: get_fork_messages"),
+		);
+		assert.equal(tracker.isAvailable("forkMessages"), false);
+		tracker.recordSuccess("forkMessages");
+		assert.equal(tracker.isAvailable("forkMessages"), true);
 
 		// The snapshot is a copy: mutating it must not reach the tracker.
 		const snapshot = tracker.snapshot();

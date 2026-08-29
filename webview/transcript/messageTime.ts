@@ -44,26 +44,6 @@ export function formatRelativeTime(
 	return formatShortDate(epochMs, locale);
 }
 
-/**
- * Wall-clock label for a transcript message, e.g. `14:32`.
- *
- * Absolute rather than relative: the transcript already carries day separators,
- * so the day is established by context and only the time of day is missing. A
- * bare relative label ("3h") answers a question the reader was not asking and
- * has to be decoded against the current time. It also never goes stale, so a
- * message stamp needs no refresh pass — unlike the session list, where recency
- * is the point.
- */
-export function formatClockTime(epochMs: number, locale?: string): string {
-	try {
-		return new Intl.DateTimeFormat(locale || undefined, {
-			timeStyle: "short",
-		}).format(epochMs);
-	} catch {
-		return new Date(epochMs).toISOString().slice(11, 16);
-	}
-}
-
 export function formatShortDate(epochMs: number, locale?: string): string {
 	try {
 		return new Intl.DateTimeFormat(locale || undefined, {
@@ -207,29 +187,4 @@ export function formatCost(value: unknown, locale?: string): string {
 	} catch {
 		return `$${value.toFixed(4)}`;
 	}
-}
-
-/**
- * Wall-clock span between the first and last activity.
- *
- * Explicitly a wall-clock span, not compute time: the gap includes however long
- * the user was away from the keyboard.
- */
-export function formatDuration(
-	fromEpochMs: number | undefined,
-	toEpochMs: number | undefined,
-): string | undefined {
-	if (fromEpochMs === undefined || toEpochMs === undefined) return undefined;
-	const span = toEpochMs - fromEpochMs;
-	if (!Number.isFinite(span) || span < 0) return undefined;
-	if (span < MINUTE_MS) return "under a minute";
-	if (span < HOUR_MS) return `${Math.floor(span / MINUTE_MS)} min`;
-	if (span < DAY_MS) {
-		const hours = Math.floor(span / HOUR_MS);
-		const minutes = Math.floor((span % HOUR_MS) / MINUTE_MS);
-		return minutes > 0 ? `${hours} h ${minutes} min` : `${hours} h`;
-	}
-	const days = Math.floor(span / DAY_MS);
-	const hours = Math.floor((span % DAY_MS) / HOUR_MS);
-	return hours > 0 ? `${days} d ${hours} h` : `${days} d`;
 }

@@ -575,32 +575,6 @@ export function contentText(content: unknown): string {
 	return parts.join("\n");
 }
 
-/**
- * The text a reader would expect to copy from a message.
- *
- * Taken from the original message rather than the rendered DOM, so it carries no
- * button labels, timestamps, or tool chrome. `contentText` already keeps only
- * `text` blocks, which drops reasoning and tool calls; the `<pi-context>`
- * preamble is stripped too because the extension injected it, not the user.
- */
-export function messagePlainText(message: PiMessage): string {
-	const raw = contentText(message.content);
-	return raw.replace(/^<pi-context>\n[\s\S]*?\n<\/pi-context>\n\n/u, "").trim();
-}
-
-/**
- * Prefixes each line with a markdown quote marker.
- *
- * Blank lines get a bare `>` so the quote stays one block: a truly empty line
- * would end the block quote and leave the rest as ordinary text.
- */
-export function quotedText(text: string): string {
-	return text
-		.split("\n")
-		.map((line) => (line.length > 0 ? `> ${line}` : ">"))
-		.join("\n");
-}
-
 function contentImages(content: unknown): PiContentBlock[] {
 	if (!Array.isArray(content)) return [];
 	return content.filter((block): block is PiContentBlock =>

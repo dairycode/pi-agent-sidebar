@@ -48,11 +48,8 @@ test("session history reads and safely deletes custom-directory sessions", async
 	);
 
 	try {
-		const {
-			deleteProjectSession,
-			listProjectSessions,
-			resolveSessionDirectory,
-		} = loaded.module;
+		const { deleteProjectSession, listProjectSessions, resolveSessionDirectory } =
+			loaded.module;
 		assert.equal(
 			resolveSessionDirectory(root, "relative-sessions", undefined),
 			path.resolve(root, "relative-sessions"),
@@ -71,11 +68,7 @@ test("session history reads and safely deletes custom-directory sessions", async
 		assert.equal(sessions[0].excerpt, "Implement the sidebar");
 		// The header timestamp is the creation time, never "last activity".
 		assert.equal(sessions[0].createdAt, "2026-01-02T03:04:05.000Z");
-		// The only user/assistant message entry defines both activity bounds.
-		assert.equal(sessions[0].firstActivityAt, "2026-01-02T03:04:06.000Z");
 		assert.equal(sessions[0].lastActivityAt, "2026-01-02T03:04:06.000Z");
-		assert.equal(sessions[0].messageCount, 1);
-		assert.equal(sessions[0].timestamp, undefined);
 
 		await assert.rejects(
 			deleteProjectSession(
@@ -219,18 +212,13 @@ test("session activity uses message timestamps and tolerates malformed entries",
 
 		const [activity, empty] = sessions;
 		assert.equal(activity.createdAt, "2026-01-02T00:00:00.000Z");
-		assert.equal(activity.firstActivityAt, "2026-01-02T02:00:00.000Z");
 		assert.equal(activity.lastActivityAt, "2026-01-02T04:00:00.000Z");
-		// The malformed line is skipped, but every message entry is still counted.
-		assert.equal(activity.messageCount, 3);
 		assert.equal(activity.excerpt, "First prompt");
 
 		// With no activity entries, last activity falls back to creation time
 		// rather than pretending the file mtime was a conversation.
 		assert.equal(empty.createdAt, "2026-01-01T00:00:00.000Z");
 		assert.equal(empty.lastActivityAt, "2026-01-01T00:00:00.000Z");
-		assert.equal(empty.firstActivityAt, undefined);
-		assert.equal(empty.messageCount, 0);
 		assert.equal(empty.title, "Untitled");
 	} finally {
 		await loaded.dispose();
@@ -297,10 +285,7 @@ test("oversized sessions read bounded head and tail without inventing entries", 
 
 	try {
 		const { size } = await stat(sessionPath);
-		assert.ok(
-			size > 2 * 1024 * 1024,
-			"fixture must exceed the full-read limit",
-		);
+		assert.ok(size > 2 * 1024 * 1024, "fixture must exceed the full-read limit");
 
 		const [session] = await loaded.module.listProjectSessions(
 			root,
@@ -311,11 +296,7 @@ test("oversized sessions read bounded head and tail without inventing entries", 
 		// The head window still carries the first prompt, and the tail window the
 		// newest assistant reply.
 		assert.equal(session.excerpt, "Head prompt");
-		assert.equal(session.firstActivityAt, "2026-01-02T01:00:00.000Z");
 		assert.equal(session.lastActivityAt, "2026-01-02T09:00:00.000Z");
-		// A partial read cannot produce a trustworthy total, so the count is omitted
-		// rather than reported as a wrong number.
-		assert.equal(session.messageCount, undefined);
 	} finally {
 		await loaded.dispose();
 	}

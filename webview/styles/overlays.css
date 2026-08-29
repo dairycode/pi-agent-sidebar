@@ -91,7 +91,7 @@
 }
 
 .primary-button {
-	color: #fff;
+	color: var(--pi-accent-ink);
 	background: var(--pi-accent);
 }
 

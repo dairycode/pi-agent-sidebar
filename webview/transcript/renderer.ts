@@ -146,7 +146,7 @@ export function messageHtml(
 		);
 	}
 	if (message.role === "bashExecution") {
-		return `<div class="message system-message">${toolDisclosureHtml(
+		return `<div class="message system-message">${toolCallHtml(
 			"bash-execution",
 			"bash",
 			{ command: message.command },
@@ -162,10 +162,7 @@ export function messageHtml(
 			},
 		)}</div>`;
 	}
-	if (
-		message.role === "compactionSummary" ||
-		message.role === "branchSummary"
-	) {
+	if (message.role === "compactionSummary" || message.role === "branchSummary") {
 		return '<div class="context-divider"><i class="codicon codicon-fold"></i> Context summarized</div>';
 	}
 	if (message.role === "custom" && message.display !== false) {
@@ -206,8 +203,7 @@ function markerSpanHtml(marker: InlineMarker): string {
 }
 
 function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
-	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
-		[];
+	const inline: Array<{ start: number; end: number; marker: InlineMarker }> = [];
 	const leftover: InlineMarker[] = [];
 	let searchFrom = 0;
 	for (const marker of markers) {
@@ -299,10 +295,6 @@ function assistantMessageHtml(
 	const sections: string[] = [];
 	let activity: string[] = [];
 	let thinkingIndex = 0;
-	const isActivityBlock = (type: string | undefined): boolean =>
-		type === "thinking" || type === "toolCall";
-	const startsWithActivity = isActivityBlock(blocks[0]?.type);
-	const endsWithActivity = isActivityBlock(blocks.at(-1)?.type);
 	const flushActivity = (): void => {
 		if (activity.length === 0) return;
 		sections.push(`<div class="activity-timeline">${activity.join("")}</div>`);
@@ -319,15 +311,12 @@ function assistantMessageHtml(
 		if (block.type === "thinking") {
 			const thinkingKey = `${messageKey}-thinking-${thinkingIndex}`;
 			const streamingState = streaming ? " streaming" : "";
-			const openState = streaming ? " open" : "";
 			thinkingIndex += 1;
-			activity.push(
-				`<details class="activity-item thinking-block${streamingState}" data-thinking-key="${escapeHtml(thinkingKey)}"${openState}><summary class="thinking-summary"><span class="activity-marker"><i class="codicon codicon-lightbulb" aria-hidden="true"></i></span><span class="thinking-summary-content"><span class="thinking-label">Reasoning</span><i class="codicon codicon-chevron-right thinking-chevron" aria-hidden="true"></i></span></summary><div class="thinking-content">${markdown(block.thinking ?? "")}</div></details>`,
-			);
+			activity.push(thinkingBlockHtml(thinkingKey, streamingState, block));
 		}
 		if (block.type === "toolCall" && block.id && block.name) {
 			activity.push(
-				toolDisclosureHtml(
+				toolCallHtml(
 					block.id,
 					block.name,
 					block.arguments ?? {},
@@ -346,11 +335,53 @@ function assistantMessageHtml(
 	if (message.stopReason === "aborted") {
 		sections.push('<div class="cancelled-note">Cancelled</div>');
 	}
-	const activityClasses = `${startsWithActivity ? " starts-with-activity" : ""}${endsWithActivity ? " ends-with-activity" : ""}`;
-	return `<article class="message assistant-message${activityClasses}">${sections.join("")}</article>`;
+	return `<article class="message assistant-message">${sections.join("")}</article>`;
 }
 
-function toolDisclosureHtml(
+/**
+ * Reasoning, rendered the way pi renders it: italic `thinkingText` with a
+ * collapsed placeholder swapped in for it.
+ *
+ * Visible while it streams, collapsed once it settles. Reasoning is live
+ * progress — it is the only thing to watch before the answer starts, and dead
+ * weight above the answer afterwards. A streaming block therefore has no
+ * collapse control (there is nothing stable to collapse to yet) and a settled
+ * one starts collapsed; `restoreExpandableState` skips streaming keys, so the
+ * settled block that replaces it inherits no state and takes that default,
+ * which is what makes the collapse automatic.
+ *
+ * pi drives the same pair from one global header toggle. There is no such header
+ * here, so the block is its own control and carries the ARIA button contract
+ * that the `<summary>` it replaced used to provide for free.
+ */
+function thinkingBlockHtml(
+	thinkingKey: string,
+	streamingState: string,
+	block: PiContentBlock,
+): string {
+	const body = markdown(block.thinking ?? "");
+	if (streamingState) {
+		return `<div class="activity-item thinking-block streaming is-expanded" data-thinking-key="${escapeHtml(thinkingKey)}"><div class="thinking-text">${body}</div></div>`;
+	}
+	return `<div class="activity-item thinking-block" data-thinking-key="${escapeHtml(thinkingKey)}" data-expandable="thinking" role="button" tabindex="0" aria-expanded="false" aria-label="Reasoning, click to expand"><div class="thinking-text">${body}</div><div class="thinking-collapsed">Thinking …</div></div>`;
+}
+
+/**
+ * One tool call as pi draws it: a filled box whose tint is the entire status
+ * indicator, a bold header, and the output directly beneath with no nested
+ * surface of its own.
+ *
+ * Two things pi can leave out and this cannot. Colour is pi's only status
+ * channel, which fails WCAG 1.4.1 on its own, so the state is also carried as
+ * visually-hidden text and `running` keeps a spinner — a still frame cannot
+ * otherwise distinguish "in progress" from "finished". The status rides in a
+ * `.sr-only` span rather than an `aria-label`, because a label on a plain `div`
+ * has no role to attach to and is not reliably announced. And pi toggles output
+ * with an inline `onclick`, which this webview's CSP forbids, so the expandable
+ * region is marked with `data-expandable` for the delegated handler in
+ * `main.ts`.
+ */
+function toolCallHtml(
 	id: string,
 	name: string,
 	args: JsonRecord,
@@ -359,22 +390,63 @@ function toolDisclosureHtml(
 ): string {
 	const status = resolveToolStatus(result, live);
 	const output = live?.output || (result ? contentText(result.content) : "");
-	const { label: statusLabel, icon } = toolStatusPresentation(status);
-	const target = summarizeTool(name, args);
 	const diff = live?.diff ?? (result ? extractResultDiff(result) : "");
 	const diffHtml = status === "success" && diff ? renderDiffBlock(diff) : "";
-	const outputHtml =
-		output && !diffHtml
-			? `<div class="tool-output"><pre>${escapeHtml(truncate(output, 20_000))}</pre></div>`
+	const outputHtml = output && !diffHtml ? renderToolOutput(id, output) : "";
+	const spinner =
+		status === "running"
+			? '<i class="codicon codicon-loading codicon-modifier-spin tool-spinner" aria-hidden="true"></i>'
 			: "";
-	return `<details class="activity-item tool-call ${status}" data-tool-key="${escapeHtml(id)}" ${status === "error" ? "open" : ""}>
-    <summary>
-      <span class="activity-marker"><i class="codicon codicon-${icon}" aria-hidden="true"></i></span>
-      <span class="tool-summary-content"><span class="tool-summary-main"><span class="tool-name">${escapeHtml(friendlyToolName(name))}</span><span class="tool-target">${escapeHtml(target)}</span></span><span class="tool-status">${statusLabel}</span></span>
-    </summary>
-    ${outputHtml}
-    ${diffHtml}
-  </details>`;
+	const statusNote = `<span class="sr-only">${escapeHtml(`${friendlyToolName(name)}: ${toolStatusLabel(status)}`)}</span>`;
+	return `<div class="activity-item tool-call ${status}">${statusNote}${toolHeaderHtml(name, args, spinner)}${outputHtml}${diffHtml}</div>`;
+}
+
+const MAX_TOOL_TARGET_LENGTH = 2000;
+
+/**
+ * The box's first line.
+ *
+ * pi splits this by tool: a shell command becomes `$ …` on its own bold,
+ * wrapping line, while every other tool gets `name` followed by its primary
+ * argument. Commands are not truncated or ellipsised the way a one-line summary
+ * would be — the command *is* the content, and a clipped one cannot be checked
+ * against what actually ran.
+ */
+function toolHeaderHtml(
+	name: string,
+	args: JsonRecord,
+	spinner: string,
+): string {
+	if (name === "bash") {
+		const command = truncate(stringValue(args.command), MAX_TOOL_TARGET_LENGTH);
+		return `<div class="tool-command">${spinner}$ ${escapeHtml(command)}</div>`;
+	}
+	const target = truncate(toolTarget(args), MAX_TOOL_TARGET_LENGTH);
+	const targetHtml = target
+		? ` <span class="tool-path">${escapeHtml(target)}</span>`
+		: "";
+	return `<div class="tool-header">${spinner}<span class="tool-name">${escapeHtml(name)}</span>${targetHtml}</div>`;
+}
+
+const TOOL_OUTPUT_PREVIEW_LINES = 10;
+
+/**
+ * Tool output, previewed to the first few lines with the rest behind a click.
+ *
+ * Both halves are always in the DOM and CSS swaps them, matching pi. That costs
+ * markup but keeps expansion free of a re-render, which matters here in a way it
+ * does not in a static export: this node is rebuilt by the reconciler on every
+ * streaming frame, so expansion must not depend on re-deriving content.
+ */
+function renderToolOutput(id: string, output: string): string {
+	const text = truncate(output, 20_000);
+	const lines = text.split("\n");
+	if (lines.length <= TOOL_OUTPUT_PREVIEW_LINES) {
+		return `<div class="tool-output"><pre>${escapeHtml(text)}</pre></div>`;
+	}
+	const preview = lines.slice(0, TOOL_OUTPUT_PREVIEW_LINES).join("\n");
+	const remaining = lines.length - TOOL_OUTPUT_PREVIEW_LINES;
+	return `<div class="tool-output expandable" data-output-key="${escapeHtml(id)}" data-expandable="output" role="button" tabindex="0" aria-expanded="false" aria-label="Tool output, click to expand"><div class="output-preview"><pre>${escapeHtml(preview)}</pre><div class="expand-hint">… (${remaining} more lines)</div></div><div class="output-full"><pre>${escapeHtml(text)}</pre></div></div>`;
 }
 
 const MAX_DIFF_LINES = 400;
@@ -386,8 +458,7 @@ function renderDiffBlock(diff: string): string {
 	const rows = shown
 		.map((line) => {
 			const marker = line.charAt(0);
-			const kind =
-				marker === "+" ? "add" : marker === "-" ? "remove" : "context";
+			const kind = marker === "+" ? "add" : marker === "-" ? "remove" : "context";
 			return `<div class="diff-line diff-${kind}"><span class="diff-text">${escapeHtml(line) || "&nbsp;"}</span></div>`;
 		})
 		.join("");
@@ -463,15 +534,14 @@ function markdown(text: string, highlight = false): string {
 	}
 }
 
-function summarizeTool(name: string, args: JsonRecord): string {
-	const value =
-		name === "bash"
-			? stringValue(args.command)
-			: stringValue(args.path) ||
-				stringValue(args.file_path) ||
-				stringValue(args.pattern) ||
-				stringValue(args.query);
-	return truncate(value || "", 88);
+function toolTarget(args: JsonRecord): string {
+	return (
+		stringValue(args.path) ||
+		stringValue(args.file_path) ||
+		stringValue(args.pattern) ||
+		stringValue(args.query) ||
+		""
+	);
 }
 
 function resolveToolStatus(
@@ -483,15 +553,9 @@ function resolveToolStatus(
 	return result.isError ? "error" : "success";
 }
 
-function toolStatusPresentation(status: TranscriptLiveTool["status"]): {
-	label: string;
-	icon: string;
-} {
-	if (status === "running") {
-		return { label: "Running", icon: "loading codicon-modifier-spin" };
-	}
-	if (status === "error") return { label: "Failed", icon: "error" };
-	return { label: "Done", icon: "check" };
+function toolStatusLabel(status: TranscriptLiveTool["status"]): string {
+	if (status === "running") return "running";
+	return status === "error" ? "failed" : "done";
 }
 
 export function friendlyToolName(name: string): string {

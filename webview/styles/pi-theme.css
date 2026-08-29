@@ -1,0 +1,226 @@
+/* pi's theme tokens, ported to CSS custom properties.
+ *
+ * The palette values are pi's two built-in themes (`dark.json` / `light.json`),
+ * and the token names match `docs/themes.md` one-for-one so a reader can diff
+ * this file against pi's own spec. Keeping pi's names rather than inventing our
+ * own is the whole point: when pi adds or repurposes a token, the gap is
+ * obvious here instead of hidden behind a translation layer.
+ *
+ * Two deliberate departures from a literal port:
+ *
+ * 1. `text`-derived tokens follow VS Code instead of carrying pi's hex. pi
+ *    itself declares `"text": ""`, meaning "whatever the terminal uses", so
+ *    deferring to `--vscode-foreground` is the faithful reading of that intent,
+ *    not a deviation from it.
+ * 2. The tool/message *backgrounds* are translucent mixes rather than the
+ *    opaque hexes pi ships. A terminal cannot composite, so pi has to bake its
+ *    surfaces against one assumed backdrop; a webview can mix against whatever
+ *    the real sidebar background is. Using pi's hue at low alpha keeps the
+ *    "green means done" read in every VS Code theme, where a literal `#283228`
+ *    would drop a dark green slab into a light one.
+ *
+ * Omitted from pi's 51: the seven `thinking*` editor-border tokens and
+ * `bashMode`. Those colour the TUI's own input frame, which this extension does
+ * not reproduce. `thinkingText` is here — that one styles reasoning content,
+ * which the transcript does render.
+ *
+ * This file only declares variables. Nothing consumes them yet.
+ */
+
+:root {
+	/* Core UI */
+	--pi-theme-accent: #8abeb7;
+	/* Ink for text sitting on top of an accent fill. White on the dark palette's
+	   accent is 2.07:1, well under AA, so the fill needs its own foreground
+	   rather than a hardcoded #fff. */
+	--pi-theme-accent-ink: #12211f;
+	--pi-theme-border: #5f87ff;
+	--pi-theme-border-accent: #00d7ff;
+	--pi-theme-border-muted: #505050;
+	--pi-theme-success: #b5bd68;
+	--pi-theme-error: #cc6666;
+	--pi-theme-warning: #ffff00;
+	--pi-theme-muted: #808080;
+	--pi-theme-dim: #666666;
+	--pi-theme-thinking-text: #808080;
+
+	/* Backgrounds & content. The `*-bg` hues here are mixed into translucent
+	   surfaces further down; these raw values are the hue source, not the
+	   surface. */
+	--pi-theme-selected-bg-hue: #3a3a4a;
+	--pi-theme-user-message-bg-hue: #343541;
+	--pi-theme-custom-message-bg-hue: #2d2838;
+	--pi-theme-custom-message-label: #9575cd;
+	--pi-theme-tool-output: #808080;
+
+	/* pi gives the three tool states their own background tokens rather than
+	   deriving them from the matching foreground colour, and the difference is
+	   visible: `success` is #b5bd68, a yellow-olive at hue 66°, while
+	   `toolSuccessBg` is hue 120°. Tinting with the foreground hue produced a
+	   muddy yellow-green box. These are pi's own surface values, used as the hue
+	   source the same way `userMsgBg` is. */
+	--pi-theme-tool-pending-bg-hue: #282832;
+	--pi-theme-tool-success-bg-hue: #283228;
+	--pi-theme-tool-error-bg-hue: #3c2828;
+
+	/* Markdown */
+	--pi-theme-md-heading: #f0c674;
+	--pi-theme-md-link: #81a2be;
+	--pi-theme-md-link-url: #666666;
+	--pi-theme-md-code: #8abeb7;
+	--pi-theme-md-code-block: #b5bd68;
+	--pi-theme-md-code-block-border: #808080;
+	--pi-theme-md-quote: #808080;
+	--pi-theme-md-quote-border: #808080;
+	--pi-theme-md-hr: #808080;
+	--pi-theme-md-list-bullet: #8abeb7;
+
+	/* Tool diffs */
+	--pi-theme-tool-diff-added: #b5bd68;
+	--pi-theme-tool-diff-removed: #cc6666;
+	--pi-theme-tool-diff-context: #808080;
+
+	/* Syntax */
+	--pi-theme-syntax-comment: #6a9955;
+	--pi-theme-syntax-keyword: #569cd6;
+	--pi-theme-syntax-function: #dcdcaa;
+	--pi-theme-syntax-variable: #9cdcfe;
+	--pi-theme-syntax-string: #ce9178;
+	--pi-theme-syntax-number: #b5cea8;
+	--pi-theme-syntax-type: #4ec9b0;
+	--pi-theme-syntax-operator: #d4d4d4;
+	--pi-theme-syntax-punctuation: #d4d4d4;
+
+	/* How strongly a tool surface tints its backdrop. The hue source is one of
+	   pi's own surface colours, so a higher mix lands closer to pi exactly; full
+	   opacity would match it but stop adapting to the user's editor background,
+	   which is the whole point of mixing. Light themes need a firmer mix: the
+	   same alpha over a near-white background reads as noise rather than state. */
+	--pi-theme-tool-bg-strength: 62%;
+	--pi-theme-message-bg-strength: 30%;
+}
+
+body.vscode-light,
+body.vscode-high-contrast-light {
+	/* Core UI */
+	--pi-theme-accent: #5a8080;
+	/* The light accent is dark enough that white only reaches 4.34:1; near-black
+	   reaches 4.83:1. The two palettes therefore need opposite ink. */
+	--pi-theme-accent-ink: #04100f;
+	--pi-theme-border: #547da7;
+	--pi-theme-border-accent: #5a8080;
+	--pi-theme-border-muted: #b0b0b0;
+	--pi-theme-success: #588458;
+	--pi-theme-error: #aa5555;
+	--pi-theme-warning: #9a7326;
+	--pi-theme-muted: #6c6c6c;
+	--pi-theme-dim: #767676;
+	--pi-theme-thinking-text: #6c6c6c;
+
+	/* Backgrounds & content */
+	--pi-theme-selected-bg-hue: #d0d0e0;
+	--pi-theme-user-message-bg-hue: #e8e8e8;
+	--pi-theme-custom-message-bg-hue: #ede7f6;
+	--pi-theme-custom-message-label: #7e57c2;
+	--pi-theme-tool-output: #6c6c6c;
+
+	--pi-theme-tool-pending-bg-hue: #e8e8f0;
+	--pi-theme-tool-success-bg-hue: #e8f0e8;
+	--pi-theme-tool-error-bg-hue: #f0e8e8;
+
+	/* Markdown */
+	--pi-theme-md-heading: #9a7326;
+	--pi-theme-md-link: #547da7;
+	--pi-theme-md-link-url: #767676;
+	--pi-theme-md-code: #5a8080;
+	--pi-theme-md-code-block: #588458;
+	--pi-theme-md-code-block-border: #6c6c6c;
+	--pi-theme-md-quote: #6c6c6c;
+	--pi-theme-md-quote-border: #6c6c6c;
+	--pi-theme-md-hr: #6c6c6c;
+	--pi-theme-md-list-bullet: #588458;
+
+	/* Tool diffs */
+	--pi-theme-tool-diff-added: #588458;
+	--pi-theme-tool-diff-removed: #aa5555;
+	--pi-theme-tool-diff-context: #6c6c6c;
+
+	/* Syntax */
+	--pi-theme-syntax-comment: #008000;
+	--pi-theme-syntax-keyword: #0000ff;
+	--pi-theme-syntax-function: #795e26;
+	--pi-theme-syntax-variable: #001080;
+	--pi-theme-syntax-string: #a31515;
+	--pi-theme-syntax-number: #098658;
+	--pi-theme-syntax-type: #267f99;
+	--pi-theme-syntax-operator: #000000;
+	--pi-theme-syntax-punctuation: #000000;
+
+	--pi-theme-tool-bg-strength: 78%;
+	--pi-theme-message-bg-strength: 42%;
+}
+
+/* Derived surfaces live on `body`, not `:root`, and that is load-bearing.
+
+   A custom property's `var()` references are substituted on the element the
+   declaration sits on. Declared at `:root` (html), a mix reading
+   `--pi-theme-*-bg-hue` resolves against html's value — and the light palette
+   overrides those hues on `body`, a descendant. The dark hue would win in a
+   light theme, silently, with the computed value inheriting down already
+   substituted. Declaring them here puts the substitution below the light
+   override, so both palettes work. */
+body {
+	/* Tokens pi resolves to the terminal default. Deferring to VS Code keeps
+	   body text at the contrast the user's own theme guarantees, which a fixed
+	   hex cannot promise across every VS Code theme. */
+	--pi-theme-text: var(--vscode-foreground);
+	--pi-theme-user-message-text: var(--vscode-foreground);
+	--pi-theme-custom-message-text: var(--vscode-foreground);
+	--pi-theme-tool-title: var(--vscode-foreground);
+	--pi-theme-search-match-text: var(--vscode-foreground);
+
+	/* Translucent surfaces. `transparent` as the second mix operand yields the
+	   hue at a fraction of full alpha, so each surface composites over the real
+	   backdrop instead of replacing it. That matters for nested cases — a tool
+	   box inside a hovered row should read as both.
+
+	   The three tool states are separate variables on purpose: choosing how
+	   loud "success" should be is a judgement call best made by looking at it,
+	   and this is the single place to retune it. */
+	--pi-theme-tool-pending-bg: color-mix(
+		in srgb,
+		var(--pi-theme-tool-pending-bg-hue) var(--pi-theme-tool-bg-strength),
+		transparent
+	);
+	--pi-theme-tool-success-bg: color-mix(
+		in srgb,
+		var(--pi-theme-tool-success-bg-hue) var(--pi-theme-tool-bg-strength),
+		transparent
+	);
+	--pi-theme-tool-error-bg: color-mix(
+		in srgb,
+		var(--pi-theme-tool-error-bg-hue) var(--pi-theme-tool-bg-strength),
+		transparent
+	);
+
+	--pi-theme-selected-bg: color-mix(
+		in srgb,
+		var(--pi-theme-selected-bg-hue) var(--pi-theme-message-bg-strength),
+		transparent
+	);
+	--pi-theme-user-message-bg: color-mix(
+		in srgb,
+		var(--pi-theme-user-message-bg-hue) var(--pi-theme-message-bg-strength),
+		transparent
+	);
+	--pi-theme-custom-message-bg: color-mix(
+		in srgb,
+		var(--pi-theme-custom-message-bg-hue) var(--pi-theme-message-bg-strength),
+		transparent
+	);
+
+	/* pi lets these fall back to `selectedBg` / `text`; mirroring that here
+	   means a future explicit value only has to be set in one place. */
+	--pi-theme-scrollbar-thumb: var(--pi-theme-selected-bg);
+	--pi-theme-search-match-bg: var(--pi-theme-selected-bg);
+}

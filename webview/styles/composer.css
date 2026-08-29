@@ -511,7 +511,7 @@
 	height: var(--pi-control-size);
 	padding: 0;
 	border-radius: var(--pi-radius-control);
-	color: #fff;
+	color: var(--pi-accent-ink);
 	background: var(--pi-accent);
 }
 
@@ -521,12 +521,12 @@
 
 .composer.busy .send-button {
 	border: 1px solid var(--pi-accent);
-	color: #fff;
+	color: var(--pi-accent-ink);
 	background: var(--pi-accent);
 }
 
 .composer.busy .send-button:hover:not(:disabled) {
-	color: #fff;
+	color: var(--pi-accent-ink);
 	background: var(--pi-accent-hover);
 }
 

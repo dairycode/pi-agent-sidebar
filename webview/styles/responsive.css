@@ -5,10 +5,7 @@
 
 	#app.is-working .composer-shell {
 		border-top-color: var(--pi-accent);
-		background: var(
-			--vscode-sideBar-background,
-			var(--vscode-editor-background)
-		);
+		background: var(--vscode-sideBar-background, var(--vscode-editor-background));
 		animation: none;
 	}
 }
@@ -58,12 +55,12 @@
 }
 
 @media (forced-colors: active) {
-	.activity-timeline::before {
-		background: CanvasText;
-	}
-
-	.activity-marker {
-		background: Canvas;
+	/* Forced colours drop every background, so the tool boxes lose the tint that
+	   is their only visual state channel. A border restores the block edge; the
+	   state itself stays available to assistive tech through the box's
+	   `aria-label`, and to sighted readers through the running spinner. */
+	.tool-call {
+		border: 1px solid CanvasText;
 	}
 
 	.composer-reference-highlight,
@@ -76,12 +73,16 @@
 	.attachment-chip,
 	.composer,
 	.resource-drop-prompt,
-	.tool-output,
-	.tool-diff,
-	.user-message,
 	.modal,
 	.toast {
 		border-color: CanvasText;
+	}
+
+	/* Forced colours replace every background, so a user message that relies on
+	   its tint alone would become indistinguishable from the assistant reply
+	   beside it. A real border is the only carrier left. */
+	.user-message {
+		border: 1px solid CanvasText;
 	}
 
 	.resource-drop-overlay {

@@ -318,11 +318,7 @@ const mentionController = new MentionController({
 		post({ type: "listWorkspaceFiles", requestId, query }),
 	commit: (file, token) => addMentionReference(file, token),
 	navigate: (directoryPath, token) =>
-		composerController.replaceRange(
-			token.start,
-			token.end,
-			`@${directoryPath}/`,
-		),
+		composerController.replaceRange(token.start, token.end, `@${directoryPath}/`),
 	announce,
 	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
 	position: positionMentionPanel,
@@ -658,8 +654,7 @@ elements.input.addEventListener("keydown", (event) => {
 		const reference = composerController.referenceAtOffset(
 			elements.input.selectionStart,
 		);
-		if (!reference || composerController.isPendingReference(reference.id))
-			return;
+		if (!reference || composerController.isPendingReference(reference.id)) return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
 		return;
@@ -785,9 +780,7 @@ elements.sessionList.addEventListener("keydown", (event) => {
 		return;
 	}
 	const nextIndex =
-		event.key === "ArrowDown"
-			? Math.min(index + 1, rows.length - 1)
-			: index - 1;
+		event.key === "ArrowDown" ? Math.min(index + 1, rows.length - 1) : index - 1;
 	rows[nextIndex]?.querySelector<HTMLButtonElement>(".session-open")?.focus();
 });
 // No confirmation: pi keeps the current conversation in session history, so
@@ -864,8 +857,7 @@ elements.messages.addEventListener("click", (event) => {
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
-			copyButton.closest(".code-block")?.querySelector("code")?.textContent ??
-			"";
+			copyButton.closest(".code-block")?.querySelector("code")?.textContent ?? "";
 		void navigator.clipboard
 			.writeText(code)
 			.then(() => showToast("Copied", "info"));
@@ -887,6 +879,13 @@ elements.messages.addEventListener("click", (event) => {
 		}
 		return;
 	}
+	// Checked after the path link so a clickable path inside tool output still
+	// opens the file rather than collapsing the block around it.
+	const expandable = target.closest<HTMLElement>("[data-expandable]");
+	if (expandable) {
+		toggleExpandable(expandable);
+		return;
+	}
 	const anchor = target.closest<HTMLAnchorElement>("a[href]");
 	if (anchor) {
 		// VS Code's injected window-level anchor handler opens links with
@@ -900,6 +899,21 @@ elements.messages.addEventListener("click", (event) => {
 		event.stopPropagation();
 		post({ type: "openExternal", href: anchor.href });
 	}
+});
+
+// `<summary>` used to supply keyboard activation for free. The expandables that
+// replaced it are plain elements carrying the button role, so Enter and Space
+// have to be wired up by hand to honour that role's contract.
+elements.messages.addEventListener("keydown", (event) => {
+	if (event.key !== "Enter" && event.key !== " ") return;
+	const expandable = (event.target as HTMLElement).closest<HTMLElement>(
+		"[data-expandable]",
+	);
+	if (!expandable) return;
+	// Space scrolls the transcript by default, which would move the block the
+	// reader just aimed at out from under them.
+	event.preventDefault();
+	toggleExpandable(expandable);
 });
 
 post({ type: "ready" });
@@ -1237,9 +1251,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 				id,
 				name: toolName,
 				args:
-					Object.keys(eventArgs).length > 0
-						? eventArgs
-						: (existing?.args ?? {}),
+					Object.keys(eventArgs).length > 0 ? eventArgs : (existing?.args ?? {}),
 				status,
 				output: extractResultText(event.result),
 				diff: extractResultDiff(event.result),
@@ -1357,10 +1369,7 @@ function render(): void {
 	elements.forkSessionButton.disabled = !enabled || ui.busy;
 	// An open picker outlives neither a disconnect nor a turn starting: its entry
 	// ids belong to the session as it was when the list was fetched.
-	if (
-		elements.forkSessionButton.disabled ||
-		elements.forkSessionButton.hidden
-	) {
+	if (elements.forkSessionButton.disabled || elements.forkSessionButton.hidden) {
 		dismissForkPicker();
 	}
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
@@ -1476,10 +1485,7 @@ function renderConnectionBanner(): void {
 		const restart = document.createElement("button");
 		restart.type = "button";
 		restart.className = "text-button";
-		restart.append(
-			createCodicon("refresh"),
-			document.createTextNode(" Restart"),
-		);
+		restart.append(createCodicon("refresh"), document.createTextNode(" Restart"));
 		restart.addEventListener("click", () => runAction("restart"));
 		elements.connectionBanner.append(restart);
 	}
@@ -1619,13 +1625,23 @@ function createMessageNode(
 	const node = document.createElement("div");
 	node.className = "message-slot";
 	node.replaceChildren(...sanitizedNodes(html));
-	restoreDisclosureState(node, previous);
+	restoreExpandableState(node, previous);
 	enhanceCodeBlocks(node);
 	linkifyWorkspacePaths(node);
 	bindImageReflow(node);
 	appendMessageFooter(node, message, entry.key);
 	return node;
 }
+
+/**
+ * Whether messages carry a hover footer (timestamp, copy, quote).
+ *
+ * Off while the transcript is being matched to pi's own rendering: pi shows
+ * neither, and the footer overlaps the gap above the next block, which reads as
+ * a stray control floating between messages. Flip to `true` to bring it back —
+ * the builder below and its delegated handlers are all still wired.
+ */
+const SHOW_MESSAGE_FOOTER = false;
 
 /**
  * Adds the timestamp and per-message actions.
@@ -1643,6 +1659,7 @@ function appendMessageFooter(
 	message: PiMessage,
 	messageKeyValue: string,
 ): void {
+	if (!SHOW_MESSAGE_FOOTER) return;
 	if (message.role !== "user" && message.role !== "assistant") return;
 	if (message === ui.streamingMessage) return;
 	const host = node.querySelector(".message");
@@ -1741,36 +1758,93 @@ function messageByKey(key: string): PiMessage | undefined {
 }
 
 /**
- * Carries `<details>` open state across a rebuild.
+ * Carries reader-toggled expansion across a rebuild.
  *
- * Disclosure state lives only in the DOM, so replacing a node would silently
- * collapse a tool output the reader had opened. Streaming reasoning blocks are
- * excluded: their open state is driven by the streaming flag itself.
+ * Expansion lives only in the DOM, so replacing a node would silently discard
+ * it. Both directions have to be carried, because the two widgets have opposite
+ * defaults: reasoning renders expanded (collapsing it is the deviation) while
+ * tool output renders previewed (expanding it is the deviation). Restoring only
+ * "was open" would therefore re-expand every reasoning block the reader had just
+ * collapsed.
+ *
+ * Streaming reasoning is skipped: it has no collapse control while its content
+ * is still arriving.
  */
-function restoreDisclosureState(
+function restoreExpandableState(
 	node: Element,
 	previous: Element | undefined,
 ): void {
 	if (!previous) return;
-	const openKeys = new Set<string>();
-	for (const details of previous.querySelectorAll<HTMLDetailsElement>(
-		".tool-call[open][data-tool-key], .thinking-block[open]:not(.streaming)[data-thinking-key]",
+	const thinkingExpanded = new Map<string, boolean>();
+	for (const block of previous.querySelectorAll<HTMLElement>(
+		".thinking-block:not(.streaming)[data-thinking-key]",
 	)) {
-		const key = details.dataset.toolKey ?? details.dataset.thinkingKey;
-		if (key) openKeys.add(key);
+		const key = block.dataset.thinkingKey;
+		if (key) thinkingExpanded.set(key, block.classList.contains("is-expanded"));
 	}
-	if (openKeys.size === 0) return;
-	for (const details of node.querySelectorAll<HTMLDetailsElement>(
-		".tool-call[data-tool-key], .thinking-block:not(.streaming)[data-thinking-key]",
+	const outputExpanded = new Set<string>();
+	for (const output of previous.querySelectorAll<HTMLElement>(
+		".tool-output.expandable.expanded[data-output-key]",
 	)) {
-		const key = details.dataset.toolKey ?? details.dataset.thinkingKey;
-		if (key && openKeys.has(key)) details.open = true;
+		const key = output.dataset.outputKey;
+		if (key) outputExpanded.add(key);
 	}
+	if (thinkingExpanded.size === 0 && outputExpanded.size === 0) return;
+
+	for (const block of node.querySelectorAll<HTMLElement>(
+		".thinking-block:not(.streaming)[data-thinking-key]",
+	)) {
+		const key = block.dataset.thinkingKey;
+		const expanded = key ? thinkingExpanded.get(key) : undefined;
+		if (expanded === undefined) continue;
+		setExpandedState(block, expanded);
+	}
+	for (const output of node.querySelectorAll<HTMLElement>(
+		".tool-output.expandable[data-output-key]",
+	)) {
+		const key = output.dataset.outputKey;
+		if (key && outputExpanded.has(key)) setExpandedState(output, true);
+	}
+}
+
+/**
+ * Applies one expandable's state to both its class and its ARIA attribute.
+ *
+ * The two must move together: `aria-expanded` is the only channel a screen
+ * reader has for this, and the class is the only one CSS has.
+ */
+function setExpandedState(element: HTMLElement, expanded: boolean): void {
+	const expandedClass =
+		element.dataset.expandable === "thinking" ? "is-expanded" : "expanded";
+	element.classList.toggle(expandedClass, expanded);
+	element.setAttribute("aria-expanded", expanded ? "true" : "false");
+	const label =
+		element.dataset.expandable === "thinking"
+			? `Reasoning, click to ${expanded ? "collapse" : "expand"}`
+			: `Tool output, click to ${expanded ? "collapse" : "expand"}`;
+	element.setAttribute("aria-label", label);
+}
+
+/**
+ * Toggles the expandable a pointer or key landed on.
+ *
+ * Ignores a click that ends a text selection: these regions hold output a reader
+ * is likely to be copying from, and collapsing the block out from under a drag
+ * loses the selection. pi guards the same case in its inline handler.
+ */
+function toggleExpandable(element: HTMLElement): void {
+	if (window.getSelection()?.toString()) return;
+	const expandedClass =
+		element.dataset.expandable === "thinking" ? "is-expanded" : "expanded";
+	setExpandedState(element, !element.classList.contains(expandedClass));
 }
 
 function enhanceCodeBlocks(root: ParentNode): void {
 	for (const pre of root.querySelectorAll("pre")) {
-		if (pre.parentElement?.classList.contains("tool-output")) continue;
+		// `closest`, not `parentElement`: an expandable output wraps its <pre> in a
+		// preview/full pair, so the tool output is no longer the direct parent.
+		// Tool output is not a code block and must not grow a copy button.
+		if (pre.closest(".tool-output")) continue;
 		if (pre.parentElement?.classList.contains("code-block")) continue;
 		// The button must live outside the scrolling <pre> so horizontal scrolling
 		// cannot drag it along: an absolute child is positioned against the
@@ -1812,9 +1886,7 @@ function linkifyWorkspacePaths(root: Element): void {
 			// already-linkified spans. Inline <code> is allowed so paths that
 			// pi wraps in backticks still become clickable.
 			if (
-				parent.closest(
-					"pre, a, .tool-call, .thinking-block, [data-workspace-path]",
-				)
+				parent.closest("pre, a, .tool-call, .thinking-block, [data-workspace-path]")
 			) {
 				return NodeFilter.FILTER_REJECT;
 			}
@@ -1882,9 +1954,7 @@ function renderAttachments(): void {
 		remove.setAttribute("aria-label", `Remove ${attachment.label}`);
 		remove.append(createCodicon("close"));
 		remove.addEventListener("click", () => {
-			ui.attachments = ui.attachments.filter(
-				(item) => item.id !== attachment.id,
-			);
+			ui.attachments = ui.attachments.filter((item) => item.id !== attachment.id);
 			post({ type: "removeAttachment", id: attachment.id });
 			scheduleRender();
 		});
@@ -2021,8 +2091,7 @@ function renderRuntimeMeta(): void {
 	const locale = ui.timeContext.locale || undefined;
 	const parts: string[] = [];
 	const context = ui.stats?.contextUsage?.percent;
-	if (typeof context === "number")
-		parts.push(`${Math.round(context)}% context`);
+	if (typeof context === "number") parts.push(`${Math.round(context)}% context`);
 	if (typeof ui.stats?.cost === "number" && ui.stats.cost > 0)
 		parts.push(formatCost(ui.stats.cost, locale));
 	const text = parts.join(" \u00b7 ");
@@ -2044,9 +2113,7 @@ function renderUsagePanel(): void {
 	const locale = ui.timeContext.locale || undefined;
 	const stats = ui.stats;
 	const rows: Array<[string, string]> = [];
-	if (!stats) {
-		rows.push(["Usage", "Not reported by pi yet"]);
-	} else {
+	if (stats) {
 		const usage = stats.contextUsage;
 		if (usage) {
 			rows.push([
@@ -2075,6 +2142,8 @@ function renderUsagePanel(): void {
 			rows.push(["Messages", formatTokenCount(stats.totalMessages, locale)]);
 		if (typeof stats.toolCalls === "number")
 			rows.push(["Tool calls", formatTokenCount(stats.toolCalls, locale)]);
+	} else {
+		rows.push(["Usage", "Not reported by pi yet"]);
 	}
 
 	const list = document.createElement("dl");
@@ -2119,9 +2188,7 @@ function dismissUsagePanel(): void {
  */
 function refreshRelativeTimes(): void {
 	const epochValues: number[] = [];
-	for (const node of document.querySelectorAll<HTMLElement>(
-		"[data-epoch-ms]",
-	)) {
+	for (const node of document.querySelectorAll<HTMLElement>("[data-epoch-ms]")) {
 		const epochMs = Number(node.dataset.epochMs);
 		if (!Number.isFinite(epochMs)) continue;
 		epochValues.push(epochMs);
@@ -2256,9 +2323,7 @@ function renderSessions(): void {
 			: "Open the session to rename it";
 		renameButton.setAttribute(
 			"aria-label",
-			session.active
-				? `Rename ${session.title}`
-				: "Open the session to rename it",
+			session.active ? `Rename ${session.title}` : "Open the session to rename it",
 		);
 		renameButton.append(createCodicon("edit"));
 		renameButton.addEventListener("click", () => openRenamePrompt());
@@ -2456,8 +2521,7 @@ function moveActiveFork(delta: number): void {
 		? renderedForkEntryIds.indexOf(activeForkEntryId)
 		: -1;
 	const next =
-		(current + delta + renderedForkEntryIds.length) %
-		renderedForkEntryIds.length;
+		(current + delta + renderedForkEntryIds.length) % renderedForkEntryIds.length;
 	activeForkEntryId = renderedForkEntryIds[next];
 	highlightActiveFork();
 }
@@ -2561,9 +2625,7 @@ function renderCommands(): void {
 		const empty = document.createElement("div");
 		empty.className = "command-list-empty";
 		empty.textContent =
-			ui.commands.length === 0
-				? "No commands available"
-				: "No matching commands";
+			ui.commands.length === 0 ? "No commands available" : "No matching commands";
 		elements.commandList.replaceChildren(empty);
 		setCommandActiveDescendant(undefined);
 		return;
@@ -2676,8 +2738,7 @@ function moveActiveCommand(delta: number): void {
 		? renderedCommandNames.indexOf(activeCommandName)
 		: -1;
 	const next =
-		(current + delta + renderedCommandNames.length) %
-		renderedCommandNames.length;
+		(current + delta + renderedCommandNames.length) % renderedCommandNames.length;
 	activeCommandName = renderedCommandNames[next];
 	highlightActiveCommand();
 }

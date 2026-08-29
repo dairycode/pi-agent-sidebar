@@ -1,9 +1,5 @@
 :root {
 	color-scheme: light dark;
-	--pi-accent: #d97757;
-	--pi-accent-hover: #e58a6b;
-	--pi-accent-soft: color-mix(in srgb, var(--pi-accent) 13%, transparent);
-	--pi-accent-border: color-mix(in srgb, var(--pi-accent) 72%, transparent);
 	--pi-success: var(--vscode-testing-iconPassed, #3fb950);
 	--pi-warning: var(--vscode-editorWarning-foreground, #d6a520);
 	--pi-danger: var(--vscode-errorForeground, #f85149);
@@ -22,10 +18,29 @@
 		--vscode-editorWidget-background,
 		var(--vscode-editor-background)
 	);
-	--pi-focus-ring: var(--vscode-focusBorder, var(--pi-accent));
 	--pi-radius-control: 4px;
 	--pi-radius-content: 6px;
 	--pi-radius-panel: 8px;
+	/* The transcript's line grid.
+
+	   A terminal has no sub-line spacing: everything is a whole number of rows,
+	   and that regularity is most of what reads as "terminal". pi encodes it
+	   literally — its exported HTML uses one `--line-height` for nearly every
+	   margin and padding in the transcript.
+
+	   Derived from the font size rather than pinned to pi's 18px, because the
+	   sidebar font size is the user's setting. The 1.5 ratio is pi's own
+	   (12px text on 18px rows), so `--pi-line` is exactly one line of body text
+	   and `line-height: var(--pi-line-ratio)` puts consecutive lines exactly one
+	   grid unit apart. Spacing a full unit therefore equals one blank terminal
+	   row, which is why paragraph gaps below use it directly.
+
+	   Fractional at the default 13px (19.5px). That is fine: the grid's value is
+	   that every gap is the *same* unit or a half of it, not that the unit is a
+	   whole pixel. */
+	--pi-line-ratio: 1.5;
+	--pi-line: calc(var(--vscode-font-size, 13px) * var(--pi-line-ratio));
+	--pi-line-half: calc(var(--pi-line) / 2);
 	/* Three-step type scale: 11 / inherited body (13px by default) / 15. Even
 	   2px steps, so each level is actually distinguishable — the 10/11/12px mix
 	   this replaces read as inconsistency rather than hierarchy. Ranking *within*
@@ -41,9 +56,39 @@
 	   A `calc` on the root variable rather than `em`: `em` compounds on nesting,
 	   so a `code` inside a `pre` would land at 0.92 x 0.92 of the body size. */
 	--pi-font-code: calc(var(--vscode-font-size, 13px) * 0.92);
+	/* Chrome, tool output, and code share the editor's monospace face; assistant
+	   prose deliberately does not.
+
+	   pi is all monospace because a terminal has no choice. Here it is a choice,
+	   and long prose answers — especially CJK, which falls back to a
+	   substituted face inside a monospace stack — read materially worse that
+	   way. So the terminal texture goes on everything that is structurally
+	   terminal-like (tool rows, status, timestamps, output, diffs) and prose
+	   keeps the UI font. */
+	--pi-font-mono: var(--vscode-editor-font-family, ui-monospace, monospace);
 	/* Shared size for every composer-toolbar control: icon buttons, the model
 	   and thinking pickers, and the send button. */
 	--pi-control-size: 28px;
+}
+
+/* The accent chain, resolved from the pi palette so the composer, buttons, and
+   overlays carry the same hue as the transcript above them. It replaces a
+   hardcoded orange that belonged to no palette and clashed with pi's teal.
+
+   On `body`, not `:root`, for the same substitution reason `pi-theme.css`
+   documents: `--pi-theme-accent` has a light-theme override on `body`, and a
+   `var()` in a `:root` declaration would resolve against html and never see it.
+
+   `--pi-focus-ring` still prefers the editor's own focus colour — focus
+   indication is a platform affordance readers configure globally, so matching
+   VS Code matters more than matching pi. */
+body {
+	--pi-accent: var(--pi-theme-accent);
+	--pi-accent-hover: color-mix(in srgb, var(--pi-theme-accent) 82%, white);
+	--pi-accent-ink: var(--pi-theme-accent-ink);
+	--pi-accent-soft: color-mix(in srgb, var(--pi-accent) 13%, transparent);
+	--pi-accent-border: color-mix(in srgb, var(--pi-accent) 72%, transparent);
+	--pi-focus-ring: var(--vscode-focusBorder, var(--pi-accent));
 }
 
 * {
@@ -101,7 +146,6 @@ textarea:disabled {
 button:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
-summary:focus-visible,
 a:focus-visible {
 	outline: 1px solid var(--pi-focus-ring);
 	outline-offset: 2px;

@@ -445,15 +445,20 @@ function toolHeaderHtml(
 	spinner: string,
 	hint: string,
 ): string {
+	// The spinner goes at the end of the line, never at the start: a leading
+	// inline element costs the header its column position when the call settles
+	// and it is removed, which shifts `$ command` (or the tool name) by the
+	// spinner's width in the same frame the box changes colour. Trailing, it
+	// vanishes into the line that was there anyway and nothing moves.
 	if (name === "bash") {
 		const command = truncate(stringValue(args.command), MAX_TOOL_TARGET_LENGTH);
-		return `<div class="tool-command">${spinner}$ ${escapeHtml(command)}${hint}</div>`;
+		return `<div class="tool-command">$ ${escapeHtml(command)}${hint}${spinner}</div>`;
 	}
 	const target = truncate(toolTarget(args), MAX_TOOL_TARGET_LENGTH);
 	const targetHtml = target
 		? ` <span class="tool-path">${escapeHtml(target)}</span>`
 		: "";
-	return `<div class="tool-header">${spinner}<span class="tool-name">${escapeHtml(name)}</span>${targetHtml}${hint}</div>`;
+	return `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span>${targetHtml}${hint}${spinner}</div>`;
 }
 
 const MAX_DIFF_LINES = 400;

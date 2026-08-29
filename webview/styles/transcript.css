@@ -694,12 +694,23 @@
 
 /* Colour alone cannot carry "in progress" in a still frame, and it is not an
    accessible status channel on its own; the box also names its state in
-   `aria-label`. */
-.tool-spinner {
-	margin-right: 5px;
-	color: var(--pi-theme-border);
+   `aria-label`. Trailing, so its removal when the call settles shifts nothing.
+
+   The three-class selector is load-order insurance, not style: codicon.css is
+   linked after this file and its `.codicon[class*='codicon-']` (two classes of
+   specificity) sets `font: ... 16px/1 codicon` to an icon that would otherwise
+   win a tie and grow the glyph past the chrome text, inflating the header row.
+   With the ink locked to the chrome size and line-height 1, the glyph no
+   longer participates in line-box sizing. */
+.activity-item.tool-call .tool-spinner {
+	display: inline-block;
+	overflow: hidden;
+	margin-left: 5px;
+	height: 1em;
+	line-height: 1;
+	vertical-align: -0.15em;
 	font-size: var(--pi-font-chrome);
-	vertical-align: baseline;
+	color: var(--pi-theme-border);
 }
 
 .message-error {

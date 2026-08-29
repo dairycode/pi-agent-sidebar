@@ -412,10 +412,18 @@
 	overflow: auto;
 	border: 1px solid var(--pi-theme-md-code-block-border);
 	border-radius: var(--pi-radius-content);
-	background: var(
-		--vscode-textCodeBlock-background,
-		var(--vscode-editor-background)
-	);
+	/* Neutral grey at low alpha, not `textCodeBlock-background`. That variable is
+	   an opaque colour from a different family than the sidebar it sits in — some
+	   themes resolve it to near-black, which reads as a hole punched in the
+	   transcript. A grey mix carries no hue of its own and composites onto
+	   whatever the sidebar actually is, so the block stays one shade off its
+	   surroundings in every theme. Same reasoning as inline `code`, one step
+	   lighter because this surface is much larger.
+
+	   pi paints `pre` fully transparent and lets the border do the work; the tint
+	   is kept here because a sidebar column is narrow enough that a filled block
+	   is easier to pick out mid-scroll. */
+	background: rgba(128, 128, 128, 0.1);
 	font-family: var(--pi-font-mono);
 	font-size: var(--pi-font-code);
 	line-height: var(--pi-line-ratio);
@@ -438,6 +446,10 @@
 	margin-block: 0;
 }
 
+/* Opaque on purpose: the <pre> underneath scrolls, so a translucent chip would
+   let code slide visibly behind the icon. Paints the sidebar's own background
+   rather than the block's tint, which is the one case here that needs to fully
+   hide what is below it. */
 .copy-code-button {
 	position: absolute;
 	top: 3px;
@@ -445,10 +457,7 @@
 	z-index: 1;
 	width: 25px;
 	height: 25px;
-	background: var(
-		--vscode-textCodeBlock-background,
-		var(--vscode-editor-background)
-	);
+	background: var(--pi-page-background);
 }
 
 .assistant-text blockquote {

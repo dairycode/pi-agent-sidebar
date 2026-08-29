@@ -10,8 +10,49 @@ import type {
 	PiMessage,
 } from "../../shared/protocol.js";
 import { objectValue, stringValue } from "../../shared/jsonValues.js";
+import {
+	HighlightJsHighlighter,
+	resolveLanguage,
+	type CodeHighlighter,
+} from "./highlight.js";
 
 marked.setOptions({ gfm: true, breaks: true });
+
+const highlighter: CodeHighlighter = new HighlightJsHighlighter();
+
+/**
+ * Whether the current `marked.parse()` pass may highlight.
+ *
+ * A module-level flag rather than a renderer parameter because marked gives the
+ * code renderer no user-supplied context. Safe because `marked.parse()` is
+ * synchronous: the flag cannot be observed by another pass mid-parse.
+ */
+let highlightEnabled = false;
+
+/**
+ * Renders a fenced code block, highlighting only when it is safe and useful.
+ *
+ * Plain escaped text is emitted for streaming messages, unknown or absent
+ * language tags, and oversized blocks. The `<pre>` wrapper is preserved because
+ * `enhanceCodeBlocks` finds it to attach the copy button.
+ */
+marked.use({
+	renderer: {
+		code({ text, lang }): string {
+			const language = resolveLanguage(lang ?? "");
+			const highlighted =
+				highlightEnabled && language
+					? highlighter.highlight(text, lang ?? "")
+					: undefined;
+			// The language class is emitted even without highlighting so the block
+			// still reports its language to the DOM and to assistive technology.
+			const classAttribute = language
+				? ` class="hljs language-${escapeHtml(language)}"`
+				: ' class="hljs"';
+			return `<pre><code${classAttribute}>${highlighted ?? escapeHtml(text)}</code></pre>`;
+		},
+	},
+});
 
 export interface TranscriptLiveTool {
 	id: string;
@@ -121,11 +162,14 @@ export function messageHtml(
 			},
 		)}</div>`;
 	}
-	if (message.role === "compactionSummary" || message.role === "branchSummary") {
+	if (
+		message.role === "compactionSummary" ||
+		message.role === "branchSummary"
+	) {
 		return '<div class="context-divider"><i class="codicon codicon-fold"></i> Context summarized</div>';
 	}
 	if (message.role === "custom" && message.display !== false) {
-		return `<div class="message system-message custom-message">${markdown(contentText(message.content))}</div>`;
+		return `<div class="message system-message custom-message">${markdown(contentText(message.content), true)}</div>`;
 	}
 	return "";
 }
@@ -162,7 +206,8 @@ function markerSpanHtml(marker: InlineMarker): string {
 }
 
 function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
-	const inline: Array<{ start: number; end: number; marker: InlineMarker }> = [];
+	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
+		[];
 	const leftover: InlineMarker[] = [];
 	let searchFrom = 0;
 	for (const marker of markers) {
@@ -268,7 +313,7 @@ function assistantMessageHtml(
 		if (block.type === "text") {
 			flushActivity();
 			sections.push(
-				`<div class="assistant-text">${markdown(block.text ?? "")}</div>`,
+				`<div class="assistant-text">${markdown(block.text ?? "", !streaming)}</div>`,
 			);
 		}
 		if (block.type === "thinking") {
@@ -341,7 +386,8 @@ function renderDiffBlock(diff: string): string {
 	const rows = shown
 		.map((line) => {
 			const marker = line.charAt(0);
-			const kind = marker === "+" ? "add" : marker === "-" ? "remove" : "context";
+			const kind =
+				marker === "+" ? "add" : marker === "-" ? "remove" : "context";
 			return `<div class="diff-line diff-${kind}"><span class="diff-text">${escapeHtml(line) || "&nbsp;"}</span></div>`;
 		})
 		.join("");
@@ -363,6 +409,32 @@ export function contentText(content: unknown): string {
 	return parts.join("\n");
 }
 
+/**
+ * The text a reader would expect to copy from a message.
+ *
+ * Taken from the original message rather than the rendered DOM, so it carries no
+ * button labels, timestamps, or tool chrome. `contentText` already keeps only
+ * `text` blocks, which drops reasoning and tool calls; the `<pi-context>`
+ * preamble is stripped too because the extension injected it, not the user.
+ */
+export function messagePlainText(message: PiMessage): string {
+	const raw = contentText(message.content);
+	return raw.replace(/^<pi-context>\n[\s\S]*?\n<\/pi-context>\n\n/u, "").trim();
+}
+
+/**
+ * Prefixes each line with a markdown quote marker.
+ *
+ * Blank lines get a bare `>` so the quote stays one block: a truly empty line
+ * would end the block quote and leave the rest as ordinary text.
+ */
+export function quotedText(text: string): string {
+	return text
+		.split("\n")
+		.map((line) => (line.length > 0 ? `> ${line}` : ">"))
+		.join("\n");
+}
+
 function contentImages(content: unknown): PiContentBlock[] {
 	if (!Array.isArray(content)) return [];
 	return content.filter((block): block is PiContentBlock =>
@@ -370,11 +442,25 @@ function contentImages(content: unknown): PiContentBlock[] {
 	);
 }
 
-function markdown(text: string): string {
-	return DOMPurify.sanitize(marked.parse(text) as string, {
-		USE_PROFILES: { html: true },
-		ADD_ATTR: ["target", "rel"],
-	});
+/**
+ * Markdown to sanitized HTML.
+ *
+ * `highlight` is off by default: highlighting a streaming message would re-run
+ * the highlighter on every delta, and pi replaces the message object each time.
+ * Only settled content opts in.
+ */
+function markdown(text: string, highlight = false): string {
+	highlightEnabled = highlight;
+	try {
+		return DOMPurify.sanitize(marked.parse(text) as string, {
+			USE_PROFILES: { html: true },
+			ADD_ATTR: ["target", "rel"],
+		});
+	} finally {
+		// Reset unconditionally: a throw must not leave highlighting armed for the
+		// next, possibly streaming, pass.
+		highlightEnabled = false;
+	}
 }
 
 function summarizeTool(name: string, args: JsonRecord): string {

@@ -42,6 +42,8 @@ export function createWebviewDocument(
       </div>
       <div class="header-actions" role="toolbar" aria-label="Session actions">
         <button id="rename-session-button" class="icon-button" type="button" title="Rename session" aria-label="Rename session"><i class="codicon codicon-edit"></i></button>
+        <button id="clone-session-button" class="icon-button" type="button" title="Duplicate this session" aria-label="Duplicate this session"><i class="codicon codicon-files"></i></button>
+        <button id="fork-session-button" class="icon-button" type="button" title="Fork from an earlier prompt" aria-label="Fork from an earlier prompt" aria-haspopup="listbox" aria-controls="fork-panel" aria-expanded="false"><i class="codicon codicon-git-branch"></i></button>
         <button id="history-button" class="icon-button" type="button" title="Session history" aria-label="Session history" aria-controls="history-panel" aria-expanded="false"><i class="codicon codicon-history"></i></button>
         <button id="new-session-button" class="icon-button" type="button" title="New session" aria-label="New session"><i class="codicon codicon-add"></i></button>
       </div>
@@ -77,12 +79,22 @@ export function createWebviewDocument(
       <div id="session-list" class="session-list" aria-live="polite"></div>
     </aside>
 
+    <aside id="fork-panel" class="history-panel fork-panel" role="region" aria-label="Fork from an earlier prompt" hidden>
+      <p class="fork-hint">Pick a prompt to branch from. This session stays in history.</p>
+      <div class="history-search" role="search">
+        <i class="codicon codicon-search" aria-hidden="true"></i>
+        <input id="fork-search" type="search" placeholder="Search prompts..." aria-label="Search prompts" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="fork-list">
+      </div>
+      <div id="fork-list" class="session-list fork-list" role="listbox" aria-label="Prompts to fork from" aria-live="polite"></div>
+      <p id="fork-draft-warning" class="fork-draft-warning" hidden><i class="codicon codicon-warning" aria-hidden="true"></i>Forking replaces what you have typed.</p>
+    </aside>
+
     <div id="widget-area" class="widget-area" hidden></div>
 
     <footer id="composer-shell" class="composer-shell">
       <div id="composer-status-row" class="composer-status-row" hidden>
         <div id="queue-status" class="queue-status" hidden></div>
-        <div id="runtime-meta" class="runtime-meta" hidden></div>
+        <button id="runtime-meta" class="runtime-meta" type="button" hidden aria-haspopup="dialog" aria-expanded="false" aria-controls="usage-panel" title="Session usage details"></button>
       </div>
       <div id="attachment-list" class="attachment-list" aria-label="Attachments"></div>
       <form id="composer" class="composer">
@@ -125,6 +137,7 @@ export function createWebviewDocument(
     <div id="mention-panel" class="command-panel mention-panel" role="region" aria-label="Workspace files" hidden>
       <div id="mention-list" class="command-list mention-list" role="listbox" aria-label="Workspace files"></div>
     </div>
+    <div id="usage-panel" class="usage-panel" role="dialog" aria-label="Session usage" hidden></div>
     <div id="modal-backdrop" class="modal-backdrop" hidden></div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>

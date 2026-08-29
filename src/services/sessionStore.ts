@@ -16,6 +16,16 @@ interface SessionHeader {
 	timestamp?: string;
 }
 
+interface SessionTimestamp {
+	value: string;
+	epochMs: number;
+}
+
+interface SessionLines {
+	lines: string[];
+	complete: boolean;
+}
+
 function sessionDirectoryName(cwd: string): string {
 	const normalized = cwd.replace(/^[/\\]+/, "").replace(/[:/\\]+/g, "-");
 	return path.basename(`--${normalized}--`);
@@ -71,11 +81,17 @@ function cleanExcerpt(text: string): string {
 		.trim();
 }
 
-async function readSessionText(
+async function readSessionLines(
 	filePath: string,
 	size: number,
-): Promise<string> {
-	if (size <= MAX_FULL_READ_BYTES) return readFile(filePath, "utf8");
+): Promise<SessionLines> {
+	if (size <= MAX_FULL_READ_BYTES) {
+		const contents = await readFile(filePath, "utf8");
+		return {
+			lines: splitCompleteLines(contents, true, true),
+			complete: true,
+		};
+	}
 
 	const handle = await open(filePath, "r");
 	try {
@@ -84,15 +100,118 @@ async function readSessionText(
 			Math.max(0, size - headLength),
 			TAIL_READ_BYTES,
 		);
-		const head = Buffer.alloc(headLength);
-		const tail = Buffer.alloc(tailLength);
-		await handle.read(head, 0, headLength, 0);
-		if (tailLength > 0)
-			await handle.read(tail, 0, tailLength, size - tailLength);
-		return `${head.toString("utf8")}\n${tail.toString("utf8")}`;
+		const head = await readBytes(handle, headLength, 0);
+		const tailOffset = Math.max(0, size - tailLength);
+		const tail = await readBytes(handle, tailLength, tailOffset);
+		let tailStartsAtLineBoundary = tailOffset === 0;
+		if (tailOffset > 0) {
+			const previous = await readBytes(handle, 1, tailOffset - 1);
+			tailStartsAtLineBoundary = previous[0] === 0x0a;
+		}
+		return {
+			lines: [
+				...splitCompleteLines(
+					head.toString("utf8"),
+					true,
+					head.at(-1) === 0x0a,
+				),
+				...splitCompleteLines(
+					tail.toString("utf8"),
+					tailStartsAtLineBoundary,
+					true,
+				),
+			],
+			complete: false,
+		};
 	} finally {
 		await handle.close();
 	}
+}
+
+async function readBytes(
+	handle: Awaited<ReturnType<typeof open>>,
+	length: number,
+	position: number,
+): Promise<Buffer> {
+	if (length <= 0) return Buffer.alloc(0);
+	const buffer = Buffer.alloc(length);
+	let offset = 0;
+	while (offset < length) {
+		const result = await handle.read(
+			buffer,
+			offset,
+			length - offset,
+			position + offset,
+		);
+		if (result.bytesRead === 0) break;
+		offset += result.bytesRead;
+	}
+	return buffer.subarray(0, offset);
+}
+
+function splitCompleteLines(
+	text: string,
+	firstLineComplete: boolean,
+	lastLineComplete: boolean,
+): string[] {
+	let lines = text.split("\n");
+	if (!firstLineComplete) lines = lines.slice(1);
+	if (!lastLineComplete) lines = lines.slice(0, -1);
+	return lines
+		.map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line))
+		.filter((line) => line.length > 0);
+}
+
+function parseSessionTimestamp(value: unknown): SessionTimestamp | undefined {
+	if (typeof value !== "string" || value.length === 0 || value.length > 128)
+		return undefined;
+	const epochMs = Date.parse(value);
+	return Number.isFinite(epochMs) ? { value, epochMs } : undefined;
+}
+
+function parseMessageTimestamp(value: unknown): SessionTimestamp | undefined {
+	if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+		return undefined;
+	const date = new Date(value);
+	return Number.isFinite(date.getTime())
+		? { value: date.toISOString(), epochMs: value }
+		: undefined;
+}
+
+function laterTimestamp(
+	left: SessionTimestamp | undefined,
+	right: SessionTimestamp | undefined,
+): SessionTimestamp | undefined {
+	if (!left) return right;
+	if (!right) return left;
+	return right.epochMs > left.epochMs ? right : left;
+}
+
+function earlierTimestamp(
+	left: SessionTimestamp | undefined,
+	right: SessionTimestamp | undefined,
+): SessionTimestamp | undefined {
+	if (!left) return right;
+	if (!right) return left;
+	return right.epochMs < left.epochMs ? right : left;
+}
+
+function activityTimestamp(
+	entry: Record<string, unknown>,
+): SessionTimestamp | undefined {
+	if (entry.type !== "message") return undefined;
+	if (
+		!entry.message ||
+		typeof entry.message !== "object" ||
+		Array.isArray(entry.message)
+	)
+		return undefined;
+	const message = entry.message as Record<string, unknown>;
+	if (message.role !== "user" && message.role !== "assistant") return undefined;
+	return (
+		parseMessageTimestamp(message.timestamp) ??
+		parseSessionTimestamp(entry.timestamp)
+	);
 }
 
 async function parseSessionSummary(
@@ -107,40 +226,81 @@ async function parseSessionSummary(
 	try {
 		const fileStat = await stat(filePath);
 		if (!fileStat.isFile()) return undefined;
-		const contents = await readSessionText(filePath, fileStat.size);
-		const lines = contents.trim().split("\n");
-		const header = JSON.parse(lines[0] ?? "{}") as SessionHeader;
+		const sessionLines = await readSessionLines(filePath, fileStat.size);
+		const headerValue = sessionLines.lines[0];
+		if (!headerValue) return undefined;
+		let parsedHeader: unknown;
+		try {
+			parsedHeader = JSON.parse(headerValue) as unknown;
+		} catch {
+			return undefined;
+		}
+		if (
+			!parsedHeader ||
+			typeof parsedHeader !== "object" ||
+			Array.isArray(parsedHeader)
+		)
+			return undefined;
+		const header = parsedHeader as SessionHeader;
 		if (header.type !== "session" || header.cwd !== cwd) return undefined;
 
 		let sessionName = "";
 		let firstUserMessage = "";
-		for (let index = 1; index < lines.length; index += 1) {
-			const line = lines[index];
-			if (!line) continue;
-			let entry: Record<string, unknown>;
+		let firstActivity: SessionTimestamp | undefined;
+		let lastActivity: SessionTimestamp | undefined;
+		let messageCount = 0;
+		for (const line of sessionLines.lines.slice(1)) {
+			let parsedEntry: unknown;
 			try {
-				entry = JSON.parse(line) as Record<string, unknown>;
+				parsedEntry = JSON.parse(line) as unknown;
 			} catch {
 				continue;
 			}
+			if (
+				!parsedEntry ||
+				typeof parsedEntry !== "object" ||
+				Array.isArray(parsedEntry)
+			)
+				continue;
+			const entry = parsedEntry as Record<string, unknown>;
 			if (entry.type === "session_info" && typeof entry.name === "string")
 				sessionName = entry.name;
-			if (!firstUserMessage && entry.type === "message") {
-				const message = entry.message as Record<string, unknown> | undefined;
-				if (message?.role === "user")
-					firstUserMessage = contentToText(message.content);
+			if (entry.type === "message") {
+				messageCount += 1;
+				if (!firstUserMessage) {
+					const message =
+						entry.message &&
+						typeof entry.message === "object" &&
+						!Array.isArray(entry.message)
+							? (entry.message as Record<string, unknown>)
+							: undefined;
+					if (message?.role === "user") {
+						const text = contentToText(message.content);
+						if (text) firstUserMessage = text;
+					}
+				}
 			}
+			const activity = activityTimestamp(entry);
+			firstActivity = earlierTimestamp(firstActivity, activity);
+			lastActivity = laterTimestamp(lastActivity, activity);
 		}
 
+		const headerTimestamp = parseSessionTimestamp(header.timestamp);
+		const fileTimestamp: SessionTimestamp = {
+			value: fileStat.mtime.toISOString(),
+			epochMs: fileStat.mtime.getTime(),
+		};
+		const createdAt = headerTimestamp ?? fileTimestamp;
+		const effectiveLastActivity = lastActivity ?? createdAt;
 		const excerpt = cleanExcerpt(firstUserMessage);
 		return {
 			path: filePath,
 			title: sessionName.trim() || excerpt.slice(0, 54) || "Untitled",
 			excerpt: excerpt.slice(0, 100),
-			timestamp:
-				typeof header.timestamp === "string"
-					? header.timestamp
-					: fileStat.mtime.toISOString(),
+			createdAt: createdAt.value,
+			lastActivityAt: effectiveLastActivity.value,
+			...(firstActivity ? { firstActivityAt: firstActivity.value } : {}),
+			...(sessionLines.complete ? { messageCount } : {}),
 			active: activePath === filePath,
 		};
 	} catch {
@@ -185,7 +345,18 @@ export async function listProjectSessions(
 
 	return sessions
 		.filter((session): session is SessionSummary => Boolean(session))
-		.sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+		.sort((left, right) => {
+			const leftActivity =
+				Date.parse(left.lastActivityAt ?? left.createdAt) || 0;
+			const rightActivity =
+				Date.parse(right.lastActivityAt ?? right.createdAt) || 0;
+			return (
+				rightActivity - leftActivity ||
+				(Date.parse(right.createdAt) || 0) -
+					(Date.parse(left.createdAt) || 0) ||
+				left.path.localeCompare(right.path)
+			);
+		});
 }
 
 export async function deleteProjectSession(

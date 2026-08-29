@@ -193,3 +193,77 @@
 	font-size: var(--pi-font-chrome);
 	text-align: center;
 }
+
+/* The fork picker reuses `.history-panel` for its shell, so only the rows and the
+   two extra notes are defined here. `.session-row`'s three-column grid does not
+   fit: a fork row has one action, not three. */
+.fork-hint {
+	flex: 0 0 auto;
+	margin: 0 2px 6px;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	line-height: 1.4;
+}
+
+.fork-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	width: 100%;
+	min-height: 28px;
+	padding: 4px 8px;
+	border-radius: 4px;
+	color: inherit;
+	background: transparent;
+	cursor: pointer;
+	gap: 8px;
+}
+
+.fork-row + .fork-row {
+	margin-top: 2px;
+}
+
+/* Hover and keyboard highlight share one appearance: the reader drives this list
+   from the search field, so the highlighted row is the one Enter acts on and it
+   must not look different from the one under the pointer. */
+.fork-row:hover,
+.fork-row.is-active {
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.fork-row.is-active {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: -1px;
+}
+
+.fork-row-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.fork-row-time {
+	flex: 0 0 auto;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+/* Warns before the choice, not after: forking replaces the composer, and a
+   confirmation that appears once the row is already clicked arrives too late to
+   inform it. */
+.fork-draft-warning {
+	display: flex;
+	align-items: center;
+	flex: 0 0 auto;
+	margin: 6px 2px 0;
+	color: var(--vscode-editorWarning-foreground, var(--pi-muted));
+	font-size: var(--pi-font-chrome);
+	gap: 5px;
+}
+
+.fork-draft-warning[hidden] {
+	display: none;
+}

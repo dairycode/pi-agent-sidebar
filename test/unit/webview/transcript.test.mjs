@@ -31,7 +31,7 @@ async function loadTranscript() {
 						() => ({
 							loader: "js",
 							contents:
-								"export const marked = { setOptions() {}, parse: (value) => `<p>${value}</p>` };",
+								"export const marked = { setOptions() {}, use() {}, parse: (value) => `<p>${value}</p>` };",
 						}),
 					);
 				},

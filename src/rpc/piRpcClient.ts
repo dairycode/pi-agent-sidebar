@@ -7,6 +7,9 @@ import { StringDecoder } from "node:string_decoder";
 import type { JsonRecord } from "../../shared/protocol.js";
 
 const MAX_RECORD_BYTES = 64 * 1024 * 1024;
+const MAX_RESPONSE_ID_LENGTH = 512;
+const MAX_RESPONSE_COMMAND_LENGTH = 128;
+const MAX_RESPONSE_ERROR_LENGTH = 16 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
 
 interface PendingRequest {
@@ -289,19 +292,81 @@ export class PiRpcClient {
 		}
 		const record = parsed as JsonRecord;
 
-		if (record.type === "response" && typeof record.id === "string") {
+		if (record.type === "response") {
+			if (typeof record.id !== "string" || record.id.length === 0) {
+				this.emitter.emit(
+					"protocolError",
+					"Ignored a Pi RPC response without a valid id.",
+				);
+				return;
+			}
+			if (record.id.length > MAX_RESPONSE_ID_LENGTH) {
+				this.emitter.emit(
+					"protocolError",
+					"Ignored a Pi RPC response with an oversized id.",
+				);
+				return;
+			}
 			const pending = this.pending.get(record.id);
 			if (!pending) return;
+			const rejectPending = (message: string): void => {
+				clearTimeout(pending.timer);
+				this.pending.delete(record.id as string);
+				pending.reject(new Error(message));
+			};
+			if (typeof record.success !== "boolean") {
+				rejectPending(
+					`Pi RPC command '${pending.command}' returned an invalid success flag.`,
+				);
+				this.emitter.emit(
+					"protocolError",
+					`Pi RPC command '${pending.command}' returned a non-boolean success flag.`,
+				);
+				return;
+			}
+			if (
+				record.command !== undefined &&
+				(typeof record.command !== "string" ||
+					record.command.length === 0 ||
+					record.command.length > MAX_RESPONSE_COMMAND_LENGTH)
+			) {
+				rejectPending(
+					`Pi RPC command '${pending.command}' returned an invalid command name.`,
+				);
+				this.emitter.emit(
+					"protocolError",
+					`Pi RPC command '${pending.command}' returned an invalid command name.`,
+				);
+				return;
+			}
+			if (record.command !== undefined && record.command !== pending.command) {
+				rejectPending(
+					`Pi RPC response command '${record.command}' does not match '${pending.command}'.`,
+				);
+				this.emitter.emit(
+					"protocolError",
+					`Pi RPC response command '${record.command}' does not match '${pending.command}'.`,
+				);
+				return;
+			}
+			if (
+				record.error !== undefined &&
+				(typeof record.error !== "string" ||
+					record.error.length > MAX_RESPONSE_ERROR_LENGTH)
+			) {
+				rejectPending(
+					`Pi RPC command '${pending.command}' returned an invalid error field.`,
+				);
+				this.emitter.emit(
+					"protocolError",
+					`Pi RPC command '${pending.command}' returned an invalid error field.`,
+				);
+				return;
+			}
 			clearTimeout(pending.timer);
 			this.pending.delete(record.id);
 			if (record.success === false) {
-				pending.reject(
-					new Error(
-						typeof record.error === "string"
-							? record.error
-							: `${pending.command} failed.`,
-					),
-				);
+				pending.reject(new Error(record.error || `${pending.command} failed.`));
 			} else {
 				pending.resolve(record.data);
 			}

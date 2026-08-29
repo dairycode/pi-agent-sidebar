@@ -530,18 +530,29 @@
 	background: var(--pi-accent-hover);
 }
 
+/* A button rather than a text node: it opens the usage detail panel. The
+   appearance stays identical to the plain status text it replaced. */
 .runtime-meta {
 	flex: 0 1 auto;
 	min-width: 0;
 	max-width: 55%;
 	margin-left: auto;
+	padding: 0;
 	overflow: hidden;
+	border: 0;
+	background: transparent;
 	color: var(--pi-muted);
+	font-family: inherit;
 	font-size: var(--pi-font-chrome);
 	line-height: 16px;
 	text-align: right;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	cursor: pointer;
+}
+
+.runtime-meta:hover {
+	color: var(--vscode-foreground);
 }
 
 .runtime-meta:empty {

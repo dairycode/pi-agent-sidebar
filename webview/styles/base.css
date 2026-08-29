@@ -32,6 +32,15 @@
 	   a step is expressed through color and weight instead. */
 	--pi-font-chrome: 11px;
 	--pi-font-title: 15px;
+	/* Code reads one notch below prose: at the same nominal size a monospace face
+	   looks larger than the UI face, because of its wider advance and taller
+	   x-height. Derived from the UI font size rather than
+	   `--vscode-editor-font-size`, so code follows the sidebar it lives in instead
+	   of the editor.
+
+	   A `calc` on the root variable rather than `em`: `em` compounds on nesting,
+	   so a `code` inside a `pre` would land at 0.92 x 0.92 of the body size. */
+	--pi-font-code: calc(var(--vscode-font-size, 13px) * 0.92);
 	/* Shared size for every composer-toolbar control: icon buttons, the model
 	   and thinking pickers, and the send button. */
 	--pi-control-size: 28px;

@@ -6,6 +6,17 @@ import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
+import {
+	formatAbsoluteTime,
+	formatClockTime,
+	formatCost,
+	formatDaySeparator,
+	formatRelativeTime,
+	formatTokenCount,
+	isNewLocalDay,
+	nextRefreshDelayMs,
+	normalizeEpochMs,
+} from "./transcript/messageTime.js";
 import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
 import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
@@ -19,7 +30,9 @@ import {
 	friendlyToolName,
 	isRenderableMessage,
 	messageHtml,
+	messagePlainText,
 	messageRenderSignature,
+	quotedText,
 } from "./transcript/renderer.js";
 import {
 	containsDroppedResources,
@@ -31,13 +44,16 @@ import { SelectController } from "./ui/selectController.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	type AttachmentRef,
+	type ForkCandidate,
 	type HostToWebviewMessage,
 	type JsonRecord,
+	type PiCapabilities,
 	type PiCommand,
 	type PiMessage,
 	type PiModel,
 	type PiState,
 	type PiStats,
+	type PiTimeContext,
 	type SessionSummary,
 	type WebviewToHostMessage,
 	type WorkspaceReferenceSuggestion,
@@ -87,6 +103,14 @@ interface UiState {
 	commands: PiCommand[];
 	attachments: AttachmentRef[];
 	sessions: SessionSummary[];
+	capabilities: PiCapabilities;
+	timeContext: PiTimeContext;
+	/**
+	 * `hostNowMs` minus the webview's own clock at the moment a snapshot arrived.
+	 * Remote SSH puts pi on a different machine, so relative times are computed
+	 * against the host's clock rather than the webview's.
+	 */
+	clockSkewMs: number;
 	queue: { steering: string[]; followUp: string[] };
 	busy: boolean;
 }
@@ -104,6 +128,17 @@ const ui: UiState = {
 	commands: [],
 	attachments: [],
 	sessions: [],
+	// Optimistic until the host reports otherwise, matching the host-side
+	// tracker: a capability is only hidden once pi says it is unsupported.
+	capabilities: {
+		clone: true,
+		fork: true,
+		forkMessages: true,
+		entries: true,
+		tree: true,
+	},
+	timeContext: { locale: "", hostNowMs: 0 },
+	clockSkewMs: 0,
 	queue: { steering: [], followUp: [] },
 	busy: false,
 };
@@ -113,6 +148,8 @@ const pendingActions = new Map<string, PendingAction>();
 const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
 let renderQueued = false;
+/** Single transcript-wide timer for relative time labels. */
+let relativeTimeTimer: ReturnType<typeof setTimeout> | undefined;
 let transcriptMeasureQueued = false;
 let pendingSubmit = false;
 let composerFocusRequestId: number | undefined;
@@ -122,6 +159,16 @@ let lastCompletedFocusRequestId = 0;
 let renderedPromptText: string | undefined;
 let renderedPromptMarkerSignature: string | undefined;
 let resourceDragDepth = 0;
+/**
+ * Prompts the active session can fork from, as last reported by the host.
+ *
+ * Cleared when the picker closes: the list is only valid for the session it was
+ * fetched from, and a stale entry id would be rejected by the host anyway.
+ */
+let forkCandidates: ForkCandidate[] = [];
+let activeForkEntryId: string | undefined;
+let renderedForkEntryIds: string[] = [];
+let forkLoading = false;
 
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
@@ -145,11 +192,17 @@ const elements = {
 	pinnedPromptToggle: element<HTMLButtonElement>("pinned-prompt-toggle"),
 	sessionTitle: element<HTMLElement>("session-title"),
 	renameSessionButton: element<HTMLButtonElement>("rename-session-button"),
+	cloneSessionButton: element<HTMLButtonElement>("clone-session-button"),
+	forkSessionButton: element<HTMLButtonElement>("fork-session-button"),
 	historyButton: element<HTMLButtonElement>("history-button"),
 	newSessionButton: element<HTMLButtonElement>("new-session-button"),
 	historyPanel: element<HTMLElement>("history-panel"),
 	sessionSearch: element<HTMLInputElement>("session-search"),
 	sessionList: element<HTMLElement>("session-list"),
+	forkPanel: element<HTMLElement>("fork-panel"),
+	forkSearch: element<HTMLInputElement>("fork-search"),
+	forkList: element<HTMLElement>("fork-list"),
+	forkDraftWarning: element<HTMLElement>("fork-draft-warning"),
 	widgetArea: element<HTMLElement>("widget-area"),
 	composerStatusRow: element<HTMLElement>("composer-status-row"),
 	queueStatus: element<HTMLElement>("queue-status"),
@@ -174,7 +227,8 @@ const elements = {
 	thinkingSelectValue: element<HTMLElement>("thinking-select-value"),
 	selectPopup: element<HTMLElement>("select-popup"),
 	sendButton: element<HTMLButtonElement>("send-button"),
-	runtimeMeta: element<HTMLElement>("runtime-meta"),
+	runtimeMeta: element<HTMLButtonElement>("runtime-meta"),
+	usagePanel: element<HTMLElement>("usage-panel"),
 	toastRegion: element<HTMLElement>("toast-region"),
 	liveStatus: element<HTMLElement>("live-status"),
 	modalBackdrop: element<HTMLElement>("modal-backdrop"),
@@ -384,6 +438,8 @@ interface MessageRenderContext {
 	byKey: ReadonlyMap<string, PiMessage>;
 	omitted: number;
 	resultMap: ReadonlyMap<string, PiMessage>;
+	/** Day-separator entries, keyed like any other transcript entry. */
+	separatorLabels: ReadonlyMap<string, string>;
 }
 
 let pendingMessageRender: MessageRenderContext | undefined;
@@ -409,8 +465,17 @@ window.addEventListener("keydown", (event) => {
 		mentionController.dismiss();
 		return;
 	}
+	if (!elements.usagePanel.hidden) {
+		dismissUsagePanel();
+		elements.runtimeMeta.focus();
+		return;
+	}
 	if (!elements.commandPanel.hidden) {
 		closeCommandPalette(true);
+		return;
+	}
+	if (!elements.forkPanel.hidden) {
+		closeForkPicker();
 		return;
 	}
 	if (!elements.historyPanel.hidden) closeHistory();
@@ -445,6 +510,14 @@ window.addEventListener("pointerdown", (event) => {
 	) {
 		mentionController.dismiss();
 	}
+	// Checked before the history panel, whose branch returns early.
+	if (
+		!elements.forkPanel.hidden &&
+		!elements.forkPanel.contains(event.target) &&
+		!elements.forkSessionButton.contains(event.target)
+	) {
+		dismissForkPicker();
+	}
 	if (
 		modalController.isOpen ||
 		elements.historyPanel.hidden ||
@@ -463,6 +536,7 @@ window.addEventListener("blur", () => {
 	if (!elements.commandPanel.hidden) dismissCommandPalette();
 	mentionController.dismiss();
 	if (!elements.historyPanel.hidden) dismissHistory();
+	dismissForkPicker();
 });
 
 elements.input.addEventListener("input", () => {
@@ -724,11 +798,69 @@ elements.newSessionButton.addEventListener("click", () =>
 elements.renameSessionButton.addEventListener("click", () =>
 	openRenamePrompt(),
 );
+// Cloning duplicates the active branch into a new session and leaves the
+// current one in history, so it needs no confirmation. The composer draft is
+// deliberately preserved: clone does not consume what the user is typing.
+elements.cloneSessionButton.addEventListener("click", () => {
+	if (ui.connection !== "ready" || ui.busy) return;
+	runAction("cloneSession");
+});
+// The picker is a webview list, so the whole choice happens here and the host
+// only executes the entry id it is handed.
+elements.forkSessionButton.addEventListener("click", () => {
+	if (elements.forkPanel.hidden) openForkPicker();
+	else closeForkPicker();
+});
+elements.forkSearch.addEventListener("input", () => renderForkCandidates());
+elements.forkSearch.addEventListener("keydown", (event) => {
+	if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+		event.preventDefault();
+		moveActiveFork(event.key === "ArrowDown" ? 1 : -1);
+		return;
+	}
+	if (event.key !== "Enter" || event.isComposing) return;
+	event.preventDefault();
+	// Enter with nothing highlighted does nothing: the first row is not an obvious
+	// default, and a fork is not silently undoable.
+	if (activeForkEntryId) submitFork(activeForkEntryId);
+});
+elements.runtimeMeta.addEventListener("click", () => toggleUsagePanel());
+document.addEventListener("pointerdown", (event) => {
+	if (elements.usagePanel.hidden) return;
+	const target = event.target as Node | null;
+	if (
+		target &&
+		(elements.usagePanel.contains(target) ||
+			elements.runtimeMeta.contains(target))
+	) {
+		return;
+	}
+	dismissUsagePanel();
+});
+// A hidden webview schedules no refresh at all, so labels are brought back up
+// to date the moment it becomes visible again.
+document.addEventListener("visibilitychange", () => {
+	if (document.hidden) {
+		if (relativeTimeTimer !== undefined) {
+			clearTimeout(relativeTimeTimer);
+			relativeTimeTimer = undefined;
+		}
+		return;
+	}
+	refreshRelativeTimes();
+});
 
 window.addEventListener("resize", () => selectorController.reposition());
 
 elements.messages.addEventListener("click", (event) => {
 	const target = event.target as HTMLElement;
+	const actionButton = target.closest<HTMLButtonElement>(
+		"[data-message-action]",
+	);
+	if (actionButton) {
+		handleMessageAction(actionButton);
+		return;
+	}
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
@@ -791,12 +923,31 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 			break;
 		}
 		case "actionResult": {
-			handleActionResult(message.actionId, message.ok, message.error);
+			handleActionResult(
+				message.actionId,
+				message.ok,
+				message.error,
+				message.cancelled,
+			);
 			break;
 		}
 		case "sessionList": {
 			ui.sessions = message.sessions;
 			renderSessions();
+			break;
+		}
+		case "forkCandidates": {
+			forkLoading = false;
+			forkCandidates = message.candidates;
+			// A late reply must not repopulate a picker the reader already closed.
+			if (!elements.forkPanel.hidden) renderForkCandidates();
+			break;
+		}
+		case "capabilities": {
+			// The host downgrades a capability the moment pi rejects the command as
+			// unknown, so the entry point disappears instead of failing repeatedly.
+			ui.capabilities = message.capabilities;
+			scheduleRender();
 			break;
 		}
 		case "commandList": {
@@ -875,6 +1026,13 @@ function applySnapshot(
 	ui.thinkingLevels = message.thinkingLevels;
 	ui.commands = message.commands;
 	ui.workspaceName = message.workspaceName;
+	if (message.capabilities) ui.capabilities = message.capabilities;
+	if (message.timeContext) {
+		ui.timeContext = message.timeContext;
+		// Measured once per snapshot: the difference between pi's clock and this
+		// webview's is what makes relative times correct over Remote SSH.
+		ui.clockSkewMs = message.timeContext.hostNowMs - Date.now();
+	}
 	ui.busy = Boolean(message.state.isStreaming || message.state.isCompacting);
 	ui.streamingMessage = undefined;
 	liveTools.clear();
@@ -930,12 +1088,14 @@ function handleActionResult(
 	actionId: string,
 	ok: boolean,
 	error?: string,
+	cancelled = false,
 ): void {
 	const action = pendingActions.get(actionId);
 	pendingActions.delete(actionId);
 	if (action?.type === "submit") pendingSubmit = false;
 	if (
 		ok &&
+		!cancelled &&
 		action &&
 		(action.type === "submit" || action.type === "newSession")
 	) {
@@ -945,11 +1105,11 @@ function handleActionResult(
 		);
 		composerController.completeSubmittedReferences(action);
 	}
-	if (ok && action?.type === "pasteImages") {
+	if (ok && !cancelled && action?.type === "pasteImages") {
 		showToast("Clipboard image attached", "info");
 		announce("Clipboard image attached");
 	}
-	if (ok && action?.type === "addResources") {
+	if (ok && !cancelled && action?.type === "addResources") {
 		showToast("Resources added to the input", "info");
 		announce("Resources added to the input");
 	}
@@ -959,15 +1119,26 @@ function handleActionResult(
 	) {
 		composerController.discardPendingReference(action.stagedReferenceId);
 	}
-	if (ok && action?.type === "deleteSession") {
+	if (ok && !cancelled && action?.type === "deleteSession") {
 		showToast("Session deleted", "info");
 		announce("Session deleted");
 		if (!elements.historyPanel.hidden) elements.sessionSearch.focus();
 	}
-	if (ok && action?.type === "renameSession") {
+	if (ok && !cancelled && action?.type === "renameSession") {
 		showToast("Session renamed", "info");
 		announce("Session renamed");
 	}
+	if (ok && !cancelled && action?.type === "cloneSession") {
+		showToast("Session duplicated", "info");
+		announce("Session duplicated");
+	}
+	if (ok && !cancelled && action?.type === "forkSession") {
+		showToast("Session forked", "info");
+		announce("Session forked");
+	}
+	// The generic error toast below explains the failure; the picker closes because
+	// it has no list to show and its entry ids were never delivered.
+	if (!ok && action?.type === "listForkCandidates") dismissForkPicker();
 	if (!ok) showToast(error ?? "Action failed", "error");
 	scheduleRender();
 }
@@ -1176,6 +1347,22 @@ function render(): void {
 	elements.attachButton.disabled = !enabled;
 	elements.commandButton.disabled = !enabled;
 	elements.renameSessionButton.disabled = !enabled;
+	// Cloning replaces the active session, so it must wait for pi to go idle. It
+	// is hidden outright when this pi build has no `clone` command.
+	elements.cloneSessionButton.hidden = !ui.capabilities.clone;
+	elements.cloneSessionButton.disabled = !enabled || ui.busy;
+	// Forking needs both the candidate list and the fork command itself.
+	elements.forkSessionButton.hidden =
+		!ui.capabilities.fork || !ui.capabilities.forkMessages;
+	elements.forkSessionButton.disabled = !enabled || ui.busy;
+	// An open picker outlives neither a disconnect nor a turn starting: its entry
+	// ids belong to the session as it was when the list was fetched.
+	if (
+		elements.forkSessionButton.disabled ||
+		elements.forkSessionButton.hidden
+	) {
+		dismissForkPicker();
+	}
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
 	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
 	const activeSelect = selectorController.activeKind;
@@ -1194,6 +1381,8 @@ function render(): void {
 	// was already made from scroll events and reader gestures.
 	scrollAnchor.stickToBottomIfFollowing();
 	scheduleTranscriptMeasure();
+	// Relabels the nodes this pass created and arms the next boundary timer.
+	refreshRelativeTimes();
 }
 
 /**
@@ -1343,22 +1532,40 @@ function renderMessages(): void {
 	// as history grows past the cap, which would invalidate all 150 nodes on the
 	// message that crosses the boundary.
 	const byKey = new Map<string, PiMessage>();
+	const separatorLabels = new Map<string, string>();
+	const locale = ui.timeContext.locale || undefined;
+	let previousDayEpoch: number | undefined;
 	for (const message of visible) {
 		const key = messageKey(message);
 		byKey.set(key, message);
+		const epochMs = normalizeEpochMs(message.timestamp);
+		if (epochMs !== undefined) {
+			// The separator is its own entry, so a day boundary never forces the
+			// message itself to be rebuilt and reconciliation keeps addressing
+			// nodes positionally.
+			if (isNewLocalDay(previousDayEpoch, epochMs)) {
+				const label = formatDaySeparator(epochMs, hostNow(), locale);
+				const separatorKey = `day-${key}`;
+				separatorLabels.set(separatorKey, label);
+				entries.push({ key: separatorKey, signature: `day:${label}` });
+			}
+			previousDayEpoch = epochMs;
+		}
 		entries.push({
 			key,
-			signature: messageRenderSignature(
+			// The epoch joins the signature so a corrected timestamp rebuilds the
+			// node; the relative label itself is refreshed in place instead.
+			signature: `${messageRenderSignature(
 				message,
 				resultMap,
 				liveTools,
 				message === ui.streamingMessage,
 				messageSignaturePart,
-			),
+			)}|ts${epochMs ?? "-"}`,
 		});
 	}
 
-	pendingMessageRender = { byKey, omitted, resultMap };
+	pendingMessageRender = { byKey, omitted, resultMap, separatorLabels };
 	transcriptView.update(entries);
 	pendingMessageRender = undefined;
 }
@@ -1385,6 +1592,15 @@ function createMessageNode(
 		return node;
 	}
 
+	const separatorLabel = context.separatorLabels.get(entry.key);
+	if (separatorLabel !== undefined) {
+		const node = document.createElement("div");
+		node.className = "day-separator";
+		node.setAttribute("role", "separator");
+		node.textContent = separatorLabel;
+		return node;
+	}
+
 	const message = context.byKey.get(entry.key);
 	if (!message) throw new Error(`No message for transcript key ${entry.key}`);
 	// The same stable key feeds messageHtml's per-block keys. A positional index
@@ -1407,7 +1623,121 @@ function createMessageNode(
 	enhanceCodeBlocks(node);
 	linkifyWorkspacePaths(node);
 	bindImageReflow(node);
+	appendMessageFooter(node, message, entry.key);
 	return node;
+}
+
+/**
+ * Adds the timestamp and per-message actions.
+ *
+ * Only user and settled assistant messages get a footer: a tool result or
+ * hidden custom message would just add noise, and a streaming message has
+ * neither a final time nor stable text to copy.
+ *
+ * Appended inside `.message`, not onto the slot: the slot is `display: contents`,
+ * so a child of it would become a flex item of `.messages` and take the full
+ * 20px inter-message gap.
+ */
+function appendMessageFooter(
+	node: Element,
+	message: PiMessage,
+	messageKeyValue: string,
+): void {
+	if (message.role !== "user" && message.role !== "assistant") return;
+	if (message === ui.streamingMessage) return;
+	const host = node.querySelector(".message");
+	if (!host) return;
+
+	const footer = document.createElement("div");
+	footer.className = "message-footer";
+
+	const epochMs = normalizeEpochMs(message.timestamp);
+	if (epochMs !== undefined) {
+		const time = document.createElement("time");
+		time.className = "message-time";
+		time.dateTime = new Date(epochMs).toISOString();
+		// A wall-clock label, and deliberately no `data-epoch-ms`: the day is already
+		// established by the day separator, so this label never goes stale and must
+		// not be rewritten into a relative one by `refreshRelativeTimes`.
+		const locale = ui.timeContext.locale || undefined;
+		const absolute = formatAbsoluteTime(epochMs, locale);
+		time.textContent = formatClockTime(epochMs, locale);
+		time.title = absolute;
+		time.setAttribute("aria-label", absolute);
+		footer.append(time);
+	}
+
+	// Actions are only offered when there is body text to act on: an
+	// image-only or tool-only message has nothing to copy or quote.
+	if (messagePlainText(message).length > 0) {
+		const actions = document.createElement("div");
+		actions.className = "message-actions";
+		for (const [action, icon, label] of [
+			["copy", "copy", "Copy message"],
+			["quote", "reply", "Quote in input"],
+		] as const) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className = "message-action icon-button";
+			button.title = label;
+			button.setAttribute("aria-label", label);
+			// The key is carried on the node so the delegated handler can find the
+			// original message; copying the text into an attribute would duplicate
+			// the whole message into the DOM.
+			button.dataset.messageAction = action;
+			button.dataset.messageKey = messageKeyValue;
+			button.append(createCodicon(icon));
+			actions.append(button);
+		}
+		footer.append(actions);
+	}
+
+	if (footer.childNodes.length > 0) host.append(footer);
+}
+
+/**
+ * Runs one per-message action.
+ *
+ * The text is re-derived from the original message rather than read back from
+ * the DOM, so it never carries button labels, timestamps, or tool chrome.
+ */
+function handleMessageAction(button: HTMLButtonElement): void {
+	const key = button.dataset.messageKey;
+	const message = key ? messageByKey(key) : undefined;
+	const text = message ? messagePlainText(message) : "";
+	if (!text) {
+		showToast("This message has no text to use", "error");
+		return;
+	}
+	if (button.dataset.messageAction === "copy") {
+		void navigator.clipboard.writeText(text).then(
+			() => {
+				showToast("Message copied", "info");
+				announce("Message copied");
+			},
+			() => showToast("Could not copy the message", "error"),
+		);
+		return;
+	}
+	// Quoting appends to the draft instead of replacing it: the reader may
+	// already have typed the question the quote is meant to support.
+	const draft = elements.input.value;
+	const separator = draft.length === 0 || draft.endsWith("\n\n") ? "" : "\n\n";
+	composerController.setText(`${draft}${separator}${quotedText(text)}\n\n`);
+	announce("Message quoted in the input");
+}
+
+/**
+ * Finds a rendered message by its transcript key.
+ *
+ * Resolved at click time rather than captured in a closure so a rebuilt node
+ * cannot hold a stale message object.
+ */
+function messageByKey(key: string): PiMessage | undefined {
+	for (const message of ui.messages) {
+		if (messageKey(message) === key) return message;
+	}
+	return undefined;
 }
 
 /**
@@ -1688,16 +2018,142 @@ function renderWidgets(): void {
 }
 
 function renderRuntimeMeta(): void {
+	const locale = ui.timeContext.locale || undefined;
 	const parts: string[] = [];
 	const context = ui.stats?.contextUsage?.percent;
 	if (typeof context === "number")
 		parts.push(`${Math.round(context)}% context`);
 	if (typeof ui.stats?.cost === "number" && ui.stats.cost > 0)
-		parts.push(`$${ui.stats.cost.toFixed(3)}`);
-	const text = parts.join(" · ");
-	elements.runtimeMeta.hidden = text.length === 0;
-	elements.runtimeMeta.textContent = text;
-	elements.runtimeMeta.title = text;
+		parts.push(formatCost(ui.stats.cost, locale));
+	const text = parts.join(" \u00b7 ");
+	elements.runtimeMeta.hidden = !ui.stats;
+	elements.runtimeMeta.textContent = text || "Usage";
+	elements.runtimeMeta.title = "Session usage details";
+	if (elements.runtimeMeta.hidden) dismissUsagePanel();
+	else if (!elements.usagePanel.hidden) renderUsagePanel();
+}
+
+/**
+ * Session usage detail, taken straight from pi's `get_session_stats`.
+ *
+ * Nothing here is computed locally. A `null` context reading is shown as
+ * unavailable rather than 0%: pi reports null right after compaction until a
+ * fresh assistant response supplies real usage.
+ */
+function renderUsagePanel(): void {
+	const locale = ui.timeContext.locale || undefined;
+	const stats = ui.stats;
+	const rows: Array<[string, string]> = [];
+	if (!stats) {
+		rows.push(["Usage", "Not reported by pi yet"]);
+	} else {
+		const usage = stats.contextUsage;
+		if (usage) {
+			rows.push([
+				"Context",
+				usage.tokens === null || typeof usage.percent !== "number"
+					? "Unavailable until the next response"
+					: `${formatTokenCount(usage.tokens, locale)} / ${formatTokenCount(
+							usage.contextWindow,
+							locale,
+						)} (${Math.round(usage.percent)}%)`,
+			]);
+		}
+		const tokens = stats.tokens;
+		if (tokens) {
+			rows.push(
+				["Input", formatTokenCount(tokens.input, locale)],
+				["Output", formatTokenCount(tokens.output, locale)],
+				["Cache read", formatTokenCount(tokens.cacheRead, locale)],
+				["Cache write", formatTokenCount(tokens.cacheWrite, locale)],
+				["Total tokens", formatTokenCount(tokens.total, locale)],
+			);
+		}
+		if (typeof stats.cost === "number")
+			rows.push(["Cost", formatCost(stats.cost, locale)]);
+		if (typeof stats.totalMessages === "number")
+			rows.push(["Messages", formatTokenCount(stats.totalMessages, locale)]);
+		if (typeof stats.toolCalls === "number")
+			rows.push(["Tool calls", formatTokenCount(stats.toolCalls, locale)]);
+	}
+
+	const list = document.createElement("dl");
+	list.className = "usage-list";
+	for (const [label, value] of rows) {
+		const term = document.createElement("dt");
+		term.textContent = label;
+		const detail = document.createElement("dd");
+		detail.textContent = value;
+		list.append(term, detail);
+	}
+	elements.usagePanel.replaceChildren(list);
+}
+
+function toggleUsagePanel(): void {
+	if (!elements.usagePanel.hidden) {
+		dismissUsagePanel();
+		return;
+	}
+	renderUsagePanel();
+	elements.usagePanel.hidden = false;
+	elements.runtimeMeta.setAttribute("aria-expanded", "true");
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.usagePanel,
+		anchor: elements.runtimeMeta,
+	});
+}
+
+function dismissUsagePanel(): void {
+	if (elements.usagePanel.hidden) return;
+	elements.usagePanel.hidden = true;
+	elements.runtimeMeta.setAttribute("aria-expanded", "false");
+}
+
+/**
+ * Relabels every visible timestamp in place.
+ *
+ * Deliberately bypasses TranscriptView: a label going from "59s" to "1m" must
+ * not re-parse markdown or replace DOM nodes, which would also reset the
+ * reader's open disclosures and scroll position.
+ */
+function refreshRelativeTimes(): void {
+	const epochValues: number[] = [];
+	for (const node of document.querySelectorAll<HTMLElement>(
+		"[data-epoch-ms]",
+	)) {
+		const epochMs = Number(node.dataset.epochMs);
+		if (!Number.isFinite(epochMs)) continue;
+		epochValues.push(epochMs);
+		applyRelativeTime(node, epochMs);
+	}
+	scheduleRelativeTimeRefresh(epochValues);
+}
+
+function applyRelativeTime(node: HTMLElement, epochMs: number): void {
+	const locale = ui.timeContext.locale || undefined;
+	const absolute = formatAbsoluteTime(epochMs, locale);
+	node.textContent = formatRelativeTime(epochMs, hostNow(), locale);
+	node.title = absolute;
+	node.setAttribute("aria-label", absolute);
+}
+
+/**
+ * Wakes only at the next label boundary rather than on a fixed interval, so an
+ * idle transcript costs nothing. A hidden webview schedules nothing at all.
+ */
+function scheduleRelativeTimeRefresh(epochValues: readonly number[]): void {
+	if (relativeTimeTimer !== undefined) {
+		clearTimeout(relativeTimeTimer);
+		relativeTimeTimer = undefined;
+	}
+	if (document.hidden) return;
+	const delay = nextRefreshDelayMs(epochValues, hostNow());
+	if (delay === undefined) return;
+	relativeTimeTimer = setTimeout(() => {
+		relativeTimeTimer = undefined;
+		refreshRelativeTimes();
+	}, delay);
 }
 
 function renderComposerStatusRow(): void {
@@ -1756,8 +2212,15 @@ function renderSessions(): void {
 		const title = document.createElement("strong");
 		title.textContent = session.title;
 		const time = document.createElement("time");
-		time.dateTime = session.timestamp;
-		time.textContent = formatRelativeTime(session.timestamp);
+		const activityAt = session.lastActivityAt ?? session.createdAt;
+		const activityEpoch = normalizeEpochMs(activityAt);
+		if (activityEpoch !== undefined) {
+			const locale = ui.timeContext.locale || undefined;
+			time.dateTime = new Date(activityEpoch).toISOString();
+			time.dataset.epochMs = String(activityEpoch);
+			time.textContent = formatRelativeTime(activityEpoch, hostNow(), locale);
+			time.title = formatAbsoluteTime(activityEpoch, locale);
+		}
 		openButton.append(title, time);
 		openButton.addEventListener("click", () => {
 			if (!session.active) runAction("switchSession", { path: session.path });
@@ -1808,6 +2271,7 @@ function renderSessions(): void {
 
 function toggleHistory(): void {
 	if (elements.historyPanel.hidden) {
+		dismissForkPicker();
 		elements.historyPanel.hidden = false;
 		elements.historyButton.setAttribute("aria-expanded", "true");
 		elements.sessionSearch.value = "";
@@ -1830,6 +2294,186 @@ function dismissHistory(): void {
 function closeHistory(): void {
 	dismissHistory();
 	elements.historyButton.focus();
+}
+
+/**
+ * Opens the fork picker and asks the host for the prompt list.
+ *
+ * The list is re-fetched on every open rather than cached: prompts accumulate as
+ * the conversation grows, and a stale list would offer entry ids the host would
+ * only reject.
+ */
+function openForkPicker(): void {
+	if (ui.connection !== "ready" || ui.busy) return;
+	if (!ui.capabilities.fork || !ui.capabilities.forkMessages) return;
+	dismissHistory();
+	selectorController.close(false);
+	dismissCommandPalette();
+	mentionController.dismiss();
+	forkCandidates = [];
+	activeForkEntryId = undefined;
+	renderedForkEntryIds = [];
+	forkLoading = true;
+	elements.forkSearch.value = "";
+	elements.forkPanel.hidden = false;
+	elements.forkSessionButton.setAttribute("aria-expanded", "true");
+	// Shown before the list arrives, so the cost of forking is visible while the
+	// reader is still choosing rather than after they have committed.
+	elements.forkDraftWarning.hidden = !composerHasContent();
+	renderForkCandidates();
+	elements.forkSearch.focus();
+	runAction("listForkCandidates");
+}
+
+function dismissForkPicker(): void {
+	if (elements.forkPanel.hidden) return;
+	elements.forkPanel.hidden = true;
+	forkCandidates = [];
+	activeForkEntryId = undefined;
+	renderedForkEntryIds = [];
+	forkLoading = false;
+	elements.forkSearch.removeAttribute("aria-activedescendant");
+	elements.forkList.replaceChildren();
+	elements.forkSessionButton.setAttribute("aria-expanded", "false");
+}
+
+function closeForkPicker(): void {
+	const wasOpen = !elements.forkPanel.hidden;
+	dismissForkPicker();
+	if (wasOpen) elements.forkSessionButton.focus();
+}
+
+/** True when forking would discard something the reader typed or attached. */
+function composerHasContent(): boolean {
+	return (
+		elements.input.value.trim().length > 0 ||
+		ui.attachments.length > 0 ||
+		composerController.references.length > 0
+	);
+}
+
+function matchingForkCandidates(): ForkCandidate[] {
+	const terms = elements.forkSearch.value
+		.trim()
+		.toLocaleLowerCase()
+		.split(/\s+/u)
+		.filter(Boolean);
+	if (terms.length === 0) return forkCandidates;
+	return forkCandidates.filter((candidate) => {
+		const searchable = candidate.text.toLocaleLowerCase();
+		return terms.every((term) => searchable.includes(term));
+	});
+}
+
+function renderForkCandidates(): void {
+	if (forkLoading) {
+		renderedForkEntryIds = [];
+		const loading = document.createElement("div");
+		loading.className = "session-list-empty";
+		loading.textContent = "Loading...";
+		elements.forkList.replaceChildren(loading);
+		elements.forkSearch.removeAttribute("aria-activedescendant");
+		return;
+	}
+	const matches = matchingForkCandidates();
+	renderedForkEntryIds = matches.map((candidate) => candidate.entryId);
+	if (matches.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "session-list-empty";
+		empty.textContent =
+			forkCandidates.length === 0
+				? "No earlier prompt to fork from"
+				: "No matching prompts";
+		elements.forkList.replaceChildren(empty);
+		elements.forkSearch.removeAttribute("aria-activedescendant");
+		return;
+	}
+	// A filter edit can hide the highlighted row, and a highlight pointing at a
+	// row that is no longer rendered would let Enter fork something invisible.
+	if (activeForkEntryId && !renderedForkEntryIds.includes(activeForkEntryId)) {
+		activeForkEntryId = undefined;
+	}
+	elements.forkList.replaceChildren(
+		...matches.map((candidate, index) => createForkRow(candidate, index)),
+	);
+	highlightActiveFork(false);
+}
+
+function createForkRow(candidate: ForkCandidate, index: number): HTMLElement {
+	const row = document.createElement("div");
+	row.className = "fork-row";
+	row.id = `fork-row-${index}`;
+	row.setAttribute("role", "option");
+	row.setAttribute("aria-selected", "false");
+	row.dataset.forkEntryId = candidate.entryId;
+	row.tabIndex = -1;
+	// The host already collapsed the prompt to one line; an empty one still needs a
+	// visible label or the row would be an unlabelled target.
+	const text = candidate.text || "(empty prompt)";
+	row.title = text;
+
+	const label = document.createElement("span");
+	label.className = "fork-row-text";
+	label.textContent = text;
+	row.append(label);
+
+	const epochMs = normalizeEpochMs(candidate.timestamp);
+	if (epochMs !== undefined) {
+		const time = document.createElement("time");
+		time.className = "fork-row-time";
+		time.dateTime = new Date(epochMs).toISOString();
+		time.dataset.epochMs = String(epochMs);
+		applyRelativeTime(time, epochMs);
+		row.append(time);
+	}
+
+	row.addEventListener("click", () => submitFork(candidate.entryId));
+	return row;
+}
+
+function highlightActiveFork(scroll = true): void {
+	let activeId: string | undefined;
+	for (const row of elements.forkList.querySelectorAll<HTMLElement>(
+		".fork-row",
+	)) {
+		const active = row.dataset.forkEntryId === activeForkEntryId;
+		row.classList.toggle("is-active", active);
+		row.setAttribute("aria-selected", String(active));
+		if (!active) continue;
+		activeId = row.id;
+		if (scroll) row.scrollIntoView({ block: "nearest" });
+	}
+	// Focus stays in the search field, so the pointer to the highlighted row has to
+	// live there rather than on the list.
+	if (activeId)
+		elements.forkSearch.setAttribute("aria-activedescendant", activeId);
+	else elements.forkSearch.removeAttribute("aria-activedescendant");
+}
+
+function moveActiveFork(delta: number): void {
+	if (renderedForkEntryIds.length === 0) return;
+	const current = activeForkEntryId
+		? renderedForkEntryIds.indexOf(activeForkEntryId)
+		: -1;
+	const next =
+		(current + delta + renderedForkEntryIds.length) %
+		renderedForkEntryIds.length;
+	activeForkEntryId = renderedForkEntryIds[next];
+	highlightActiveFork();
+}
+
+/**
+ * Sends the chosen prompt to the host.
+ *
+ * The picker closes first: a successful fork replaces the transcript and the
+ * composer, so leaving the old list on screen would invite a second click on an
+ * entry id that can now only be rejected.
+ */
+function submitFork(entryId: string): void {
+	if (ui.connection !== "ready" || ui.busy) return;
+	dismissForkPicker();
+	elements.forkSessionButton.focus();
+	runAction("forkSession", { entryId });
 }
 
 /**
@@ -2316,6 +2960,9 @@ function runAction(
 		| "submit"
 		| "abort"
 		| "newSession"
+		| "cloneSession"
+		| "listForkCandidates"
+		| "forkSession"
 		| "switchSession"
 		| "deleteSession"
 		| "renameSession"
@@ -2481,17 +3128,14 @@ function truncate(value: string, length: number): string {
 		: value;
 }
 
-function formatRelativeTime(timestamp: string): string {
-	const value = new Date(timestamp).getTime();
-	const difference = Date.now() - value;
-	if (!Number.isFinite(value)) return "";
-	if (difference < 60_000) return "now";
-	if (difference < 3_600_000) return `${Math.floor(difference / 60_000)}m`;
-	if (difference < 86_400_000) return `${Math.floor(difference / 3_600_000)}h`;
-	return new Intl.DateTimeFormat(undefined, {
-		month: "short",
-		day: "numeric",
-	}).format(value);
+/**
+ * The host's wall clock, corrected for webview clock skew.
+ *
+ * Remote SSH runs pi on another machine, so a message timestamp is compared
+ * against the host's clock rather than the webview's.
+ */
+function hostNow(): number {
+	return Date.now() + ui.clockSkewMs;
 }
 
 function createCodicon(name: string): HTMLElement {

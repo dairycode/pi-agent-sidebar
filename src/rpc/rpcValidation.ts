@@ -1,9 +1,15 @@
 import type {
+	ForkCandidate,
 	JsonRecord,
 	PiCommand,
 	PiContentBlock,
 	PiMessage,
 	PiModel,
+	PiSessionChangeResult,
+	PiSessionEntries,
+	PiSessionEntry,
+	PiSessionTree,
+	PiSessionTreeNode,
 	PiState,
 	PiStats,
 } from "../../shared/protocol.js";
@@ -12,6 +18,11 @@ const MAX_MESSAGES = 5_000;
 const MAX_CONTENT_BLOCKS = 10_000;
 const MAX_MODELS = 1_000;
 const MAX_COMMANDS = 2_000;
+export const MAX_FORK_CANDIDATES = 5_000;
+export const MAX_SESSION_ENTRIES = 20_000;
+export const MAX_SESSION_TREE_DEPTH = 200;
+export const MAX_SESSION_ENTRY_ID_LENGTH = 512;
+export const MAX_SESSION_ENTRY_TIMESTAMP_LENGTH = 128;
 const MAX_COMMAND_NAME_LENGTH = 512;
 const MAX_COMMAND_DESCRIPTION_LENGTH = 8 * 1024;
 const MAX_THINKING_LEVELS = 100;
@@ -28,8 +39,12 @@ export function parsePiState(value: unknown): PiState {
 	optionalString(state.thinkingLevel, "state.thinkingLevel", 128);
 	optionalBoolean(state.isStreaming, "state.isStreaming");
 	optionalBoolean(state.isCompacting, "state.isCompacting");
-	optionalNumber(state.messageCount, "state.messageCount");
-	optionalNumber(state.pendingMessageCount, "state.pendingMessageCount");
+	optionalNonNegativeInteger(state.messageCount, "state.messageCount");
+	optionalNonNegativeInteger(
+		state.pendingMessageCount,
+		"state.pendingMessageCount",
+	);
+	optionalNullableNumber(state.contextPercent, "state.contextPercent");
 	if (state.model !== undefined && state.model !== null)
 		parsePiModel(state.model);
 	return state as PiState;
@@ -110,8 +125,14 @@ export function parseCommandsResponse(value: unknown): PiCommand[] {
 export function parsePiStats(value: unknown): PiStats {
 	const stats = record(value, "session stats");
 	optionalNumber(stats.cost, "stats.cost");
-	optionalNumber(stats.totalMessages, "stats.totalMessages");
-	optionalNumber(stats.toolCalls, "stats.toolCalls");
+	optionalNonNegativeInteger(stats.totalMessages, "stats.totalMessages");
+	optionalNonNegativeInteger(stats.userMessages, "stats.userMessages");
+	optionalNonNegativeInteger(
+		stats.assistantMessages,
+		"stats.assistantMessages",
+	);
+	optionalNonNegativeInteger(stats.toolResults, "stats.toolResults");
+	optionalNonNegativeInteger(stats.toolCalls, "stats.toolCalls");
 	if (stats.contextUsage !== undefined) {
 		const usage = record(stats.contextUsage, "stats.contextUsage");
 		optionalNullableNumber(usage.tokens, "stats.contextUsage.tokens");
@@ -127,13 +148,143 @@ export function parsePiStats(value: unknown): PiStats {
 	return stats as PiStats;
 }
 
-export function parseSessionChangeResult(value: unknown): {
-	cancelled?: boolean;
-} {
+export function parseSessionChangeResult(
+	value: unknown,
+): PiSessionChangeResult {
 	if (value === undefined || value === null) return {};
 	const result = record(value, "session change response");
 	optionalBoolean(result.cancelled, "session change response.cancelled");
-	return result as { cancelled?: boolean };
+	optionalString(result.text, "session change response.text", MAX_TEXT_LENGTH);
+	optionalString(result.sessionId, "session change response.sessionId", 512);
+	optionalString(
+		result.sessionFile,
+		"session change response.sessionFile",
+		32 * 1024,
+	);
+	return result as PiSessionChangeResult;
+}
+
+/**
+ * Parses the stable identities pi returns for its fork picker. The text is a
+ * display/copy value; `entryId` remains the only value suitable for a fork
+ * command.
+ */
+export function parseForkMessagesResponse(value: unknown): ForkCandidate[] {
+	const response = record(value, "fork-messages response");
+	const candidates: ForkCandidate[] = [];
+	const ids = new Set<string>();
+	for (const [index, item] of array(
+		response.messages,
+		"fork-messages.messages",
+		MAX_FORK_CANDIDATES,
+	).entries()) {
+		const candidate = record(item, `fork-messages.messages[${index}]`);
+		const entryId = nonEmptyString(
+			candidate.entryId,
+			`fork-messages.messages[${index}].entryId`,
+			MAX_SESSION_ENTRY_ID_LENGTH,
+		);
+		if (ids.has(entryId))
+			throw new ProtocolValidationError(
+				`fork-messages.messages[${index}].entryId is duplicated.`,
+			);
+		ids.add(entryId);
+		const text = string(
+			candidate.text,
+			`fork-messages.messages[${index}].text`,
+			MAX_TEXT_LENGTH,
+		);
+		optionalTimestamp(
+			candidate.timestamp,
+			`fork-messages.messages[${index}].timestamp`,
+		);
+		candidates.push({ ...candidate, entryId, text });
+	}
+	return candidates;
+}
+
+/** Parse an append-ordered `get_entries` response without assuming a branch. */
+export function parseSessionEntriesResponse(value: unknown): PiSessionEntries {
+	const response = record(value, "session entries response");
+	const rawEntries = array(
+		response.entries,
+		"session entries response.entries",
+		MAX_SESSION_ENTRIES,
+	);
+	const ids = new Set<string>();
+	const entries = rawEntries.map((entry, index) => {
+		const parsed = parseSessionEntry(
+			entry,
+			`session entries response.entries[${index}]`,
+		);
+		if (ids.has(parsed.id))
+			throw new ProtocolValidationError(
+				`session entries response.entries[${index}].id is duplicated.`,
+			);
+		ids.add(parsed.id);
+		return parsed;
+	});
+	const leafId = nullableString(
+		response.leafId,
+		"session entries response.leafId",
+		MAX_SESSION_ENTRY_ID_LENGTH,
+	);
+	return { ...response, entries, leafId } as PiSessionEntries;
+}
+
+/** Parse a bounded recursive `get_tree` response. */
+export function parseSessionTreeResponse(value: unknown): PiSessionTree {
+	const response = record(value, "session tree response");
+	const ids = new Set<string>();
+	let nodeCount = 0;
+	const parseNode = (
+		nodeValue: unknown,
+		label: string,
+		depth: number,
+	): PiSessionTreeNode => {
+		if (depth > MAX_SESSION_TREE_DEPTH)
+			throw new ProtocolValidationError(
+				`${label} exceeds the ${MAX_SESSION_TREE_DEPTH}-level depth limit.`,
+			);
+		nodeCount += 1;
+		if (nodeCount > MAX_SESSION_ENTRIES)
+			throw new ProtocolValidationError(
+				`session tree exceeds the ${MAX_SESSION_ENTRIES}-node limit.`,
+			);
+		const node = record(nodeValue, label);
+		const entry = parseSessionEntry(node.entry, `${label}.entry`);
+		if (ids.has(entry.id))
+			throw new ProtocolValidationError(`${label}.entry.id is duplicated.`);
+		ids.add(entry.id);
+		const children = array(
+			node.children,
+			`${label}.children`,
+			MAX_SESSION_ENTRIES,
+		).map((child, index) =>
+			parseNode(child, `${label}.children[${index}]`, depth + 1),
+		);
+		const parsed: PiSessionTreeNode = { ...node, entry, children };
+		parsed.label = optionalString(node.label, `${label}.label`, 8 * 1024);
+		parsed.labelTimestamp = optionalString(
+			node.labelTimestamp,
+			`${label}.labelTimestamp`,
+			MAX_SESSION_ENTRY_TIMESTAMP_LENGTH,
+		);
+		return parsed;
+	};
+	const tree = array(
+		response.tree,
+		"session tree response.tree",
+		MAX_SESSION_ENTRIES,
+	).map((node, index) =>
+		parseNode(node, `session tree response.tree[${index}]`, 0),
+	);
+	const leafId = nullableString(
+		response.leafId,
+		"session tree response.leafId",
+		MAX_SESSION_ENTRY_ID_LENGTH,
+	);
+	return { ...response, tree, leafId } as PiSessionTree;
 }
 
 export function validateRpcEvent(event: JsonRecord): JsonRecord {
@@ -180,6 +331,7 @@ function parseAssistantMessageEvent(value: unknown): void {
 function parsePiMessage(value: unknown, label = "message"): PiMessage {
 	const message = record(value, label);
 	string(message.role, `${label}.role`, 128);
+	optionalTimestamp(message.timestamp, `${label}.timestamp`);
 	optionalString(message.toolCallId, `${label}.toolCallId`, 512);
 	optionalString(message.toolName, `${label}.toolName`, 512);
 	optionalString(
@@ -218,6 +370,30 @@ function parseContentBlock(value: unknown, label: string): PiContentBlock {
 	if (block.arguments !== undefined)
 		record(block.arguments, `${label}.arguments`);
 	return block as PiContentBlock;
+}
+
+function parseSessionEntry(value: unknown, label: string): PiSessionEntry {
+	const entry = record(value, label);
+	const type = nonEmptyString(entry.type, `${label}.type`, 128);
+	const id = nonEmptyString(
+		entry.id,
+		`${label}.id`,
+		MAX_SESSION_ENTRY_ID_LENGTH,
+	);
+	const parentId =
+		entry.parentId === null
+			? null
+			: nonEmptyString(
+					entry.parentId,
+					`${label}.parentId`,
+					MAX_SESSION_ENTRY_ID_LENGTH,
+				);
+	const timestamp = nonEmptyString(
+		entry.timestamp,
+		`${label}.timestamp`,
+		MAX_SESSION_ENTRY_TIMESTAMP_LENGTH,
+	);
+	return { ...entry, type, id, parentId, timestamp } as PiSessionEntry;
 }
 
 function parsePiModel(value: unknown): PiModel {
@@ -267,6 +443,25 @@ function optionalString(
 	return value === undefined ? undefined : string(value, label, maxLength);
 }
 
+function nonEmptyString(
+	value: unknown,
+	label: string,
+	maxLength: number,
+): string {
+	const parsed = string(value, label, maxLength);
+	if (parsed.length === 0)
+		throw new ProtocolValidationError(`${label} must not be empty.`);
+	return parsed;
+}
+
+function nullableString(
+	value: unknown,
+	label: string,
+	maxLength: number,
+): string | null {
+	return value === null ? null : nonEmptyString(value, label, maxLength);
+}
+
 function optionalBoolean(value: unknown, label: string): void {
 	if (value !== undefined && typeof value !== "boolean") {
 		throw new ProtocolValidationError(`${label} must be a boolean.`);
@@ -279,6 +474,28 @@ function optionalNumber(value: unknown, label: string): void {
 		(typeof value !== "number" || !Number.isFinite(value))
 	) {
 		throw new ProtocolValidationError(`${label} must be a finite number.`);
+	}
+}
+
+function optionalNonNegativeInteger(value: unknown, label: string): void {
+	if (
+		value !== undefined &&
+		(typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+	) {
+		throw new ProtocolValidationError(
+			`${label} must be a non-negative integer.`,
+		);
+	}
+}
+
+function optionalTimestamp(value: unknown, label: string): void {
+	if (
+		value !== undefined &&
+		(typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+	) {
+		throw new ProtocolValidationError(
+			`${label} must be a non-negative epoch-millisecond integer.`,
+		);
 	}
 }
 

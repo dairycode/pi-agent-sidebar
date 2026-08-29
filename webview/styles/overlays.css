@@ -118,3 +118,42 @@
 	white-space: nowrap;
 	border: 0;
 }
+
+/* Session usage detail. Positioned from script against `#app` for the same
+   reason as the command palette: the composer clips overflow. */
+.usage-panel {
+	position: absolute;
+	z-index: 9;
+	min-width: min(240px, calc(100% - 16px));
+	max-width: calc(100% - 16px);
+	padding: 8px 10px;
+	overflow: hidden;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-panel);
+	background: var(--pi-raised);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
+}
+
+.usage-panel[hidden] {
+	display: none;
+}
+
+.usage-list {
+	display: grid;
+	grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+	margin: 0;
+	font-size: var(--pi-font-chrome);
+	gap: 3px 12px;
+}
+
+.usage-list dt {
+	color: var(--pi-muted);
+	white-space: nowrap;
+}
+
+.usage-list dd {
+	margin: 0;
+	font-variant-numeric: tabular-nums;
+	text-align: right;
+	overflow-wrap: anywhere;
+}

@@ -185,6 +185,7 @@
    shredded names like handleExtensionUiRequest. Elements that really can
    overflow (path links, URLs, the composer) opt into `anywhere` themselves. */
 .message {
+	position: relative;
 	min-width: 0;
 	overflow-wrap: break-word;
 }
@@ -320,6 +321,21 @@
 	border-radius: 3px;
 	color: inherit;
 	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+	font-size: var(--pi-font-code);
+}
+
+/* Clears the background VS Code injects on its base `code` rule. The inline
+   rule above deliberately excludes `pre > code`, so without this the injected
+   `textPreformat.background` reaches code blocks — and because `code` is inline,
+   `white-space: pre` gives every line its own line box and its own background
+   rectangle, so the block renders as a stack of ragged grey bars instead of one
+   surface. The `<pre>` already paints the block background. */
+.assistant-text pre > code,
+.thinking-block pre > code {
+	padding: 0;
+	color: inherit;
+	background: none;
+	font-size: inherit;
 }
 
 .assistant-text pre,
@@ -335,8 +351,13 @@
 		var(--vscode-editor-background)
 	);
 	font-family: var(--vscode-editor-font-family, monospace);
-	font-size: var(--vscode-editor-font-size, 12px);
-	line-height: 1.65;
+	font-size: var(--pi-font-code);
+	line-height: 1.55;
+	/* Two columns, not the browser's default eight: a tab-indented file nested a
+	   few levels deep would otherwise spend most of a narrow sidebar on
+	   whitespace. The composer keeps 4 because that text is the reader's own
+	   typing, matched to their editor; this is read-only display. */
+	tab-size: 2;
 	white-space: pre;
 }
 
@@ -705,4 +726,218 @@
 
 .text-button:hover {
 	background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* The footer sits on the message itself, not on `.message-slot`: the slot is
+   `display: contents`, so a direct child would become a flex item of
+   `.messages` and take the full 20px inter-message gap.
+
+   Absolutely positioned into that gap rather than placed in flow: in flow it
+   would either reserve height permanently (wasted rows in a narrow sidebar) or
+   change the message height on hover, which shifts a bottom-anchored transcript
+   under the reader's cursor. In the gap it costs nothing and moves nothing.
+
+   `opacity` rather than `visibility`: a `visibility: hidden` subtree is not
+   focusable, so the buttons would be unreachable by Tab and a `:focus-visible`
+   rule on them could never fire. `pointer-events` is dropped with it so the
+   invisible strip is not a click target between messages. */
+.message-footer {
+	position: absolute;
+	top: 100%;
+	right: 0;
+	display: flex;
+	align-items: center;
+	height: 18px;
+	margin-top: 1px;
+	opacity: 0;
+	pointer-events: none;
+	gap: 6px;
+	transition: opacity 80ms ease-out;
+}
+
+.message:hover > .message-footer,
+.message-footer:focus-within {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+/* Motion is a preference, not a requirement: the reveal is instant when the
+   reader has asked for reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+	.message-footer {
+		transition: none;
+	}
+}
+
+.message-time {
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	font-variant-numeric: tabular-nums;
+	line-height: 1;
+	white-space: nowrap;
+}
+
+.message-actions {
+	display: flex;
+	gap: 2px;
+}
+
+.message-action {
+	display: grid;
+	place-items: center;
+	width: 20px;
+	height: 18px;
+	padding: 0;
+	border-radius: var(--pi-radius-control);
+	color: var(--pi-muted);
+}
+
+.message-action:hover {
+	color: var(--vscode-foreground);
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* Always visible for keyboard users: a control reachable by Tab must not be
+   invisible when it receives focus. The `:focus-within` rule on the footer
+   handles the common case; this covers a focus ring landing on the button while
+   the pointer is elsewhere. */
+.message-action:focus-visible {
+	opacity: 1;
+}
+
+/* A date break is its own transcript entry so a day boundary never forces the
+   neighbouring message node to be rebuilt. */
+.day-separator {
+	display: flex;
+	align-items: center;
+	color: var(--pi-muted);
+	font-size: var(--pi-font-chrome);
+	text-align: center;
+	gap: 8px;
+}
+
+.day-separator::before,
+.day-separator::after {
+	flex: 1 1 auto;
+	height: 1px;
+	background: var(--pi-border-subtle);
+	content: "";
+}
+
+/* Syntax highlighting.
+
+   Colors come from VS Code's own theme variables, so a code block follows the
+   editor rather than shipping a second palette. `symbolIcon-*` is the closest
+   published surface to semantic token colors; `charts-*` is the theme-aware
+   fallback, and `editor-foreground` is the final safe default.
+
+   Token groups also differ in weight or style, not only in hue: hue alone is
+   not a reliable distinction under high-contrast themes or for readers with
+   colour-vision deficiency. */
+.hljs {
+	color: var(--vscode-editor-foreground, var(--vscode-foreground));
+}
+
+.hljs-comment,
+.hljs-quote {
+	color: var(
+		--vscode-editorLineNumber-activeForeground,
+		var(--vscode-descriptionForeground, var(--pi-muted))
+	);
+	font-style: italic;
+}
+
+.hljs-doctag,
+.hljs-meta,
+.hljs-meta .hljs-keyword {
+	color: var(--vscode-charts-purple, var(--vscode-editor-foreground));
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-section {
+	color: var(
+		--vscode-symbolIcon-keywordForeground,
+		var(--vscode-charts-blue, var(--vscode-editor-foreground))
+	);
+	font-weight: 600;
+}
+
+.hljs-built_in,
+.hljs-type,
+.hljs-class .hljs-title {
+	color: var(
+		--vscode-symbolIcon-classForeground,
+		var(--vscode-charts-yellow, var(--vscode-editor-foreground))
+	);
+}
+
+.hljs-title,
+.hljs-title.function_,
+.hljs-name {
+	color: var(
+		--vscode-symbolIcon-functionForeground,
+		var(--vscode-charts-purple, var(--vscode-editor-foreground))
+	);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-char.escape_,
+.hljs-link {
+	color: var(
+		--vscode-symbolIcon-stringForeground,
+		var(--vscode-charts-orange, var(--vscode-editor-foreground))
+	);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+	color: var(
+		--vscode-symbolIcon-numberForeground,
+		var(--vscode-charts-green, var(--vscode-editor-foreground))
+	);
+}
+
+.hljs-variable,
+.hljs-template-variable,
+.hljs-params,
+.hljs-property,
+.hljs-attr,
+.hljs-attribute,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+	color: var(
+		--vscode-symbolIcon-variableForeground,
+		var(--vscode-charts-lines, var(--vscode-editor-foreground))
+	);
+}
+
+.hljs-operator,
+.hljs-punctuation,
+.hljs-subst {
+	color: var(--vscode-editor-foreground, var(--vscode-foreground));
+}
+
+/* Diff blocks carry a background as well as a colour: a red/green pair is the
+   one distinction a colour-blind reader is most likely to miss. */
+.hljs-addition {
+	color: var(--vscode-charts-green, var(--vscode-editor-foreground));
+	background: var(--vscode-diffEditor-insertedTextBackground, transparent);
+}
+
+.hljs-deletion {
+	color: var(--vscode-charts-red, var(--vscode-editor-foreground));
+	background: var(--vscode-diffEditor-removedTextBackground, transparent);
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: 700;
 }

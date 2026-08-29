@@ -242,3 +242,66 @@ test("webview protocol accepts argument-free requests", async () => {
 		await loaded.dispose();
 	}
 });
+
+test("fork requests carry an action id and an opaque entry id", async () => {
+	const loaded = await loadProtocol();
+	try {
+		// The candidate list is a plain action: the reply arrives as its own message,
+		// but a failure has to land on this request so it can be explained.
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "listForkCandidates",
+				actionId: "action",
+			}),
+			{ type: "listForkCandidates", actionId: "action" },
+		);
+		assert.equal(
+			loaded.module.parseWebviewMessage({ type: "listForkCandidates" }),
+			undefined,
+		);
+
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "forkSession",
+				actionId: "action",
+				entryId: "entry-7",
+			}),
+			{ type: "forkSession", actionId: "action", entryId: "entry-7" },
+		);
+
+		// The entry id is the whole decision, so a fork with no usable cursor must
+		// not reach the host: it would be rejected there as a stale-branch error and
+		// read as a bug rather than a dropped message.
+		for (const entryId of ["", undefined, 7, null, "e".repeat(513)]) {
+			assert.equal(
+				loaded.module.parseWebviewMessage({
+					type: "forkSession",
+					actionId: "action",
+					entryId,
+				}),
+				undefined,
+			);
+		}
+		assert.equal(
+			loaded.module.parseWebviewMessage({
+				type: "forkSession",
+				entryId: "entry-7",
+			}),
+			undefined,
+		);
+
+		// An entry id at the ceiling is still accepted: the bound exists to stop an
+		// unbounded string, not to reject a long opaque id pi actually issued.
+		const maxLength = "e".repeat(512);
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "forkSession",
+				actionId: "action",
+				entryId: maxLength,
+			}),
+			{ type: "forkSession", actionId: "action", entryId: maxLength },
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});

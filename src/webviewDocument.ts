@@ -2,22 +2,22 @@ import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 
 export function createWebviewDocument(
-	webview: vscode.Webview,
-	extensionUri: vscode.Uri,
+  webview: vscode.Webview,
+  extensionUri: vscode.Uri,
 ): string {
-	const nonce = randomBytes(24).toString("base64url");
-	const webviewRoot = vscode.Uri.joinPath(extensionUri, "dist", "webview");
-	const scriptUri = webview.asWebviewUri(
-		vscode.Uri.joinPath(webviewRoot, "main.js"),
-	);
-	const styleUri = webview
-		.asWebviewUri(vscode.Uri.joinPath(webviewRoot, "main.css"))
-		.with({ query: `v=${nonce}` });
-	const codiconUri = webview.asWebviewUri(
-		vscode.Uri.joinPath(webviewRoot, "codicons", "codicon.css"),
-	);
+  const nonce = randomBytes(24).toString("base64url");
+  const webviewRoot = vscode.Uri.joinPath(extensionUri, "dist", "webview");
+  const scriptUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(webviewRoot, "main.js"),
+  );
+  const styleUri = webview
+    .asWebviewUri(vscode.Uri.joinPath(webviewRoot, "main.css"))
+    .with({ query: `v=${nonce}` });
+  const codiconUri = webview.asWebviewUri(
+    vscode.Uri.joinPath(webviewRoot, "codicons", "codicon.css"),
+  );
 
-	return `<!doctype html>
+  return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -61,9 +61,9 @@ export function createWebviewDocument(
       </div>
       <section id="empty-state" class="empty-state">
         <svg class="empty-logo" viewBox="0 0 256 256" width="54" height="54" aria-hidden="true">
-          <rect width="256" height="256" rx="48" fill="#d97757"/>
-          <path fill="#1f2328" d="M48 64h160v32h-24v112h-32V96h-48v112H72V96H48V64Z"/>
-          <path fill="#f1f3f5" d="M104 112h48v32h-48z" opacity=".9"/>
+          <rect class="empty-logo-plate" width="256" height="256" rx="48"/>
+          <path class="empty-logo-glyph" d="M48 64h160v32h-24v112h-32V96h-48v112H72V96H48V64Z"/>
+          <path class="empty-logo-mark" d="M104 112h48v32h-48z" opacity=".9"/>
         </svg>
         <div class="empty-wordmark">pi agent</div>
         <p id="empty-detail" class="empty-detail">Starting in this workspace...</p>

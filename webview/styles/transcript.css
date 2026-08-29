@@ -187,6 +187,24 @@
 	margin-bottom: 12px;
 }
 
+/* Fills come from CSS rather than the SVG markup so the mark stays in one place.
+   The plate is a saturated teal rather than `--pi-accent`: the accent is tuned
+   for hairline borders, and at 29% saturation it turns grey when flooded across
+   a 54px plate. See `--pi-logo-plate` in base.css. */
+.empty-logo-plate {
+	fill: var(--pi-logo-plate);
+}
+
+.empty-logo-glyph {
+	fill: var(--pi-logo-ink);
+}
+
+/* The counter inside the glyph reads as a highlight, so it stays near-white in
+   both themes rather than tracking the palette. */
+.empty-logo-mark {
+	fill: var(--pi-logo-mark);
+}
+
 .empty-wordmark {
 	font-size: 18px;
 	font-weight: 700;

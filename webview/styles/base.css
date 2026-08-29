@@ -9,6 +9,17 @@
 	);
 	--pi-border-subtle: color-mix(in srgb, var(--pi-border) 65%, transparent);
 	--pi-muted: var(--vscode-descriptionForeground, #9ba1a6);
+	/* The product mark, deliberately not `--pi-accent`.
+
+	   Same hue family as the accent, at roughly double the saturation: the accent
+	   is tuned for 1px borders and small glyphs, where 29% saturation reads as a
+	   clear teal, but the same value flooded across a 54px plate turns grey and
+	   muddy. Fixed in both themes, and shared with `assets/pi-logo.png` — a
+	   marketplace icon is a static file that cannot follow the editor theme, so a
+	   theme-dependent mark would not match itself. */
+	--pi-logo-plate: #2ec4b6;
+	--pi-logo-ink: #12211f;
+	--pi-logo-mark: #f1f3f5;
 	--pi-page-background: var(
 		--vscode-sideBar-background,
 		var(--vscode-editor-background)
@@ -212,8 +223,12 @@ button {
 	background: var(--pi-success);
 }
 
+/* Starting is a transient in-progress state, not a warning, so it takes the accent
+   rather than `--pi-warning`. The hollow ring is what distinguishes it from the
+   filled `ready` dot; colour alone does not carry the state. `no-workspace` below
+   keeps the warning colour because that one really is a warning. */
 .connection-dot.starting {
-	border-color: var(--pi-warning);
+	border-color: var(--pi-accent);
 	background: transparent;
 }
 

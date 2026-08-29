@@ -584,7 +584,12 @@
 	display: block;
 }
 
-.thinking-block:hover .thinking-text,
+/* Hover brightens the collapsed placeholder only. On the expanded body it would
+   mean something different: there the text is content being read, not a label
+   on a control, and lifting it to full-strength `text` also drops the contrast
+   step that marks reasoning as secondary to the prose around it. Streaming
+   reasoning is covered by the same selector — it renders `.thinking-text` and
+   is not clickable yet, so it must not react to the pointer either. */
 .thinking-block:hover .thinking-collapsed {
 	color: var(--pi-theme-text);
 }

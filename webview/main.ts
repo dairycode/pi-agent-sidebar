@@ -1761,11 +1761,10 @@ function messageByKey(key: string): PiMessage | undefined {
  * Carries reader-toggled expansion across a rebuild.
  *
  * Expansion lives only in the DOM, so replacing a node would silently discard
- * it. Both directions have to be carried, because the two widgets have opposite
- * defaults: reasoning renders expanded (collapsing it is the deviation) while
- * tool output renders previewed (expanding it is the deviation). Restoring only
- * "was open" would therefore re-expand every reasoning block the reader had just
- * collapsed.
+ * it. Reasoning has to carry both directions because its default is expanded:
+ * restoring only "was open" would re-expand every block the reader had just
+ * collapsed. A tool box defaults to collapsed, so only the expanded ones need
+ * recording.
  *
  * Streaming reasoning is skipped: it has no collapse control while its content
  * is still arriving.
@@ -1782,14 +1781,14 @@ function restoreExpandableState(
 		const key = block.dataset.thinkingKey;
 		if (key) thinkingExpanded.set(key, block.classList.contains("is-expanded"));
 	}
-	const outputExpanded = new Set<string>();
-	for (const output of previous.querySelectorAll<HTMLElement>(
-		".tool-output.expandable.expanded[data-output-key]",
+	const toolExpanded = new Set<string>();
+	for (const tool of previous.querySelectorAll<HTMLElement>(
+		".tool-call.expandable.expanded[data-tool-key]",
 	)) {
-		const key = output.dataset.outputKey;
-		if (key) outputExpanded.add(key);
+		const key = tool.dataset.toolKey;
+		if (key) toolExpanded.add(key);
 	}
-	if (thinkingExpanded.size === 0 && outputExpanded.size === 0) return;
+	if (thinkingExpanded.size === 0 && toolExpanded.size === 0) return;
 
 	for (const block of node.querySelectorAll<HTMLElement>(
 		".thinking-block:not(.streaming)[data-thinking-key]",
@@ -1799,11 +1798,11 @@ function restoreExpandableState(
 		if (expanded === undefined) continue;
 		setExpandedState(block, expanded);
 	}
-	for (const output of node.querySelectorAll<HTMLElement>(
-		".tool-output.expandable[data-output-key]",
+	for (const tool of node.querySelectorAll<HTMLElement>(
+		".tool-call.expandable[data-tool-key]",
 	)) {
-		const key = output.dataset.outputKey;
-		if (key && outputExpanded.has(key)) setExpandedState(output, true);
+		const key = tool.dataset.toolKey;
+		if (key && toolExpanded.has(key)) setExpandedState(tool, true);
 	}
 }
 
@@ -1812,17 +1811,22 @@ function restoreExpandableState(
  *
  * The two must move together: `aria-expanded` is the only channel a screen
  * reader has for this, and the class is the only one CSS has.
+ *
+ * Reasoning also gets an `aria-label`, because its two states show different
+ * text and neither names the control. A tool box is left unlabelled on purpose:
+ * its header already names the tool, so an `aria-label` would replace "read
+ * src/file.ts" with something vaguer.
  */
 function setExpandedState(element: HTMLElement, expanded: boolean): void {
-	const expandedClass =
-		element.dataset.expandable === "thinking" ? "is-expanded" : "expanded";
-	element.classList.toggle(expandedClass, expanded);
+	const isThinking = element.dataset.expandable === "thinking";
+	element.classList.toggle(isThinking ? "is-expanded" : "expanded", expanded);
 	element.setAttribute("aria-expanded", expanded ? "true" : "false");
-	const label =
-		element.dataset.expandable === "thinking"
-			? `Reasoning, click to ${expanded ? "collapse" : "expand"}`
-			: `Tool output, click to ${expanded ? "collapse" : "expand"}`;
-	element.setAttribute("aria-label", label);
+	if (isThinking) {
+		element.setAttribute(
+			"aria-label",
+			`Reasoning, click to ${expanded ? "collapse" : "expand"}`,
+		);
+	}
 }
 
 /**

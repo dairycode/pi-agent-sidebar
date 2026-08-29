@@ -200,11 +200,13 @@
 		box-shadow 120ms ease;
 }
 
+/* Focus shows itself through border colour alone. A `0 0 0 1px` ring would sit
+   flush outside the 1px border and read as the border doubling in width, which
+   made the whole composer jump on focus. The drop shadow still lifts slightly,
+   so the state change is not carried by hue alone. */
 .composer:focus-within {
 	border-color: var(--pi-accent);
-	box-shadow:
-		0 0 0 1px var(--pi-accent),
-		0 6px 20px color-mix(in srgb, var(--pi-accent) 10%, transparent);
+	box-shadow: 0 6px 20px color-mix(in srgb, var(--pi-accent) 10%, transparent);
 }
 
 .composer.busy,

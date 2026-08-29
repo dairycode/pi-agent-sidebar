@@ -652,9 +652,9 @@
    text colour, which is what keeps the box reading as one block instead of a
    card nested in a card.
 
-   No `max-height` either: the preview already bounds the collapsed height to
-   ten lines, so a scroll region would only add a second, competing scrollbar
-   inside the transcript's own. */
+   Hidden until the box is expanded, so a settled call costs one line. No
+   `max-height`: a scroll region here would compete with the transcript's own
+   scrollbar, and an expanded box is an explicit request to see all of it. */
 .tool-output {
 	min-width: 0;
 	margin-top: var(--pi-line-half);
@@ -672,34 +672,33 @@
 	word-break: break-word;
 }
 
-.tool-output.expandable {
+/* The whole box is the control, so the hit target is the header line the reader
+   already sees rather than a separate affordance. */
+.tool-call.expandable {
 	cursor: pointer;
 }
 
-.tool-output.expandable:hover {
-	color: var(--pi-theme-text);
+.tool-call.expandable:not(.expanded) .tool-output,
+.tool-call.expandable:not(.expanded) .tool-diff {
+	display: none;
 }
 
-.tool-output.expandable:focus-visible {
+.tool-call.expandable:focus-visible {
 	outline: 1px solid var(--pi-focus-ring);
 	outline-offset: 2px;
 }
 
-.tool-output.expandable .output-full {
-	display: none;
-}
-
-.tool-output.expandable.expanded .output-preview {
-	display: none;
-}
-
-.tool-output.expandable.expanded .output-full {
-	display: block;
-}
-
-.expand-hint {
+/* Sits at the end of the header line and only means something while collapsed:
+   once the content is on screen, counting it is noise. */
+.tool-hint {
+	margin-left: 7px;
 	color: var(--pi-theme-dim);
+	font-weight: 400;
 	font-style: italic;
+}
+
+.tool-call.expanded .tool-hint {
+	display: none;
 }
 
 .tool-diff {

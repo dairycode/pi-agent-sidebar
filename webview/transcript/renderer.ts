@@ -375,11 +375,16 @@ function thinkingBlockHtml(
  * channel, which fails WCAG 1.4.1 on its own, so the state is also carried as
  * visually-hidden text and `running` keeps a spinner — a still frame cannot
  * otherwise distinguish "in progress" from "finished". The status rides in a
- * `.sr-only` span rather than an `aria-label`, because a label on a plain `div`
- * has no role to attach to and is not reliably announced. And pi toggles output
- * with an inline `onclick`, which this webview's CSP forbids, so the expandable
- * region is marked with `data-expandable` for the delegated handler in
- * `main.ts`.
+ * `.sr-only` span rather than an `aria-label` so the accessible name still
+ * includes the tool name and path the header shows. And pi toggles output with
+ * an inline `onclick`, which this webview's CSP forbids, so the box is marked
+ * with `data-expandable` for the delegated handler in `main.ts`.
+ *
+ * Collapsed to its header by default. A settled call is a record of something
+ * that already happened, and a transcript of expanded outputs buries the prose
+ * that explains them. Only a box with something to reveal becomes a button:
+ * giving an output-less call a button role would promise an expansion that never
+ * arrives.
  */
 function toolCallHtml(
 	id: string,
@@ -392,19 +397,41 @@ function toolCallHtml(
 	const output = live?.output || (result ? contentText(result.content) : "");
 	const diff = live?.diff ?? (result ? extractResultDiff(result) : "");
 	const diffHtml = status === "success" && diff ? renderDiffBlock(diff) : "";
-	const outputHtml = output && !diffHtml ? renderToolOutput(id, output) : "";
+	const outputHtml =
+		output && !diffHtml
+			? `<div class="tool-output"><pre>${escapeHtml(truncate(output, 20_000))}</pre></div>`
+			: "";
+	const body = `${outputHtml}${diffHtml}`;
 	const spinner =
 		status === "running"
 			? '<i class="codicon codicon-loading codicon-modifier-spin tool-spinner" aria-hidden="true"></i>'
 			: "";
 	const statusNote = `<span class="sr-only">${escapeHtml(`${friendlyToolName(name)}: ${toolStatusLabel(status)}`)}</span>`;
-	return `<div class="activity-item tool-call ${status}">${statusNote}${toolHeaderHtml(name, args, spinner)}${outputHtml}${diffHtml}</div>`;
+	if (!body) {
+		return `<div class="activity-item tool-call ${status}">${statusNote}${toolHeaderHtml(name, args, spinner, "")}</div>`;
+	}
+	// The hint is the only thing a collapsed box says about what it is hiding, so
+	// it counts the body actually rendered — a diff, or the raw output.
+	const hint = lineCountHint(diffHtml ? diff : output);
+	return `<div class="activity-item tool-call ${status} expandable" data-tool-key="${escapeHtml(id)}" data-expandable="tool" role="button" tabindex="0" aria-expanded="false">${statusNote}${toolHeaderHtml(name, args, spinner, hint)}${body}</div>`;
+}
+
+/**
+ * How much a collapsed box is holding back.
+ *
+ * No accessible-name concern here: the box takes its name from its contents, so
+ * this rides along with the tool name and path instead of being hidden from
+ * assistive tech the way a decorative marker would be.
+ */
+function lineCountHint(text: string): string {
+	const lines = text.replace(/\n$/u, "").split("\n").length;
+	return `<span class="tool-hint">${lines} ${lines === 1 ? "line" : "lines"}</span>`;
 }
 
 const MAX_TOOL_TARGET_LENGTH = 2000;
 
 /**
- * The box's first line.
+ * The box's first line — and, collapsed, the only line.
  *
  * pi splits this by tool: a shell command becomes `$ …` on its own bold,
  * wrapping line, while every other tool gets `name` followed by its primary
@@ -416,37 +443,17 @@ function toolHeaderHtml(
 	name: string,
 	args: JsonRecord,
 	spinner: string,
+	hint: string,
 ): string {
 	if (name === "bash") {
 		const command = truncate(stringValue(args.command), MAX_TOOL_TARGET_LENGTH);
-		return `<div class="tool-command">${spinner}$ ${escapeHtml(command)}</div>`;
+		return `<div class="tool-command">${spinner}$ ${escapeHtml(command)}${hint}</div>`;
 	}
 	const target = truncate(toolTarget(args), MAX_TOOL_TARGET_LENGTH);
 	const targetHtml = target
 		? ` <span class="tool-path">${escapeHtml(target)}</span>`
 		: "";
-	return `<div class="tool-header">${spinner}<span class="tool-name">${escapeHtml(name)}</span>${targetHtml}</div>`;
-}
-
-const TOOL_OUTPUT_PREVIEW_LINES = 10;
-
-/**
- * Tool output, previewed to the first few lines with the rest behind a click.
- *
- * Both halves are always in the DOM and CSS swaps them, matching pi. That costs
- * markup but keeps expansion free of a re-render, which matters here in a way it
- * does not in a static export: this node is rebuilt by the reconciler on every
- * streaming frame, so expansion must not depend on re-deriving content.
- */
-function renderToolOutput(id: string, output: string): string {
-	const text = truncate(output, 20_000);
-	const lines = text.split("\n");
-	if (lines.length <= TOOL_OUTPUT_PREVIEW_LINES) {
-		return `<div class="tool-output"><pre>${escapeHtml(text)}</pre></div>`;
-	}
-	const preview = lines.slice(0, TOOL_OUTPUT_PREVIEW_LINES).join("\n");
-	const remaining = lines.length - TOOL_OUTPUT_PREVIEW_LINES;
-	return `<div class="tool-output expandable" data-output-key="${escapeHtml(id)}" data-expandable="output" role="button" tabindex="0" aria-expanded="false" aria-label="Tool output, click to expand"><div class="output-preview"><pre>${escapeHtml(preview)}</pre><div class="expand-hint">… (${remaining} more lines)</div></div><div class="output-full"><pre>${escapeHtml(text)}</pre></div></div>`;
+	return `<div class="tool-header">${spinner}<span class="tool-name">${escapeHtml(name)}</span>${targetHtml}${hint}</div>`;
 }
 
 const MAX_DIFF_LINES = 400;

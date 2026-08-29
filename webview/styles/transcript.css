@@ -33,32 +33,42 @@
 	overflow-anchor: none;
 }
 
-/* Flush top bar rather than a floating card. Inset from the top, the row left an
-   8px gap that the scrolling message behind it showed through, so a half-clipped
-   line peeked out above the pinned text and read as a misplaced overlay. Sitting
-   on the edge with square corners makes it part of the chrome instead.
+/* Docks at the top edge in the same column as the messages, so scrolling a prompt
+   up to the edge reads as that message parking there rather than as a wider bar
+   sliding over it. Top stays flush: inset from the top, the row left an 8px gap
+   that the scrolling message behind it showed through, so a half-clipped line
+   peeked out above the pinned text and read as a misplaced overlay.
 
-   The left inset matches the real message body: `.messages` padding (8px) plus
-   `.user-message`'s 11px padding puts its text at 19px, so this row's own 2px
-   border leaves 17px of padding to land on the same column. */
+   The side insets mirror `.messages`' own 8px padding, and the 9px left padding
+   is `.user-message`'s 11px less this row's 2px accent border — so the pinned
+   text lands on exactly the column the real message body uses. */
 .pinned-prompt {
 	position: absolute;
 	top: 0;
-	right: 0;
-	left: 0;
+	right: 8px;
+	left: 8px;
 	display: flex;
-	/* Centred while collapsed: the 28px toggle is taller than one line of text, so
-	   flex-start let the button set the row height and stranded all the slack below
-	   the text — visibly tight on top, loose underneath. */
-	align-items: center;
-	gap: 4px;
 	min-width: 0;
-	padding: 8px 8px 8px 17px;
+	/* Frames its text exactly like the composer's field, since the two are read as
+	   the same kind of surface at opposite ends of the pane. The right inset is the
+	   edge gap plus the out-of-flow toggle's own width plus a 4px gutter, so text
+	   ellipsises before it reaches the control. */
+	padding: var(--pi-field-pad-block) 8px;
+	padding-right: calc(8px + var(--pi-control-size) + 4px);
+	padding-left: 9px;
 	border-bottom: 1px solid var(--pi-border-subtle);
 	border-left: 2px solid var(--pi-theme-accent);
-	/* Opaque: messages scroll directly behind this, so any translucency would
-	   show them bleeding through the pinned text. */
-	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	/* Same tint as the real `.user-message`, but composited rather than
+	   translucent: messages scroll directly behind this row, so a see-through
+	   background would show them bleeding through the pinned text. Painting the
+	   tint as a gradient layer over the sidebar colour lands on exactly the colour
+	   a real message resolves to while staying fully opaque. */
+	background:
+		linear-gradient(
+			var(--pi-theme-user-message-bg),
+			var(--pi-theme-user-message-bg)
+		),
+		var(--vscode-sideBar-background, var(--vscode-editor-background));
 	box-shadow: 0 2px 6px
 		color-mix(in srgb, var(--vscode-widget-shadow, #000) 16%, transparent);
 }
@@ -88,19 +98,40 @@
 	display: block;
 	min-width: 0;
 	overflow: hidden;
-	line-height: 1.55;
+	/* The grid line height, matching `.user-message-text`. No vertical padding: the
+	   row's own padding sets the distance to the border, and anything added here
+	   would push the first line off the symmetry the composer field establishes. */
+	line-height: var(--pi-line-ratio);
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-/* Expanded: wrap and scroll internally instead of pushing the transcript down.
-   Capped so a long prompt can never own most of the viewport. The toggle moves
-   back to the top so it sits beside the first line rather than floating in the
-   middle of a tall block. */
-.pinned-prompt.is-expanded {
-	align-items: flex-start;
+/* Out of flow, so the row's height is set by its text and nothing else.
+
+   As a flex item the 28px control was taller than the 19.5px line it labels, so
+   it — not the text — decided the row height, and the leftover space pooled
+   under the text. That is why the padding looked even with a single unwrapped
+   line (the control is hidden when there is nothing to expand) and uneven as
+   soon as the text was long enough to need the toggle. Cancelling the overhang
+   with a negative margin only papered over the coupling; removing the control
+   from flow removes it.
+
+   `top` centres it on the first line: the row's own top padding, less half the
+   difference between the control and one line. */
+.pinned-prompt .pinned-prompt-toggle {
+	position: absolute;
+	top: calc(
+		var(--pi-field-pad-block) +
+		(var(--pi-line) - var(--pi-control-size)) /
+		2
+	);
+	right: 8px;
 }
 
+/* Expanded: wrap and scroll internally instead of pushing the transcript down.
+   Capped so a long prompt can never own most of the viewport. Only the text
+   changes here — the row's alignment and the first line's position are the same
+   as collapsed, so expanding grows the block downwards and nothing shifts. */
 .pinned-prompt.is-expanded .pinned-prompt-text {
 	max-height: min(30vh, 220px);
 	overflow-y: auto;
@@ -108,10 +139,6 @@
 	text-overflow: clip;
 	white-space: pre-wrap;
 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
-}
-
-.pinned-prompt .pinned-prompt-toggle {
-	flex: 0 0 auto;
 }
 
 .pinned-prompt-toggle[hidden] {

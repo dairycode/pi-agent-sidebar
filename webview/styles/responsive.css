@@ -24,6 +24,13 @@
 		padding-inline: 6px;
 	}
 
+	/* Tracks the narrower message column so the docked row stays exactly as wide
+	   as the prompt it stands in for. */
+	.pinned-prompt {
+		right: 6px;
+		left: 6px;
+	}
+
 	.resource-drop-overlay {
 		padding: 6px;
 	}

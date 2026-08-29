@@ -42,10 +42,10 @@ export function createWebviewDocument(
       </div>
       <div class="header-actions" role="toolbar" aria-label="Session actions">
         <button id="rename-session-button" class="icon-button" type="button" title="Rename session" aria-label="Rename session"><i class="codicon codicon-edit"></i></button>
-        <button id="clone-session-button" class="icon-button" type="button" title="Duplicate this session" aria-label="Duplicate this session"><i class="codicon codicon-files"></i></button>
-        <button id="fork-session-button" class="icon-button" type="button" title="Fork from an earlier prompt" aria-label="Fork from an earlier prompt" aria-haspopup="listbox" aria-controls="fork-panel" aria-expanded="false"><i class="codicon codicon-git-branch"></i></button>
         <button id="history-button" class="icon-button" type="button" title="Session history" aria-label="Session history" aria-controls="history-panel" aria-expanded="false"><i class="codicon codicon-history"></i></button>
         <button id="new-session-button" class="icon-button" type="button" title="New session" aria-label="New session"><i class="codicon codicon-add"></i></button>
+        <button id="clone-session-button" class="icon-button" type="button" title="Duplicate this session" aria-label="Duplicate this session"><i class="codicon codicon-files"></i></button>
+        <button id="fork-session-button" class="icon-button" type="button" title="Fork from an earlier prompt" aria-label="Fork from an earlier prompt" aria-haspopup="listbox" aria-controls="fork-panel" aria-expanded="false"><i class="codicon codicon-git-branch"></i></button>
       </div>
     </header>
 

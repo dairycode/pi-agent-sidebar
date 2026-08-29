@@ -25,6 +25,7 @@ import {
 	type TranscriptEntry,
 } from "./transcript/transcriptView.js";
 import {
+	assistantMessageSections,
 	contentText,
 	extractResultDiff,
 	friendlyToolName,
@@ -1584,6 +1585,105 @@ function renderMessages(): void {
  * hands back only the entry it was given; keeping the entry to a key and a
  * signature is what makes reconciliation cheap to compare.
  */
+
+/**
+ * Re-renders only the sections of a streaming message whose content changed.
+ *
+ * Streaming runs this once per delta. The message node already in the DOM is
+ * the same shape as what `assistantMessageSections` will produce — the block
+ * sequence only grows, never reshuffles — so the frame's work reduces to:
+ *
+ * 1. render each section's HTML and hash it;
+ * 2. walk the previous node's sections in order, reusing any whose key and
+ *    hash still match (no DOM churn, layout state and expandable state kept);
+ * 3. replace or insert the remaining ones, and drop sections that ended
+ *    (e.g. a text block that flushed its trailing activity timeline);
+ * 4. run the post-processing passes only over the *new* nodes, since the
+ *    reused ones were already enhanced and linkified when they were built.
+ *
+ * Returns the same node, or `undefined` when the previous DOM does not match
+ * the expected shape (first frame, a settled message, a non-assistant role, or
+ * any structural surprise) — the caller then falls back to a full rebuild,
+ * which is the pre-existing, correct path.
+ */
+function patchStreamingMessage(
+	slot: Element,
+	message: PiMessage,
+	context: MessageRenderContext,
+	messageKey: string,
+): Element | undefined {
+	const sections = assistantMessageSections(
+		message,
+		context.resultMap,
+		liveTools,
+		true,
+		messageKey,
+	);
+	const host = slot.querySelector(":scope > .message");
+	if (!host || !host.classList.contains("assistant-message")) return undefined;
+
+	// Capture disclosure state before touching the DOM: `slot` is both the
+	// previous node and the node we hand back, so a re-read after patching
+	// would see the post-patch (collapsed) state and lose the reader's choice.
+	const snapshot = captureExpandableState(slot);
+
+	// Sections currently in the DOM, in order. The message is the ONLY child of
+	// the slot (see createMessageNode), so this is the full section list.
+	const oldSections = Array.from(host.children).filter(
+		(child): child is HTMLElement => child instanceof HTMLElement,
+	);
+	const previous = new Map<string, HTMLElement>();
+	for (const el of oldSections) {
+		const key = el.dataset.sectionKey;
+		if (key) previous.set(key, el);
+	}
+
+	const freshNodes: Element[] = [];
+	for (const section of sections) {
+		const old = previous.get(section.key);
+		if (old && old.dataset.sectionHash === section.hash) {
+			// Unchanged since the last frame: keep the node and everything the
+			// browser has computed for it.
+			continue;
+		}
+		const nodes = sanitizedNodes(section.html);
+		if (nodes.length !== 1 || !(nodes[0] instanceof Element)) {
+			return undefined;
+		}
+		const fresh = nodes[0] as HTMLElement;
+		if (old) {
+			host.replaceChild(fresh, old);
+		} else {
+			host.append(fresh);
+		}
+		freshNodes.push(fresh);
+	}
+
+	// Drop sections whose key left the list (a pending activity timeline that
+	// was flushed after a text block ended, or a tool that disappeared).
+	const wanted = new Set(sections.map((section) => section.key));
+	for (const el of oldSections) {
+		const key = el.dataset.sectionKey;
+		if (key && !wanted.has(key)) {
+			el.remove();
+		} else if (!key) {
+			// A node this path did not create: its structure is unknown, so let
+			// the caller rebuild the whole message instead of guessing.
+			return undefined;
+		}
+	}
+
+	// New nodes need the passes renderers get once; reused nodes keep theirs.
+	for (const node of freshNodes) {
+		enhanceCodeBlocks(node);
+		linkifyWorkspacePaths(node);
+		bindImageReflow(node);
+	}
+	applyExpandableState(host, snapshot);
+
+	return slot;
+}
+
 function createMessageNode(
 	entry: TranscriptEntry,
 	previous: Element | undefined,
@@ -1609,6 +1709,18 @@ function createMessageNode(
 
 	const message = context.byKey.get(entry.key);
 	if (!message) throw new Error(`No message for transcript key ${entry.key}`);
+
+	// Streaming fast path: the node already in the DOM must not be swapped out
+	// wholesale every delta. Rebuilding it loses the browser's layout state for
+	// everything in the message (re-parsing 40KB of markdown + relaying out ~13ms
+	// per frame at the top end, inside the 16ms frame budget). Keep the node
+	// stable, rewrite only the blocks whose content actually changed, and hand
+	// it straight back so TranscriptView swaps nothing either.
+	if (previous && message === ui.streamingMessage) {
+		const patched = patchStreamingMessage(previous, message, context, entry.key);
+		if (patched) return patched;
+	}
+
 	// The same stable key feeds messageHtml's per-block keys. A positional index
 	// would shift for every message once history passes the render cap, which
 	// would silently collapse reasoning blocks the reader had opened.
@@ -1769,32 +1881,39 @@ function messageByKey(key: string): PiMessage | undefined {
  * Streaming reasoning is skipped: it has no collapse control while its content
  * is still arriving.
  */
-function restoreExpandableState(
-	node: Element,
-	previous: Element | undefined,
-): void {
-	if (!previous) return;
-	const thinkingExpanded = new Map<string, boolean>();
+interface ExpandableSnapshot {
+	thinking: Map<string, boolean>;
+	tools: Set<string>;
+}
+
+function captureExpandableState(previous: Element): ExpandableSnapshot {
+	const thinking = new Map<string, boolean>();
 	for (const block of previous.querySelectorAll<HTMLElement>(
 		".thinking-block:not(.streaming)[data-thinking-key]",
 	)) {
 		const key = block.dataset.thinkingKey;
-		if (key) thinkingExpanded.set(key, block.classList.contains("is-expanded"));
+		if (key) thinking.set(key, block.classList.contains("is-expanded"));
 	}
-	const toolExpanded = new Set<string>();
+	const tools = new Set<string>();
 	for (const tool of previous.querySelectorAll<HTMLElement>(
 		".tool-call.expandable.expanded[data-tool-key]",
 	)) {
 		const key = tool.dataset.toolKey;
-		if (key) toolExpanded.add(key);
+		if (key) tools.add(key);
 	}
-	if (thinkingExpanded.size === 0 && toolExpanded.size === 0) return;
+	return { thinking, tools };
+}
 
+function applyExpandableState(
+	node: Element,
+	snapshot: ExpandableSnapshot,
+): void {
+	if (snapshot.thinking.size === 0 && snapshot.tools.size === 0) return;
 	for (const block of node.querySelectorAll<HTMLElement>(
 		".thinking-block:not(.streaming)[data-thinking-key]",
 	)) {
 		const key = block.dataset.thinkingKey;
-		const expanded = key ? thinkingExpanded.get(key) : undefined;
+		const expanded = key ? snapshot.thinking.get(key) : undefined;
 		if (expanded === undefined) continue;
 		setExpandedState(block, expanded);
 	}
@@ -1802,8 +1921,16 @@ function restoreExpandableState(
 		".tool-call.expandable[data-tool-key]",
 	)) {
 		const key = tool.dataset.toolKey;
-		if (key && toolExpanded.has(key)) setExpandedState(tool, true);
+		if (key && snapshot.tools.has(key)) setExpandedState(tool, true);
 	}
+}
+
+function restoreExpandableState(
+	node: Element,
+	previous: Element | undefined,
+): void {
+	if (!previous) return;
+	applyExpandableState(node, captureExpandableState(previous));
 }
 
 /**

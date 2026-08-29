@@ -291,22 +291,68 @@ function assistantMessageHtml(
 	streaming: boolean,
 	messageKey: string,
 ): string {
+	return `<article class="message assistant-message">${assistantMessageSections(
+		message,
+		results,
+		liveTools,
+		streaming,
+		messageKey,
+	)
+		.map((section) => section.html)
+		.join("")}</article>`;
+}
+
+/**
+ * One renderable region of an assistant message, keyed for incremental updates.
+ *
+ * Streaming calls `messageHtml` once per delta; the HTML that produces already
+ * rendered parts is re-parsed and the whole message node rebuilt on every
+ * frame. Codex and similar UIs keep the node stable instead and only rewrite
+ * the part that changed. `assistantMessageSections` is the piece that makes
+ * that possible: each returned `html` is independently renderable and carries a
+ * stable `key` (an incrementing ordinal per content block) plus a `hash` of its
+ * own content. The caller rebuilds a section only when its hash changed, and
+ * reuses the previous DOM node otherwise, so the bytes that didn't change are
+ * never re-parsed, re-laid-out, or re-painted.
+ *
+ * Keys are ordinals in render order, not content indices: tool calls stream
+ * their arguments/status in place, and merges into the shared activity timeline
+ * must not shift keys of the sections before them. Because deltas only ever
+ * append blocks (a run starts with thinking, then text, then tool calls), the
+ * leading sections of an earlier frame always match the leading sections of the
+ * next, which is exactly the alignment an in-place updater needs.
+ */
+export function assistantMessageSections(
+	message: PiMessage,
+	results: ReadonlyMap<string, PiMessage>,
+	liveTools: ReadonlyMap<string, TranscriptLiveTool>,
+	streaming: boolean,
+	messageKey: string,
+): Array<{ key: string; hash: string; html: string }> {
 	const blocks = Array.isArray(message.content) ? message.content : [];
-	const sections: string[] = [];
+	const sections: Array<{ key: string; hash: string; html: string }> = [];
 	let activity: string[] = [];
+	let activityOrdinal = 0;
+	let contentOrdinal = 0;
 	let thinkingIndex = 0;
 	const flushActivity = (): void => {
 		if (activity.length === 0) return;
-		sections.push(`<div class="activity-timeline">${activity.join("")}</div>`);
+		const html = `<div class="activity-timeline">${activity.join("")}</div>`;
+		const key = `activity-${activityOrdinal}`;
+		const hash = contentHash(html);
+		sections.push({ key, hash, html: withSectionMarker(html, key, hash) });
+		activityOrdinal += 1;
 		activity = [];
 	};
 
 	for (const block of blocks) {
 		if (block.type === "text") {
 			flushActivity();
-			sections.push(
-				`<div class="assistant-text">${markdown(block.text ?? "", !streaming)}</div>`,
-			);
+			const html = `<div class="assistant-text">${markdown(block.text ?? "", !streaming)}</div>`;
+			const key = `content-${contentOrdinal}`;
+			const hash = contentHash(html);
+			sections.push({ key, hash, html: withSectionMarker(html, key, hash) });
+			contentOrdinal += 1;
 		}
 		if (block.type === "thinking") {
 			const thinkingKey = `${messageKey}-thinking-${thinkingIndex}`;
@@ -328,14 +374,51 @@ function assistantMessageHtml(
 	}
 	flushActivity();
 	if (message.errorMessage) {
-		sections.push(
-			`<div class="message-error">${escapeHtml(message.errorMessage)}</div>`,
-		);
+		const html = `<div class="message-error">${escapeHtml(message.errorMessage)}</div>`;
+		const hash = contentHash(html);
+		sections.push({
+			key: `error`,
+			hash,
+			html: withSectionMarker(html, "error", hash),
+		});
 	}
 	if (message.stopReason === "aborted") {
-		sections.push('<div class="cancelled-note">Cancelled</div>');
+		const html = '<div class="cancelled-note">Cancelled</div>';
+		const hash = contentHash(html);
+		sections.push({
+			key: `cancelled`,
+			hash,
+			html: withSectionMarker(html, "cancelled", hash),
+		});
 	}
-	return `<article class="message assistant-message">${sections.join("")}</article>`;
+	return sections;
+}
+
+/**
+ * Wraps a section's root element with the bookkeeping the streaming patcher
+ * needs, so even a first frame (built wholesale) produces DOM that later
+ * incremental frames can match — the patcher never pays a full rebuild to
+ * learn that nothing changed.
+ */
+function withSectionMarker(html: string, key: string, hash: string): string {
+	// The sections this module emits are single-rooted elements (divs); the
+	// marker goes on that root only.
+	const rootEnd = html.search(/>/u);
+	if (rootEnd < 0) return html;
+	const rootTag = html.slice(0, rootEnd);
+	if (!/^<[a-z]+(?:\s|$)/iu.test(rootTag)) return html;
+	const marker = ` data-section-key="${escapeHtml(key)}" data-section-hash="${hash}"`;
+	return `${rootTag}${marker}${html.slice(rootEnd)}`;
+}
+
+/** FNV-1a, 32-bit. Cheap enough to run per section per frame, stable across runs. */
+function contentHash(value: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i);
+		hash = (hash * 0x01000193) >>> 0;
+	}
+	return hash.toString(36);
 }
 
 /**

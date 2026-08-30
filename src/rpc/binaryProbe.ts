@@ -22,10 +22,11 @@ function compareVersion(left: number[], right: readonly number[]): number {
 export async function probePiBinary(
 	binary: string,
 	cwd: string,
+	prependArgs: string[] = [],
 ): Promise<BinaryProbeResult> {
 	let stdout: string;
 	try {
-		const result = await execFileAsync(binary, ["--version"], {
+		const result = await execFileAsync(binary, [...prependArgs, "--version"], {
 			cwd,
 			env: process.env,
 			timeout: 10_000,
@@ -35,15 +36,14 @@ export async function probePiBinary(
 		stdout = result.stdout.trim();
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
-		throw new Error(
-			`Unable to run '${binary} --version'. Configure piAgentSidebar.binaryPath. ${detail}`,
-		);
+		const display = [binary, ...prependArgs, "--version"].join(" ");
+		throw new Error(`Unable to run '${display}'. ${detail}`);
 	}
 
 	const match = stdout.match(/(\d+)\.(\d+)\.(\d+)/u);
 	if (!match)
 		throw new Error(
-			`'${binary} --version' returned an unrecognized version: ${stdout || "(empty)"}`,
+			`'${[binary, ...prependArgs, "--version"].join(" ")}' returned an unrecognized version: ${stdout || "(empty)"}`,
 		);
 
 	const version = match[0];

@@ -83,6 +83,14 @@ pi
 If VS Code cannot find `pi`, set `piAgentSidebar.binaryPath` to an absolute
 path such as `/opt/homebrew/bin/pi`.
 
+On Windows, npm installs `pi` as a `.cmd` shim that cannot be launched
+directly. When `binaryPath` is left at its default, the extension first tries
+`pi` and then automatically falls back to running node.exe with the globally
+installed pi entry script as its first argument (equivalent to setting the
+binary path to node.exe and passing that script in `additionalArguments`). The
+entry script comes from the installed package's own `bin` field. Set
+`binaryPath` to something other than `pi` to override this fallback.
+
 `piAgentSidebar.sessionDirectory` accepts an absolute path or a path relative
 to the active workspace folder; the same resolved directory is used for pi's
 session storage and the sidebar's history, rename, and deletion.

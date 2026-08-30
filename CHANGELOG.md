@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.1
+
+- Start pi out of the box on Windows. npm installs the global `pi` command as a
+  `.cmd` shim, which Node's spawn refuses to run directly, so the sidebar could
+  not launch pi with the default configuration. When `pi` fails to probe on
+  Windows and `piAgentSidebar.binaryPath` is still the default, the extension
+  now falls back to launching node.exe with the global pi install's entry script
+  as its first argument: node.exe is located via `where.exe` and the usual
+  Program Files locations, and the entry script by reading the installed
+  package's `bin` field under npm's APPDATA global root, the node install
+  directory, or `npm root -g`. The lookup is cached and re-runs when pi is
+  restarted explicitly. A `binaryPath` pointing at anything other than `pi` is
+  respected as-is; when the fallback cannot resolve a node executable or a pi
+  install, the error names both the original failure and the options (install pi
+  globally or set `piAgentSidebar.binaryPath`).
+
 ## 0.7.0
 
 - Fix the light theme: surfaces and accent now carry enough chroma to read on a

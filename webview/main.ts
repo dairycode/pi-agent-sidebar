@@ -6,6 +6,16 @@ import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { MentionController } from "./composer/mentions.js";
 import { applyAssistantMessageDelta } from "./transcript/streaming.js";
+import {
+	formatAbsoluteTime,
+	formatCost,
+	formatDaySeparator,
+	formatRelativeTime,
+	formatTokenCount,
+	isNewLocalDay,
+	nextRefreshDelayMs,
+	normalizeEpochMs,
+} from "./transcript/messageTime.js";
 import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
 import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
@@ -14,6 +24,7 @@ import {
 	type TranscriptEntry,
 } from "./transcript/transcriptView.js";
 import {
+	assistantMessageSections,
 	contentText,
 	extractResultDiff,
 	friendlyToolName,
@@ -31,13 +42,16 @@ import { SelectController } from "./ui/selectController.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	type AttachmentRef,
+	type ForkCandidate,
 	type HostToWebviewMessage,
 	type JsonRecord,
+	type PiCapabilities,
 	type PiCommand,
 	type PiMessage,
 	type PiModel,
 	type PiState,
 	type PiStats,
+	type PiTimeContext,
 	type SessionSummary,
 	type WebviewToHostMessage,
 	type WorkspaceReferenceSuggestion,
@@ -87,6 +101,14 @@ interface UiState {
 	commands: PiCommand[];
 	attachments: AttachmentRef[];
 	sessions: SessionSummary[];
+	capabilities: PiCapabilities;
+	timeContext: PiTimeContext;
+	/**
+	 * `hostNowMs` minus the webview's own clock at the moment a snapshot arrived.
+	 * Remote SSH puts pi on a different machine, so relative times are computed
+	 * against the host's clock rather than the webview's.
+	 */
+	clockSkewMs: number;
 	queue: { steering: string[]; followUp: string[] };
 	busy: boolean;
 }
@@ -104,6 +126,15 @@ const ui: UiState = {
 	commands: [],
 	attachments: [],
 	sessions: [],
+	// Optimistic until the host reports otherwise, matching the host-side
+	// tracker: a capability is only hidden once pi says it is unsupported.
+	capabilities: {
+		clone: true,
+		fork: true,
+		forkMessages: true,
+	},
+	timeContext: { locale: "", hostNowMs: 0 },
+	clockSkewMs: 0,
 	queue: { steering: [], followUp: [] },
 	busy: false,
 };
@@ -113,6 +144,8 @@ const pendingActions = new Map<string, PendingAction>();
 const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
 let renderQueued = false;
+/** Single transcript-wide timer for relative time labels. */
+let relativeTimeTimer: ReturnType<typeof setTimeout> | undefined;
 let transcriptMeasureQueued = false;
 let pendingSubmit = false;
 let composerFocusRequestId: number | undefined;
@@ -122,6 +155,16 @@ let lastCompletedFocusRequestId = 0;
 let renderedPromptText: string | undefined;
 let renderedPromptMarkerSignature: string | undefined;
 let resourceDragDepth = 0;
+/**
+ * Prompts the active session can fork from, as last reported by the host.
+ *
+ * Cleared when the picker closes: the list is only valid for the session it was
+ * fetched from, and a stale entry id would be rejected by the host anyway.
+ */
+let forkCandidates: ForkCandidate[] = [];
+let activeForkEntryId: string | undefined;
+let renderedForkEntryIds: string[] = [];
+let forkLoading = false;
 
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
@@ -145,11 +188,17 @@ const elements = {
 	pinnedPromptToggle: element<HTMLButtonElement>("pinned-prompt-toggle"),
 	sessionTitle: element<HTMLElement>("session-title"),
 	renameSessionButton: element<HTMLButtonElement>("rename-session-button"),
+	cloneSessionButton: element<HTMLButtonElement>("clone-session-button"),
+	forkSessionButton: element<HTMLButtonElement>("fork-session-button"),
 	historyButton: element<HTMLButtonElement>("history-button"),
 	newSessionButton: element<HTMLButtonElement>("new-session-button"),
 	historyPanel: element<HTMLElement>("history-panel"),
 	sessionSearch: element<HTMLInputElement>("session-search"),
 	sessionList: element<HTMLElement>("session-list"),
+	forkPanel: element<HTMLElement>("fork-panel"),
+	forkSearch: element<HTMLInputElement>("fork-search"),
+	forkList: element<HTMLElement>("fork-list"),
+	forkDraftWarning: element<HTMLElement>("fork-draft-warning"),
 	widgetArea: element<HTMLElement>("widget-area"),
 	composerStatusRow: element<HTMLElement>("composer-status-row"),
 	queueStatus: element<HTMLElement>("queue-status"),
@@ -174,7 +223,8 @@ const elements = {
 	thinkingSelectValue: element<HTMLElement>("thinking-select-value"),
 	selectPopup: element<HTMLElement>("select-popup"),
 	sendButton: element<HTMLButtonElement>("send-button"),
-	runtimeMeta: element<HTMLElement>("runtime-meta"),
+	runtimeMeta: element<HTMLButtonElement>("runtime-meta"),
+	usagePanel: element<HTMLElement>("usage-panel"),
 	toastRegion: element<HTMLElement>("toast-region"),
 	liveStatus: element<HTMLElement>("live-status"),
 	modalBackdrop: element<HTMLElement>("modal-backdrop"),
@@ -264,11 +314,7 @@ const mentionController = new MentionController({
 		post({ type: "listWorkspaceFiles", requestId, query }),
 	commit: (file, token) => addMentionReference(file, token),
 	navigate: (directoryPath, token) =>
-		composerController.replaceRange(
-			token.start,
-			token.end,
-			`@${directoryPath}/`,
-		),
+		composerController.replaceRange(token.start, token.end, `@${directoryPath}/`),
 	announce,
 	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
 	position: positionMentionPanel,
@@ -384,6 +430,8 @@ interface MessageRenderContext {
 	byKey: ReadonlyMap<string, PiMessage>;
 	omitted: number;
 	resultMap: ReadonlyMap<string, PiMessage>;
+	/** Day-separator entries, keyed like any other transcript entry. */
+	separatorLabels: ReadonlyMap<string, string>;
 }
 
 let pendingMessageRender: MessageRenderContext | undefined;
@@ -409,8 +457,17 @@ window.addEventListener("keydown", (event) => {
 		mentionController.dismiss();
 		return;
 	}
+	if (!elements.usagePanel.hidden) {
+		dismissUsagePanel();
+		elements.runtimeMeta.focus();
+		return;
+	}
 	if (!elements.commandPanel.hidden) {
 		closeCommandPalette(true);
+		return;
+	}
+	if (!elements.forkPanel.hidden) {
+		closeForkPicker();
 		return;
 	}
 	if (!elements.historyPanel.hidden) closeHistory();
@@ -445,6 +502,14 @@ window.addEventListener("pointerdown", (event) => {
 	) {
 		mentionController.dismiss();
 	}
+	// Checked before the history panel, whose branch returns early.
+	if (
+		!elements.forkPanel.hidden &&
+		!elements.forkPanel.contains(event.target) &&
+		!elements.forkSessionButton.contains(event.target)
+	) {
+		dismissForkPicker();
+	}
 	if (
 		modalController.isOpen ||
 		elements.historyPanel.hidden ||
@@ -463,6 +528,7 @@ window.addEventListener("blur", () => {
 	if (!elements.commandPanel.hidden) dismissCommandPalette();
 	mentionController.dismiss();
 	if (!elements.historyPanel.hidden) dismissHistory();
+	dismissForkPicker();
 });
 
 elements.input.addEventListener("input", () => {
@@ -584,8 +650,7 @@ elements.input.addEventListener("keydown", (event) => {
 		const reference = composerController.referenceAtOffset(
 			elements.input.selectionStart,
 		);
-		if (!reference || composerController.isPendingReference(reference.id))
-			return;
+		if (!reference || composerController.isPendingReference(reference.id)) return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
 		return;
@@ -711,9 +776,7 @@ elements.sessionList.addEventListener("keydown", (event) => {
 		return;
 	}
 	const nextIndex =
-		event.key === "ArrowDown"
-			? Math.min(index + 1, rows.length - 1)
-			: index - 1;
+		event.key === "ArrowDown" ? Math.min(index + 1, rows.length - 1) : index - 1;
 	rows[nextIndex]?.querySelector<HTMLButtonElement>(".session-open")?.focus();
 });
 // No confirmation: pi keeps the current conversation in session history, so
@@ -724,6 +787,65 @@ elements.newSessionButton.addEventListener("click", () =>
 elements.renameSessionButton.addEventListener("click", () =>
 	openRenamePrompt(),
 );
+// Cloning replaces the active session, so it must wait for pi to go idle. The
+// button stays clickable while busy; the refusal is a toast, matching the other
+// header actions.
+elements.cloneSessionButton.addEventListener("click", () => {
+	if (ui.busy) {
+		showToast("Wait for pi to finish before duplicating this session", "error");
+		return;
+	}
+	if (ui.connection !== "ready") return;
+	runAction("cloneSession");
+});
+// The picker is a webview list, so the whole choice happens here and the host
+// only executes the entry id it is handed.
+elements.forkSessionButton.addEventListener("click", () => {
+	if (ui.busy) {
+		showToast("Wait for pi to finish before forking this session", "error");
+		return;
+	}
+	if (elements.forkPanel.hidden) openForkPicker();
+	else closeForkPicker();
+});
+elements.forkSearch.addEventListener("input", () => renderForkCandidates());
+elements.forkSearch.addEventListener("keydown", (event) => {
+	if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+		event.preventDefault();
+		moveActiveFork(event.key === "ArrowDown" ? 1 : -1);
+		return;
+	}
+	if (event.key !== "Enter" || event.isComposing) return;
+	event.preventDefault();
+	// Enter with nothing highlighted does nothing: the first row is not an obvious
+	// default, and a fork is not silently undoable.
+	if (activeForkEntryId) submitFork(activeForkEntryId);
+});
+elements.runtimeMeta.addEventListener("click", () => toggleUsagePanel());
+document.addEventListener("pointerdown", (event) => {
+	if (elements.usagePanel.hidden) return;
+	const target = event.target as Node | null;
+	if (
+		target &&
+		(elements.usagePanel.contains(target) ||
+			elements.runtimeMeta.contains(target))
+	) {
+		return;
+	}
+	dismissUsagePanel();
+});
+// A hidden webview schedules no refresh at all, so labels are brought back up
+// to date the moment it becomes visible again.
+document.addEventListener("visibilitychange", () => {
+	if (document.hidden) {
+		if (relativeTimeTimer !== undefined) {
+			clearTimeout(relativeTimeTimer);
+			relativeTimeTimer = undefined;
+		}
+		return;
+	}
+	refreshRelativeTimes();
+});
 
 window.addEventListener("resize", () => selectorController.reposition());
 
@@ -732,8 +854,7 @@ elements.messages.addEventListener("click", (event) => {
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
-			copyButton.closest(".code-block")?.querySelector("code")?.textContent ??
-			"";
+			copyButton.closest(".code-block")?.querySelector("code")?.textContent ?? "";
 		void navigator.clipboard
 			.writeText(code)
 			.then(() => showToast("Copied", "info"));
@@ -755,6 +876,13 @@ elements.messages.addEventListener("click", (event) => {
 		}
 		return;
 	}
+	// Checked after the path link so a clickable path inside tool output still
+	// opens the file rather than collapsing the block around it.
+	const expandable = target.closest<HTMLElement>("[data-expandable]");
+	if (expandable) {
+		toggleExpandable(expandable);
+		return;
+	}
 	const anchor = target.closest<HTMLAnchorElement>("a[href]");
 	if (anchor) {
 		// VS Code's injected window-level anchor handler opens links with
@@ -768,6 +896,21 @@ elements.messages.addEventListener("click", (event) => {
 		event.stopPropagation();
 		post({ type: "openExternal", href: anchor.href });
 	}
+});
+
+// `<summary>` used to supply keyboard activation for free. The expandables that
+// replaced it are plain elements carrying the button role, so Enter and Space
+// have to be wired up by hand to honour that role's contract.
+elements.messages.addEventListener("keydown", (event) => {
+	if (event.key !== "Enter" && event.key !== " ") return;
+	const expandable = (event.target as HTMLElement).closest<HTMLElement>(
+		"[data-expandable]",
+	);
+	if (!expandable) return;
+	// Space scrolls the transcript by default, which would move the block the
+	// reader just aimed at out from under them.
+	event.preventDefault();
+	toggleExpandable(expandable);
 });
 
 post({ type: "ready" });
@@ -791,12 +934,31 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 			break;
 		}
 		case "actionResult": {
-			handleActionResult(message.actionId, message.ok, message.error);
+			handleActionResult(
+				message.actionId,
+				message.ok,
+				message.error,
+				message.cancelled,
+			);
 			break;
 		}
 		case "sessionList": {
 			ui.sessions = message.sessions;
 			renderSessions();
+			break;
+		}
+		case "forkCandidates": {
+			forkLoading = false;
+			forkCandidates = message.candidates;
+			// A late reply must not repopulate a picker the reader already closed.
+			if (!elements.forkPanel.hidden) renderForkCandidates();
+			break;
+		}
+		case "capabilities": {
+			// The host downgrades a capability the moment pi rejects the command as
+			// unknown, so the entry point disappears instead of failing repeatedly.
+			ui.capabilities = message.capabilities;
+			scheduleRender();
 			break;
 		}
 		case "commandList": {
@@ -875,6 +1037,13 @@ function applySnapshot(
 	ui.thinkingLevels = message.thinkingLevels;
 	ui.commands = message.commands;
 	ui.workspaceName = message.workspaceName;
+	if (message.capabilities) ui.capabilities = message.capabilities;
+	if (message.timeContext) {
+		ui.timeContext = message.timeContext;
+		// Measured once per snapshot: the difference between pi's clock and this
+		// webview's is what makes relative times correct over Remote SSH.
+		ui.clockSkewMs = message.timeContext.hostNowMs - Date.now();
+	}
 	ui.busy = Boolean(message.state.isStreaming || message.state.isCompacting);
 	ui.streamingMessage = undefined;
 	liveTools.clear();
@@ -930,12 +1099,14 @@ function handleActionResult(
 	actionId: string,
 	ok: boolean,
 	error?: string,
+	cancelled = false,
 ): void {
 	const action = pendingActions.get(actionId);
 	pendingActions.delete(actionId);
 	if (action?.type === "submit") pendingSubmit = false;
 	if (
 		ok &&
+		!cancelled &&
 		action &&
 		(action.type === "submit" || action.type === "newSession")
 	) {
@@ -945,11 +1116,11 @@ function handleActionResult(
 		);
 		composerController.completeSubmittedReferences(action);
 	}
-	if (ok && action?.type === "pasteImages") {
+	if (ok && !cancelled && action?.type === "pasteImages") {
 		showToast("Clipboard image attached", "info");
 		announce("Clipboard image attached");
 	}
-	if (ok && action?.type === "addResources") {
+	if (ok && !cancelled && action?.type === "addResources") {
 		showToast("Resources added to the input", "info");
 		announce("Resources added to the input");
 	}
@@ -959,15 +1130,26 @@ function handleActionResult(
 	) {
 		composerController.discardPendingReference(action.stagedReferenceId);
 	}
-	if (ok && action?.type === "deleteSession") {
+	if (ok && !cancelled && action?.type === "deleteSession") {
 		showToast("Session deleted", "info");
 		announce("Session deleted");
 		if (!elements.historyPanel.hidden) elements.sessionSearch.focus();
 	}
-	if (ok && action?.type === "renameSession") {
+	if (ok && !cancelled && action?.type === "renameSession") {
 		showToast("Session renamed", "info");
 		announce("Session renamed");
 	}
+	if (ok && !cancelled && action?.type === "cloneSession") {
+		showToast("Session duplicated", "info");
+		announce("Session duplicated");
+	}
+	if (ok && !cancelled && action?.type === "forkSession") {
+		showToast("Session forked", "info");
+		announce("Session forked");
+	}
+	// The generic error toast below explains the failure; the picker closes because
+	// it has no list to show and its entry ids were never delivered.
+	if (!ok && action?.type === "listForkCandidates") dismissForkPicker();
 	if (!ok) showToast(error ?? "Action failed", "error");
 	scheduleRender();
 }
@@ -1066,9 +1248,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 				id,
 				name: toolName,
 				args:
-					Object.keys(eventArgs).length > 0
-						? eventArgs
-						: (existing?.args ?? {}),
+					Object.keys(eventArgs).length > 0 ? eventArgs : (existing?.args ?? {}),
 				status,
 				output: extractResultText(event.result),
 				diff: extractResultDiff(event.result),
@@ -1176,6 +1356,21 @@ function render(): void {
 	elements.attachButton.disabled = !enabled;
 	elements.commandButton.disabled = !enabled;
 	elements.renameSessionButton.disabled = !enabled;
+	// Cloning replaces the active session, so it must wait for pi to go idle. The
+	// busy refusal arrives as a toast from the click handler below, not as a
+	// greyed-out control — every header action reads the same way mid-turn.
+	// Hidden outright when this pi build has no `clone` command.
+	elements.cloneSessionButton.hidden = !ui.capabilities.clone;
+	elements.cloneSessionButton.disabled = !enabled;
+	// Forking needs both the candidate list and the fork command itself.
+	elements.forkSessionButton.hidden =
+		!ui.capabilities.fork || !ui.capabilities.forkMessages;
+	elements.forkSessionButton.disabled = !enabled;
+	// An open picker outlives neither a disconnect nor a turn starting: its entry
+	// ids belong to the session as it was when the list was fetched.
+	if (elements.forkSessionButton.hidden || !enabled || ui.busy) {
+		dismissForkPicker();
+	}
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
 	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
 	const activeSelect = selectorController.activeKind;
@@ -1194,6 +1389,8 @@ function render(): void {
 	// was already made from scroll events and reader gestures.
 	scrollAnchor.stickToBottomIfFollowing();
 	scheduleTranscriptMeasure();
+	// Relabels the nodes this pass created and arms the next boundary timer.
+	refreshRelativeTimes();
 }
 
 /**
@@ -1287,10 +1484,7 @@ function renderConnectionBanner(): void {
 		const restart = document.createElement("button");
 		restart.type = "button";
 		restart.className = "text-button";
-		restart.append(
-			createCodicon("refresh"),
-			document.createTextNode(" Restart"),
-		);
+		restart.append(createCodicon("refresh"), document.createTextNode(" Restart"));
 		restart.addEventListener("click", () => runAction("restart"));
 		elements.connectionBanner.append(restart);
 	}
@@ -1343,22 +1537,40 @@ function renderMessages(): void {
 	// as history grows past the cap, which would invalidate all 150 nodes on the
 	// message that crosses the boundary.
 	const byKey = new Map<string, PiMessage>();
+	const separatorLabels = new Map<string, string>();
+	const locale = ui.timeContext.locale || undefined;
+	let previousDayEpoch: number | undefined;
 	for (const message of visible) {
 		const key = messageKey(message);
 		byKey.set(key, message);
+		const epochMs = normalizeEpochMs(message.timestamp);
+		if (epochMs !== undefined) {
+			// The separator is its own entry, so a day boundary never forces the
+			// message itself to be rebuilt and reconciliation keeps addressing
+			// nodes positionally.
+			if (isNewLocalDay(previousDayEpoch, epochMs)) {
+				const label = formatDaySeparator(epochMs, hostNow(), locale);
+				const separatorKey = `day-${key}`;
+				separatorLabels.set(separatorKey, label);
+				entries.push({ key: separatorKey, signature: `day:${label}` });
+			}
+			previousDayEpoch = epochMs;
+		}
 		entries.push({
 			key,
-			signature: messageRenderSignature(
+			// The epoch joins the signature so a corrected timestamp rebuilds the
+			// node; the relative label itself is refreshed in place instead.
+			signature: `${messageRenderSignature(
 				message,
 				resultMap,
 				liveTools,
 				message === ui.streamingMessage,
 				messageSignaturePart,
-			),
+			)}|ts${epochMs ?? "-"}`,
 		});
 	}
 
-	pendingMessageRender = { byKey, omitted, resultMap };
+	pendingMessageRender = { byKey, omitted, resultMap, separatorLabels };
 	transcriptView.update(entries);
 	pendingMessageRender = undefined;
 }
@@ -1371,6 +1583,105 @@ function renderMessages(): void {
  * hands back only the entry it was given; keeping the entry to a key and a
  * signature is what makes reconciliation cheap to compare.
  */
+
+/**
+ * Re-renders only the sections of a streaming message whose content changed.
+ *
+ * Streaming runs this once per delta. The message node already in the DOM is
+ * the same shape as what `assistantMessageSections` will produce — the block
+ * sequence only grows, never reshuffles — so the frame's work reduces to:
+ *
+ * 1. render each section's HTML and hash it;
+ * 2. walk the previous node's sections in order, reusing any whose key and
+ *    hash still match (no DOM churn, layout state and expandable state kept);
+ * 3. replace or insert the remaining ones, and drop sections that ended
+ *    (e.g. a text block that flushed its trailing activity timeline);
+ * 4. run the post-processing passes only over the *new* nodes, since the
+ *    reused ones were already enhanced and linkified when they were built.
+ *
+ * Returns the same node, or `undefined` when the previous DOM does not match
+ * the expected shape (first frame, a settled message, a non-assistant role, or
+ * any structural surprise) — the caller then falls back to a full rebuild,
+ * which is the pre-existing, correct path.
+ */
+function patchStreamingMessage(
+	slot: Element,
+	message: PiMessage,
+	context: MessageRenderContext,
+	messageKey: string,
+): Element | undefined {
+	const sections = assistantMessageSections(
+		message,
+		context.resultMap,
+		liveTools,
+		true,
+		messageKey,
+	);
+	const host = slot.querySelector(":scope > .message");
+	if (!host || !host.classList.contains("assistant-message")) return undefined;
+
+	// Capture disclosure state before touching the DOM: `slot` is both the
+	// previous node and the node we hand back, so a re-read after patching
+	// would see the post-patch (collapsed) state and lose the reader's choice.
+	const snapshot = captureExpandableState(slot);
+
+	// Sections currently in the DOM, in order. The message is the ONLY child of
+	// the slot (see createMessageNode), so this is the full section list.
+	const oldSections = Array.from(host.children).filter(
+		(child): child is HTMLElement => child instanceof HTMLElement,
+	);
+	const previous = new Map<string, HTMLElement>();
+	for (const el of oldSections) {
+		const key = el.dataset.sectionKey;
+		if (key) previous.set(key, el);
+	}
+
+	const freshNodes: Element[] = [];
+	for (const section of sections) {
+		const old = previous.get(section.key);
+		if (old && old.dataset.sectionHash === section.hash) {
+			// Unchanged since the last frame: keep the node and everything the
+			// browser has computed for it.
+			continue;
+		}
+		const nodes = sanitizedNodes(section.html);
+		if (nodes.length !== 1 || !(nodes[0] instanceof Element)) {
+			return undefined;
+		}
+		const fresh = nodes[0] as HTMLElement;
+		if (old) {
+			host.replaceChild(fresh, old);
+		} else {
+			host.append(fresh);
+		}
+		freshNodes.push(fresh);
+	}
+
+	// Drop sections whose key left the list (a pending activity timeline that
+	// was flushed after a text block ended, or a tool that disappeared).
+	const wanted = new Set(sections.map((section) => section.key));
+	for (const el of oldSections) {
+		const key = el.dataset.sectionKey;
+		if (key && !wanted.has(key)) {
+			el.remove();
+		} else if (!key) {
+			// A node this path did not create: its structure is unknown, so let
+			// the caller rebuild the whole message instead of guessing.
+			return undefined;
+		}
+	}
+
+	// New nodes need the passes renderers get once; reused nodes keep theirs.
+	for (const node of freshNodes) {
+		enhanceCodeBlocks(node);
+		linkifyWorkspacePaths(node);
+		bindImageReflow(node);
+	}
+	applyExpandableState(host, snapshot);
+
+	return slot;
+}
+
 function createMessageNode(
 	entry: TranscriptEntry,
 	previous: Element | undefined,
@@ -1385,8 +1696,29 @@ function createMessageNode(
 		return node;
 	}
 
+	const separatorLabel = context.separatorLabels.get(entry.key);
+	if (separatorLabel !== undefined) {
+		const node = document.createElement("div");
+		node.className = "day-separator";
+		node.setAttribute("role", "separator");
+		node.textContent = separatorLabel;
+		return node;
+	}
+
 	const message = context.byKey.get(entry.key);
 	if (!message) throw new Error(`No message for transcript key ${entry.key}`);
+
+	// Streaming fast path: the node already in the DOM must not be swapped out
+	// wholesale every delta. Rebuilding it loses the browser's layout state for
+	// everything in the message (re-parsing 40KB of markdown + relaying out ~13ms
+	// per frame at the top end, inside the 16ms frame budget). Keep the node
+	// stable, rewrite only the blocks whose content actually changed, and hand
+	// it straight back so TranscriptView swaps nothing either.
+	if (previous && message === ui.streamingMessage) {
+		const patched = patchStreamingMessage(previous, message, context, entry.key);
+		if (patched) return patched;
+	}
+
 	// The same stable key feeds messageHtml's per-block keys. A positional index
 	// would shift for every message once history passes the render cap, which
 	// would silently collapse reasoning blocks the reader had opened.
@@ -1403,7 +1735,7 @@ function createMessageNode(
 	const node = document.createElement("div");
 	node.className = "message-slot";
 	node.replaceChildren(...sanitizedNodes(html));
-	restoreDisclosureState(node, previous);
+	restoreExpandableState(node, previous);
 	enhanceCodeBlocks(node);
 	linkifyWorkspacePaths(node);
 	bindImageReflow(node);
@@ -1411,36 +1743,112 @@ function createMessageNode(
 }
 
 /**
- * Carries `<details>` open state across a rebuild.
+ * Carries reader-toggled expansion across a rebuild.
  *
- * Disclosure state lives only in the DOM, so replacing a node would silently
- * collapse a tool output the reader had opened. Streaming reasoning blocks are
- * excluded: their open state is driven by the streaming flag itself.
+ * Expansion lives only in the DOM, so replacing a node would silently discard
+ * it. Reasoning has to carry both directions because its default is expanded:
+ * restoring only "was open" would re-expand every block the reader had just
+ * collapsed. A tool box defaults to collapsed, so only the expanded ones need
+ * recording.
+ *
+ * Streaming reasoning is skipped: it has no collapse control while its content
+ * is still arriving.
  */
-function restoreDisclosureState(
+interface ExpandableSnapshot {
+	thinking: Map<string, boolean>;
+	tools: Set<string>;
+}
+
+function captureExpandableState(previous: Element): ExpandableSnapshot {
+	const thinking = new Map<string, boolean>();
+	for (const block of previous.querySelectorAll<HTMLElement>(
+		".thinking-block:not(.streaming)[data-thinking-key]",
+	)) {
+		const key = block.dataset.thinkingKey;
+		if (key) thinking.set(key, block.classList.contains("is-expanded"));
+	}
+	const tools = new Set<string>();
+	for (const tool of previous.querySelectorAll<HTMLElement>(
+		".tool-call.expandable.expanded[data-tool-key]",
+	)) {
+		const key = tool.dataset.toolKey;
+		if (key) tools.add(key);
+	}
+	return { thinking, tools };
+}
+
+function applyExpandableState(
+	node: Element,
+	snapshot: ExpandableSnapshot,
+): void {
+	if (snapshot.thinking.size === 0 && snapshot.tools.size === 0) return;
+	for (const block of node.querySelectorAll<HTMLElement>(
+		".thinking-block:not(.streaming)[data-thinking-key]",
+	)) {
+		const key = block.dataset.thinkingKey;
+		const expanded = key ? snapshot.thinking.get(key) : undefined;
+		if (expanded === undefined) continue;
+		setExpandedState(block, expanded);
+	}
+	for (const tool of node.querySelectorAll<HTMLElement>(
+		".tool-call.expandable[data-tool-key]",
+	)) {
+		const key = tool.dataset.toolKey;
+		if (key && snapshot.tools.has(key)) setExpandedState(tool, true);
+	}
+}
+
+function restoreExpandableState(
 	node: Element,
 	previous: Element | undefined,
 ): void {
 	if (!previous) return;
-	const openKeys = new Set<string>();
-	for (const details of previous.querySelectorAll<HTMLDetailsElement>(
-		".tool-call[open][data-tool-key], .thinking-block[open]:not(.streaming)[data-thinking-key]",
-	)) {
-		const key = details.dataset.toolKey ?? details.dataset.thinkingKey;
-		if (key) openKeys.add(key);
+	applyExpandableState(node, captureExpandableState(previous));
+}
+
+/**
+ * Applies one expandable's state to both its class and its ARIA attribute.
+ *
+ * The two must move together: `aria-expanded` is the only channel a screen
+ * reader has for this, and the class is the only one CSS has.
+ *
+ * Reasoning also gets an `aria-label`, because its two states show different
+ * text and neither names the control. A tool box is left unlabelled on purpose:
+ * its header already names the tool, so an `aria-label` would replace "read
+ * src/file.ts" with something vaguer.
+ */
+function setExpandedState(element: HTMLElement, expanded: boolean): void {
+	const isThinking = element.dataset.expandable === "thinking";
+	element.classList.toggle(isThinking ? "is-expanded" : "expanded", expanded);
+	element.setAttribute("aria-expanded", expanded ? "true" : "false");
+	if (isThinking) {
+		element.setAttribute(
+			"aria-label",
+			`Reasoning, click to ${expanded ? "collapse" : "expand"}`,
+		);
 	}
-	if (openKeys.size === 0) return;
-	for (const details of node.querySelectorAll<HTMLDetailsElement>(
-		".tool-call[data-tool-key], .thinking-block:not(.streaming)[data-thinking-key]",
-	)) {
-		const key = details.dataset.toolKey ?? details.dataset.thinkingKey;
-		if (key && openKeys.has(key)) details.open = true;
-	}
+}
+
+/**
+ * Toggles the expandable a pointer or key landed on.
+ *
+ * Ignores a click that ends a text selection: these regions hold output a reader
+ * is likely to be copying from, and collapsing the block out from under a drag
+ * loses the selection. pi guards the same case in its inline handler.
+ */
+function toggleExpandable(element: HTMLElement): void {
+	if (window.getSelection()?.toString()) return;
+	const expandedClass =
+		element.dataset.expandable === "thinking" ? "is-expanded" : "expanded";
+	setExpandedState(element, !element.classList.contains(expandedClass));
 }
 
 function enhanceCodeBlocks(root: ParentNode): void {
 	for (const pre of root.querySelectorAll("pre")) {
-		if (pre.parentElement?.classList.contains("tool-output")) continue;
+		// `closest`, not `parentElement`: an expandable output wraps its <pre> in a
+		// preview/full pair, so the tool output is no longer the direct parent.
+		// Tool output is not a code block and must not grow a copy button.
+		if (pre.closest(".tool-output")) continue;
 		if (pre.parentElement?.classList.contains("code-block")) continue;
 		// The button must live outside the scrolling <pre> so horizontal scrolling
 		// cannot drag it along: an absolute child is positioned against the
@@ -1482,9 +1890,7 @@ function linkifyWorkspacePaths(root: Element): void {
 			// already-linkified spans. Inline <code> is allowed so paths that
 			// pi wraps in backticks still become clickable.
 			if (
-				parent.closest(
-					"pre, a, .tool-call, .thinking-block, [data-workspace-path]",
-				)
+				parent.closest("pre, a, .tool-call, .thinking-block, [data-workspace-path]")
 			) {
 				return NodeFilter.FILTER_REJECT;
 			}
@@ -1552,9 +1958,7 @@ function renderAttachments(): void {
 		remove.setAttribute("aria-label", `Remove ${attachment.label}`);
 		remove.append(createCodicon("close"));
 		remove.addEventListener("click", () => {
-			ui.attachments = ui.attachments.filter(
-				(item) => item.id !== attachment.id,
-			);
+			ui.attachments = ui.attachments.filter((item) => item.id !== attachment.id);
 			post({ type: "removeAttachment", id: attachment.id });
 			scheduleRender();
 		});
@@ -1688,16 +2092,139 @@ function renderWidgets(): void {
 }
 
 function renderRuntimeMeta(): void {
+	const locale = ui.timeContext.locale || undefined;
 	const parts: string[] = [];
 	const context = ui.stats?.contextUsage?.percent;
-	if (typeof context === "number")
-		parts.push(`${Math.round(context)}% context`);
+	if (typeof context === "number") parts.push(`${Math.round(context)}% context`);
 	if (typeof ui.stats?.cost === "number" && ui.stats.cost > 0)
-		parts.push(`$${ui.stats.cost.toFixed(3)}`);
-	const text = parts.join(" · ");
-	elements.runtimeMeta.hidden = text.length === 0;
-	elements.runtimeMeta.textContent = text;
-	elements.runtimeMeta.title = text;
+		parts.push(formatCost(ui.stats.cost, locale));
+	const text = parts.join(" \u00b7 ");
+	elements.runtimeMeta.hidden = !ui.stats;
+	elements.runtimeMeta.textContent = text || "Usage";
+	elements.runtimeMeta.title = "Session usage details";
+	if (elements.runtimeMeta.hidden) dismissUsagePanel();
+	else if (!elements.usagePanel.hidden) renderUsagePanel();
+}
+
+/**
+ * Session usage detail, taken straight from pi's `get_session_stats`.
+ *
+ * Nothing here is computed locally. A `null` context reading is shown as
+ * unavailable rather than 0%: pi reports null right after compaction until a
+ * fresh assistant response supplies real usage.
+ */
+function renderUsagePanel(): void {
+	const locale = ui.timeContext.locale || undefined;
+	const stats = ui.stats;
+	const rows: Array<[string, string]> = [];
+	if (stats) {
+		const usage = stats.contextUsage;
+		if (usage) {
+			rows.push([
+				"Context",
+				usage.tokens === null || typeof usage.percent !== "number"
+					? "Unavailable until the next response"
+					: `${formatTokenCount(usage.tokens, locale)} / ${formatTokenCount(
+							usage.contextWindow,
+							locale,
+						)} (${Math.round(usage.percent)}%)`,
+			]);
+		}
+		const tokens = stats.tokens;
+		if (tokens) {
+			rows.push(
+				["Input", formatTokenCount(tokens.input, locale)],
+				["Output", formatTokenCount(tokens.output, locale)],
+				["Cache read", formatTokenCount(tokens.cacheRead, locale)],
+				["Cache write", formatTokenCount(tokens.cacheWrite, locale)],
+				["Total tokens", formatTokenCount(tokens.total, locale)],
+			);
+		}
+		if (typeof stats.cost === "number")
+			rows.push(["Cost", formatCost(stats.cost, locale)]);
+		if (typeof stats.totalMessages === "number")
+			rows.push(["Messages", formatTokenCount(stats.totalMessages, locale)]);
+		if (typeof stats.toolCalls === "number")
+			rows.push(["Tool calls", formatTokenCount(stats.toolCalls, locale)]);
+	} else {
+		rows.push(["Usage", "Not reported by pi yet"]);
+	}
+
+	const list = document.createElement("dl");
+	list.className = "usage-list";
+	for (const [label, value] of rows) {
+		const term = document.createElement("dt");
+		term.textContent = label;
+		const detail = document.createElement("dd");
+		detail.textContent = value;
+		list.append(term, detail);
+	}
+	elements.usagePanel.replaceChildren(list);
+}
+
+function toggleUsagePanel(): void {
+	if (!elements.usagePanel.hidden) {
+		dismissUsagePanel();
+		return;
+	}
+	renderUsagePanel();
+	elements.usagePanel.hidden = false;
+	elements.runtimeMeta.setAttribute("aria-expanded", "true");
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.usagePanel,
+		anchor: elements.runtimeMeta,
+	});
+}
+
+function dismissUsagePanel(): void {
+	if (elements.usagePanel.hidden) return;
+	elements.usagePanel.hidden = true;
+	elements.runtimeMeta.setAttribute("aria-expanded", "false");
+}
+
+/**
+ * Relabels every visible timestamp in place.
+ *
+ * Deliberately bypasses TranscriptView: a label going from "59s" to "1m" must
+ * not re-parse markdown or replace DOM nodes, which would also reset the
+ * reader's open disclosures and scroll position.
+ */
+function refreshRelativeTimes(): void {
+	const epochValues: number[] = [];
+	for (const node of document.querySelectorAll<HTMLElement>("[data-epoch-ms]")) {
+		const epochMs = Number(node.dataset.epochMs);
+		if (!Number.isFinite(epochMs)) continue;
+		epochValues.push(epochMs);
+		applyRelativeTime(node, epochMs);
+	}
+	scheduleRelativeTimeRefresh(epochValues);
+}
+
+function applyRelativeTime(node: HTMLElement, epochMs: number): void {
+	const locale = ui.timeContext.locale || undefined;
+	const absolute = formatAbsoluteTime(epochMs, locale);
+	node.textContent = formatRelativeTime(epochMs, hostNow(), locale);
+	node.title = absolute;
+	node.setAttribute("aria-label", absolute);
+}
+
+/**
+ * Wakes only at the next label boundary rather than on a fixed interval, so an
+ * idle transcript costs nothing. A hidden webview schedules nothing at all.
+ */
+function scheduleRelativeTimeRefresh(epochValues: readonly number[]): void {
+	if (relativeTimeTimer !== undefined) {
+		clearTimeout(relativeTimeTimer);
+		relativeTimeTimer = undefined;
+	}
+	if (document.hidden) return;
+	const delay = nextRefreshDelayMs(epochValues, hostNow());
+	if (delay === undefined) return;
+	relativeTimeTimer = setTimeout(() => {
+		relativeTimeTimer = undefined;
+		refreshRelativeTimes();
+	}, delay);
 }
 
 function renderComposerStatusRow(): void {
@@ -1756,51 +2283,49 @@ function renderSessions(): void {
 		const title = document.createElement("strong");
 		title.textContent = session.title;
 		const time = document.createElement("time");
-		time.dateTime = session.timestamp;
-		time.textContent = formatRelativeTime(session.timestamp);
+		const activityAt = session.lastActivityAt ?? session.createdAt;
+		const activityEpoch = normalizeEpochMs(activityAt);
+		if (activityEpoch !== undefined) {
+			const locale = ui.timeContext.locale || undefined;
+			time.dateTime = new Date(activityEpoch).toISOString();
+			time.dataset.epochMs = String(activityEpoch);
+			time.textContent = formatRelativeTime(activityEpoch, hostNow(), locale);
+			time.title = formatAbsoluteTime(activityEpoch, locale);
+		}
 		openButton.append(title, time);
 		openButton.addEventListener("click", () => {
 			if (!session.active) runAction("switchSession", { path: session.path });
 			closeHistory();
 		});
 
-		const deleteButton = document.createElement("button");
-		deleteButton.type = "button";
-		deleteButton.className = "session-delete";
-		deleteButton.disabled = session.active;
-		deleteButton.title = session.active
-			? "The active session cannot be deleted"
-			: "Delete session";
-		deleteButton.setAttribute(
-			"aria-label",
-			session.active
-				? "The active session cannot be deleted"
-				: `Delete ${session.title}`,
-		);
-		deleteButton.append(createCodicon("trash"));
-		// Deliberately unconfirmed: deleting a history entry is a routine
-		// list-management action, and an extra modal makes cleanup tedious.
-		deleteButton.addEventListener("click", () =>
-			runAction("deleteSession", { path: session.path }),
-		);
+		// Rename requires the active session and delete a non-active one, so the
+		// two are mutually exclusive; share one right-edge action slot instead of
+		// two grid columns, where the disabled twin used to leave a hole beside
+		// whichever button was visible.
+		let actionButton: HTMLButtonElement;
+		if (session.active) {
+			actionButton = document.createElement("button");
+			actionButton.type = "button";
+			actionButton.className = "session-rename";
+			actionButton.title = "Rename session";
+			actionButton.setAttribute("aria-label", `Rename ${session.title}`);
+			actionButton.append(createCodicon("edit"));
+			actionButton.addEventListener("click", () => openRenamePrompt());
+		} else {
+			actionButton = document.createElement("button");
+			actionButton.type = "button";
+			actionButton.className = "session-delete";
+			actionButton.title = "Delete session";
+			actionButton.setAttribute("aria-label", `Delete ${session.title}`);
+			actionButton.append(createCodicon("trash"));
+			// Deliberately unconfirmed: deleting a history entry is a routine
+			// list-management action, and an extra modal makes cleanup tedious.
+			actionButton.addEventListener("click", () =>
+				runAction("deleteSession", { path: session.path }),
+			);
+		}
 
-		const renameButton = document.createElement("button");
-		renameButton.type = "button";
-		renameButton.className = "session-rename";
-		renameButton.disabled = !session.active;
-		renameButton.title = session.active
-			? "Rename session"
-			: "Open the session to rename it";
-		renameButton.setAttribute(
-			"aria-label",
-			session.active
-				? `Rename ${session.title}`
-				: "Open the session to rename it",
-		);
-		renameButton.append(createCodicon("edit"));
-		renameButton.addEventListener("click", () => openRenamePrompt());
-
-		row.append(openButton, renameButton, deleteButton);
+		row.append(openButton, actionButton);
 		return row;
 	});
 	elements.sessionList.replaceChildren(...rows);
@@ -1808,6 +2333,7 @@ function renderSessions(): void {
 
 function toggleHistory(): void {
 	if (elements.historyPanel.hidden) {
+		dismissForkPicker();
 		elements.historyPanel.hidden = false;
 		elements.historyButton.setAttribute("aria-expanded", "true");
 		elements.sessionSearch.value = "";
@@ -1830,6 +2356,193 @@ function dismissHistory(): void {
 function closeHistory(): void {
 	dismissHistory();
 	elements.historyButton.focus();
+}
+
+/**
+ * Opens the fork picker and asks the host for the prompt list.
+ *
+ * The list is re-fetched on every open rather than cached: prompts accumulate as
+ * the conversation grows, and a stale list would offer entry ids the host would
+ * only reject.
+ */
+function openForkPicker(): void {
+	if (ui.connection !== "ready" || ui.busy) return;
+	if (!ui.capabilities.fork || !ui.capabilities.forkMessages) return;
+	dismissHistory();
+	selectorController.close(false);
+	dismissCommandPalette();
+	mentionController.dismiss();
+	forkCandidates = [];
+	activeForkEntryId = undefined;
+	renderedForkEntryIds = [];
+	forkLoading = true;
+	elements.forkSearch.value = "";
+	elements.forkPanel.hidden = false;
+	elements.forkSessionButton.setAttribute("aria-expanded", "true");
+	// Shown before the list arrives, so the cost of forking is visible while the
+	// reader is still choosing rather than after they have committed.
+	elements.forkDraftWarning.hidden = !composerHasContent();
+	renderForkCandidates();
+	elements.forkSearch.focus();
+	runAction("listForkCandidates");
+}
+
+function dismissForkPicker(): void {
+	if (elements.forkPanel.hidden) return;
+	elements.forkPanel.hidden = true;
+	forkCandidates = [];
+	activeForkEntryId = undefined;
+	renderedForkEntryIds = [];
+	forkLoading = false;
+	elements.forkSearch.removeAttribute("aria-activedescendant");
+	elements.forkList.replaceChildren();
+	elements.forkSessionButton.setAttribute("aria-expanded", "false");
+}
+
+function closeForkPicker(): void {
+	const wasOpen = !elements.forkPanel.hidden;
+	dismissForkPicker();
+	if (wasOpen) elements.forkSessionButton.focus();
+}
+
+/** True when forking would discard something the reader typed or attached. */
+function composerHasContent(): boolean {
+	return (
+		elements.input.value.trim().length > 0 ||
+		ui.attachments.length > 0 ||
+		composerController.references.length > 0
+	);
+}
+
+function matchingForkCandidates(): ForkCandidate[] {
+	const terms = elements.forkSearch.value
+		.trim()
+		.toLocaleLowerCase()
+		.split(/\s+/u)
+		.filter(Boolean);
+	if (terms.length === 0) return forkCandidates;
+	return forkCandidates.filter((candidate) => {
+		const searchable = candidate.text.toLocaleLowerCase();
+		return terms.every((term) => searchable.includes(term));
+	});
+}
+
+function renderForkCandidates(): void {
+	if (forkLoading) {
+		renderedForkEntryIds = [];
+		const loading = document.createElement("div");
+		loading.className = "session-list-empty";
+		loading.textContent = "Loading...";
+		elements.forkList.replaceChildren(loading);
+		elements.forkSearch.removeAttribute("aria-activedescendant");
+		return;
+	}
+	const matches = matchingForkCandidates();
+	renderedForkEntryIds = matches.map((candidate) => candidate.entryId);
+	if (matches.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "session-list-empty";
+		empty.textContent =
+			forkCandidates.length === 0
+				? "No earlier prompt to fork from"
+				: "No matching prompts";
+		elements.forkList.replaceChildren(empty);
+		elements.forkSearch.removeAttribute("aria-activedescendant");
+		return;
+	}
+	// A filter edit can hide the highlighted row, and a highlight pointing at a
+	// row that is no longer rendered would let Enter fork something invisible.
+	if (activeForkEntryId && !renderedForkEntryIds.includes(activeForkEntryId)) {
+		activeForkEntryId = undefined;
+	}
+	elements.forkList.replaceChildren(
+		...matches.map((candidate, index) => createForkRow(candidate, index)),
+	);
+	highlightActiveFork(false);
+}
+
+function createForkRow(candidate: ForkCandidate, index: number): HTMLElement {
+	const row = document.createElement("div");
+	row.className = "fork-row";
+	row.id = `fork-row-${index}`;
+	row.setAttribute("role", "option");
+	row.setAttribute("aria-selected", "false");
+	row.dataset.forkEntryId = candidate.entryId;
+	row.tabIndex = -1;
+	// The host already collapsed the prompt to one line; an empty one still needs a
+	// visible label or the row would be an unlabelled target.
+	const text = candidate.text || "(empty prompt)";
+	row.title = text;
+
+	const label = document.createElement("span");
+	label.className = "fork-row-text";
+	label.textContent = text;
+	row.append(label);
+
+	const epochMs = normalizeEpochMs(candidate.timestamp);
+	if (epochMs !== undefined) {
+		const time = document.createElement("time");
+		time.className = "fork-row-time";
+		time.dateTime = new Date(epochMs).toISOString();
+		time.dataset.epochMs = String(epochMs);
+		applyRelativeTime(time, epochMs);
+		row.append(time);
+	}
+
+	row.addEventListener("click", () => submitFork(candidate.entryId));
+	return row;
+}
+
+function highlightActiveFork(scroll = true): void {
+	let activeId: string | undefined;
+	for (const row of elements.forkList.querySelectorAll<HTMLElement>(
+		".fork-row",
+	)) {
+		const active = row.dataset.forkEntryId === activeForkEntryId;
+		row.classList.toggle("is-active", active);
+		row.setAttribute("aria-selected", String(active));
+		if (!active) continue;
+		activeId = row.id;
+		if (scroll) row.scrollIntoView({ block: "nearest" });
+	}
+	// Focus stays in the search field, so the pointer to the highlighted row has to
+	// live there rather than on the list.
+	if (activeId)
+		elements.forkSearch.setAttribute("aria-activedescendant", activeId);
+	else elements.forkSearch.removeAttribute("aria-activedescendant");
+}
+
+function moveActiveFork(delta: number): void {
+	if (renderedForkEntryIds.length === 0) return;
+	const current = activeForkEntryId
+		? renderedForkEntryIds.indexOf(activeForkEntryId)
+		: -1;
+	let next: number;
+	if (current < 0) {
+		// Nothing highlighted yet: the wraparound formula would land ArrowUp on
+		// the second-to-last row instead of the last one.
+		next = delta > 0 ? 0 : renderedForkEntryIds.length - 1;
+	} else {
+		next =
+			(current + delta + renderedForkEntryIds.length) %
+			renderedForkEntryIds.length;
+	}
+	activeForkEntryId = renderedForkEntryIds[next];
+	highlightActiveFork();
+}
+
+/**
+ * Sends the chosen prompt to the host.
+ *
+ * The picker closes first: a successful fork replaces the transcript and the
+ * composer, so leaving the old list on screen would invite a second click on an
+ * entry id that can now only be rejected.
+ */
+function submitFork(entryId: string): void {
+	if (ui.connection !== "ready" || ui.busy) return;
+	dismissForkPicker();
+	elements.forkSessionButton.focus();
+	runAction("forkSession", { entryId });
 }
 
 /**
@@ -1917,9 +2630,7 @@ function renderCommands(): void {
 		const empty = document.createElement("div");
 		empty.className = "command-list-empty";
 		empty.textContent =
-			ui.commands.length === 0
-				? "No commands available"
-				: "No matching commands";
+			ui.commands.length === 0 ? "No commands available" : "No matching commands";
 		elements.commandList.replaceChildren(empty);
 		setCommandActiveDescendant(undefined);
 		return;
@@ -2032,8 +2743,7 @@ function moveActiveCommand(delta: number): void {
 		? renderedCommandNames.indexOf(activeCommandName)
 		: -1;
 	const next =
-		(current + delta + renderedCommandNames.length) %
-		renderedCommandNames.length;
+		(current + delta + renderedCommandNames.length) % renderedCommandNames.length;
 	activeCommandName = renderedCommandNames[next];
 	highlightActiveCommand();
 }
@@ -2316,6 +3026,9 @@ function runAction(
 		| "submit"
 		| "abort"
 		| "newSession"
+		| "cloneSession"
+		| "listForkCandidates"
+		| "forkSession"
 		| "switchSession"
 		| "deleteSession"
 		| "renameSession"
@@ -2481,17 +3194,14 @@ function truncate(value: string, length: number): string {
 		: value;
 }
 
-function formatRelativeTime(timestamp: string): string {
-	const value = new Date(timestamp).getTime();
-	const difference = Date.now() - value;
-	if (!Number.isFinite(value)) return "";
-	if (difference < 60_000) return "now";
-	if (difference < 3_600_000) return `${Math.floor(difference / 60_000)}m`;
-	if (difference < 86_400_000) return `${Math.floor(difference / 3_600_000)}h`;
-	return new Intl.DateTimeFormat(undefined, {
-		month: "short",
-		day: "numeric",
-	}).format(value);
+/**
+ * The host's wall clock, corrected for webview clock skew.
+ *
+ * Remote SSH runs pi on another machine, so a message timestamp is compared
+ * against the host's clock rather than the webview's.
+ */
+function hostNow(): number {
+	return Date.now() + ui.clockSkewMs;
 }
 
 function createCodicon(name: string): HTMLElement {

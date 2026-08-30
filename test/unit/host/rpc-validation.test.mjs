@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadValidation() {
 	return loadBundledModule({
 		entry: "src/rpc/rpcValidation.ts",
@@ -42,10 +41,7 @@ test("Pi snapshot validation accepts supported records", async () => {
 test("Pi snapshot validation rejects malformed shapes and oversized content", async () => {
 	const loaded = await loadValidation();
 	try {
-		assert.throws(
-			() => loaded.module.parsePiState(null),
-			/must be an object/iu,
-		);
+		assert.throws(() => loaded.module.parsePiState(null), /must be an object/iu);
 		assert.throws(
 			() => loaded.module.parseMessagesResponse({ messages: "not-an-array" }),
 			/must be an array/iu,
@@ -171,6 +167,160 @@ test("command validation keeps usable rows and drops unusable ones", async () =>
 				})
 				.map((command) => command.name),
 			["keeper"],
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("session change results separate cancellation from failure fields", async () => {
+	const loaded = await loadValidation();
+	try {
+		const { parseSessionChangeResult } = loaded.module;
+		// pi reports extension cancellation as a successful response carrying
+		// `data.cancelled`, so the parser must surface it as data, not an error.
+		assert.deepEqual(parseSessionChangeResult({ cancelled: true }), {
+			cancelled: true,
+		});
+		assert.deepEqual(parseSessionChangeResult({ cancelled: false }), {
+			cancelled: false,
+		});
+		// `fork` echoes the forked prompt text alongside the cancellation flag.
+		assert.deepEqual(
+			parseSessionChangeResult({ text: "original prompt", cancelled: true }),
+			{ text: "original prompt", cancelled: true },
+		);
+		// `set_session_name` answers with no data at all.
+		assert.deepEqual(parseSessionChangeResult(undefined), {});
+		assert.deepEqual(parseSessionChangeResult(null), {});
+		assert.throws(
+			() => parseSessionChangeResult({ cancelled: "yes" }),
+			/must be a boolean/iu,
+		);
+		assert.throws(
+			() => parseSessionChangeResult({ text: 42 }),
+			/must be a string/iu,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("fork candidates keep opaque entry ids and reject inferred identities", async () => {
+	const loaded = await loadValidation();
+	try {
+		const { parseForkMessagesResponse } = loaded.module;
+		// Shape captured from a live `get_fork_messages` probe.
+		assert.deepEqual(
+			parseForkMessagesResponse({
+				messages: [
+					{ entryId: "user-one", text: "First prompt" },
+					{ entryId: "user-two", text: "Second prompt" },
+				],
+			}),
+			[
+				{ entryId: "user-one", text: "First prompt" },
+				{ entryId: "user-two", text: "Second prompt" },
+			],
+		);
+		// An empty prompt is legitimate; a missing or blank id is not, because it
+		// cannot be used as a fork cursor.
+		assert.deepEqual(
+			parseForkMessagesResponse({
+				messages: [{ entryId: "user-one", text: "" }],
+			}),
+			[{ entryId: "user-one", text: "" }],
+		);
+		assert.throws(
+			() => parseForkMessagesResponse({ messages: [{ text: "no id" }] }),
+			/must be a string/iu,
+		);
+		assert.throws(
+			() =>
+				parseForkMessagesResponse({
+					messages: [{ entryId: "", text: "blank id" }],
+				}),
+			/must not be empty/iu,
+		);
+		assert.throws(
+			() =>
+				parseForkMessagesResponse({
+					messages: [
+						{ entryId: "dup", text: "first" },
+						{ entryId: "dup", text: "second" },
+					],
+				}),
+			/duplicated/iu,
+		);
+		assert.throws(
+			() =>
+				parseForkMessagesResponse({
+					messages: [{ entryId: "user-one", text: "x", timestamp: -1 }],
+				}),
+			/non-negative epoch-millisecond integer/iu,
+		);
+		assert.throws(
+			() => parseForkMessagesResponse({ messages: "nope" }),
+			/must be an array/iu,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("state and stats reject nonsense counters but keep null context usage", async () => {
+	const loaded = await loadValidation();
+	try {
+		const { parsePiState, parsePiStats } = loaded.module;
+		assert.equal(parsePiState({ messageCount: 4 }).messageCount, 4);
+		assert.throws(
+			() => parsePiState({ messageCount: -1 }),
+			/non-negative integer/iu,
+		);
+		assert.throws(
+			() => parsePiState({ pendingMessageCount: 1.5 }),
+			/non-negative integer/iu,
+		);
+		// pi reports null context usage right after compaction; that must survive so
+		// the UI can say "unavailable" instead of showing a fake 0%.
+		const stats = parsePiStats({
+			userMessages: 5,
+			assistantMessages: 5,
+			toolResults: 12,
+			toolCalls: 12,
+			totalMessages: 22,
+			cost: 0.45,
+			contextUsage: { tokens: null, contextWindow: 200000, percent: null },
+		});
+		assert.equal(stats.contextUsage.tokens, null);
+		assert.equal(stats.contextUsage.percent, null);
+		assert.equal(stats.userMessages, 5);
+		assert.throws(
+			() => parsePiStats({ toolCalls: -3 }),
+			/non-negative integer/iu,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("message timestamps must be epoch milliseconds", async () => {
+	const loaded = await loadValidation();
+	try {
+		const { parseMessagesResponse } = loaded.module;
+		assert.equal(
+			parseMessagesResponse({
+				messages: [{ role: "user", content: "hi", timestamp: 1767323041000 }],
+			})[0].timestamp,
+			1767323041000,
+		);
+		// An ISO string here would be an entry timestamp, not a message timestamp.
+		assert.throws(
+			() =>
+				parseMessagesResponse({
+					messages: [{ role: "user", timestamp: "2026-01-02T03:04:01.000Z" }],
+				}),
+			/epoch-millisecond/iu,
 		);
 	} finally {
 		await loaded.dispose();

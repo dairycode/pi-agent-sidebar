@@ -47,14 +47,24 @@ export interface TranscriptViewOptions<N> {
 	 * Builds the node for an entry. `previous` is the node being replaced, when
 	 * there is one, so the caller can carry over state that lives in the DOM
 	 * rather than in message data (expanded disclosures, for instance).
+	 *
+	 * Return `previous` itself (instead of a fresh node) to signal an in-place
+	 * update: the view then leaves `previous` where it is — it is already in the
+	 * container at the right position — and only records the new signature. This
+	 * is what lets a streaming message keep its node stable across frames and
+	 * only have its changed sub-parts swapped in by the caller.
 	 */
 	createNode(entry: TranscriptEntry, previous: N | undefined): N;
 }
 
+/** Update pass counts. `patched` counts in-place updates (see createNode). */
 export interface TranscriptUpdateStats {
 	/** Nodes built this pass \u2014 the expensive part, and so the useful metric. */
 	created: number;
+	/** Nodes whose signature matched, so nothing was touched. */
 	reused: number;
+	/** Nodes built so cheaply the previous node was reused as the new one. */
+	patched: number;
 	removed: number;
 	moved: number;
 }
@@ -80,6 +90,7 @@ export class TranscriptView<N> {
 		const stats: TranscriptUpdateStats = {
 			created: 0,
 			reused: 0,
+			patched: 0,
 			removed: 0,
 			moved: 0,
 		};
@@ -135,6 +146,14 @@ export class TranscriptView<N> {
 			return existing.node;
 		}
 		const node = this.options.createNode(entry, existing?.node);
+		if (node === existing?.node) {
+			// In-place update: the caller swapped the node's own children in place,
+			// so it already sits in the container at the right slot. Swapping it
+			// again (insert before self, then remove) would detach it from the DOM.
+			stats.patched += 1;
+			this.rendered.set(entry.key, { node, signature: entry.signature });
+			return node;
+		}
 		stats.created += 1;
 		if (existing) {
 			// Swapping in place leaves the surrounding nodes, and so the reader's

@@ -29,7 +29,11 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { findChrome, validatePreview, capturePreview } from "./preview/browser.mjs";
+import {
+	findChrome,
+	validatePreview,
+	capturePreview,
+} from "./preview/browser.mjs";
 import { parsePreviewArgs } from "./preview/cli.mjs";
 import { loadDocumentFactory } from "./preview/document.mjs";
 import { bootstrapScript, themeAssertScript } from "./preview/scenario.mjs";
@@ -74,6 +78,14 @@ async function main() {
 		const nonce = /nonce-([A-Za-z0-9_-]+)/u.exec(html)?.[1];
 		if (!nonce) throw new Error("Could not read the document nonce.");
 
+		// VS Code puts the active theme's kind on the webview body itself
+		// (`vscode-light` / `vscode-dark` / …), and pi-theme.css keys its light
+		// palette off `body.vscode-light`. Without the class the preview rendered
+		// the dark palette over light `--vscode-*` values — a muddier substitute
+		// than the real thing, not a preview of it.
+		const bodyClass =
+			resolvedTheme.key === "light" ? "vscode-light" : "vscode-dark";
+
 		const prepared = html
 			.replace(
 				"</head>",
@@ -81,7 +93,7 @@ async function main() {
 			)
 			.replace(
 				"<body>",
-				`<body>\n  <script nonce="${nonce}">
+				`<body class="${bodyClass}">\n  <script nonce="${nonce}">
 window.acquireVsCodeApi = () => ({
 	postMessage: (message) => console.log("[webview->host]", JSON.stringify(message)),
 	getState: () => undefined,

@@ -205,3 +205,49 @@ test("nodeFor exposes the live node and forgets removed keys", async () => {
 		await loaded.dispose();
 	}
 });
+
+test("a node patched in place is neither reinserted nor removed", async () => {
+	const loaded = await loadTranscriptView();
+	try {
+		// A createNode that returns `previous` itself must leave the container
+		// untouched: the node already sits in its slot and swap would detach it.
+		const children = [];
+		const built = [];
+		const view = new loaded.module.TranscriptView({
+			container: {
+				insertBefore(node, reference) {
+					const existing = children.indexOf(node);
+					if (existing >= 0) children.splice(existing, 1);
+					const at =
+						reference === null ? children.length : children.indexOf(reference);
+					children.splice(at < 0 ? children.length : at, 0, node);
+				},
+				removeChild(node) {
+					const at = children.indexOf(node);
+					if (at >= 0) children.splice(at, 1);
+				},
+			},
+			createNode(entry, previous) {
+				built.push({ key: entry.key, replaced: previous?.id });
+				if (previous) return previous;
+				const node = { id: `${entry.key}@${entry.signature}`, key: entry.key };
+				return node;
+			},
+		});
+
+		const node = view.nodeFor.bind(view);
+		void node;
+		view.update([{ key: "a", signature: "1" }]);
+		built.length = 0;
+		const holder = children[0];
+
+		const stats = view.update([{ key: "a", signature: "2" }]);
+
+		assert.equal(stats.patched, 1, "an in-place update must be counted");
+		assert.equal(stats.created, 0);
+		assert.deepEqual(children, [holder], "the slot must stay in place");
+		assert.equal(children[0], holder, "the same object must still be live");
+	} finally {
+		await loaded.dispose();
+	}
+});

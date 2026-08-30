@@ -33,32 +33,42 @@
 	overflow-anchor: none;
 }
 
-/* Flush top bar rather than a floating card. Inset from the top, the row left an
-   8px gap that the scrolling message behind it showed through, so a half-clipped
-   line peeked out above the pinned text and read as a misplaced overlay. Sitting
-   on the edge with square corners makes it part of the chrome instead.
+/* Docks at the top edge in the same column as the messages, so scrolling a prompt
+   up to the edge reads as that message parking there rather than as a wider bar
+   sliding over it. Top stays flush: inset from the top, the row left an 8px gap
+   that the scrolling message behind it showed through, so a half-clipped line
+   peeked out above the pinned text and read as a misplaced overlay.
 
-   The left inset matches the real message body: `.messages` padding (8px) plus
-   `.user-message`'s 2px accent border and 11px padding puts its text at 21px, so
-   this row's own 2px border leaves 19px of padding to land on the same column. */
+   The side insets mirror `.messages`' own 8px padding, and the 9px left padding
+   is `.user-message`'s 11px less this row's 2px accent border — so the pinned
+   text lands on exactly the column the real message body uses. */
 .pinned-prompt {
 	position: absolute;
 	top: 0;
-	right: 0;
-	left: 0;
+	right: 8px;
+	left: 8px;
 	display: flex;
-	/* Centred while collapsed: the 28px toggle is taller than one line of text, so
-	   flex-start let the button set the row height and stranded all the slack below
-	   the text — visibly tight on top, loose underneath. */
-	align-items: center;
-	gap: 4px;
 	min-width: 0;
-	padding: 8px 8px 8px 19px;
+	/* Frames its text exactly like the composer's field, since the two are read as
+	   the same kind of surface at opposite ends of the pane. The right inset is the
+	   edge gap plus the out-of-flow toggle's own width plus a 4px gutter, so text
+	   ellipsises before it reaches the control. */
+	padding: var(--pi-field-pad-block) 8px;
+	padding-right: calc(8px + var(--pi-control-size) + 4px);
+	padding-left: 9px;
 	border-bottom: 1px solid var(--pi-border-subtle);
-	border-left: 2px solid var(--pi-accent);
-	/* Opaque: messages scroll directly behind this, so any translucency would
-	   show them bleeding through the pinned text. */
-	background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	border-left: 2px solid var(--pi-theme-accent);
+	/* Same tint as the real `.user-message`, but composited rather than
+	   translucent: messages scroll directly behind this row, so a see-through
+	   background would show them bleeding through the pinned text. Painting the
+	   tint as a gradient layer over the sidebar colour lands on exactly the colour
+	   a real message resolves to while staying fully opaque. */
+	background:
+		linear-gradient(
+			var(--pi-theme-user-message-bg),
+			var(--pi-theme-user-message-bg)
+		),
+		var(--vscode-sideBar-background, var(--vscode-editor-background));
 	box-shadow: 0 2px 6px
 		color-mix(in srgb, var(--vscode-widget-shadow, #000) 16%, transparent);
 }
@@ -88,19 +98,40 @@
 	display: block;
 	min-width: 0;
 	overflow: hidden;
-	line-height: 1.55;
+	/* The grid line height, matching `.user-message-text`. No vertical padding: the
+	   row's own padding sets the distance to the border, and anything added here
+	   would push the first line off the symmetry the composer field establishes. */
+	line-height: var(--pi-line-ratio);
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-/* Expanded: wrap and scroll internally instead of pushing the transcript down.
-   Capped so a long prompt can never own most of the viewport. The toggle moves
-   back to the top so it sits beside the first line rather than floating in the
-   middle of a tall block. */
-.pinned-prompt.is-expanded {
-	align-items: flex-start;
+/* Out of flow, so the row's height is set by its text and nothing else.
+
+   As a flex item the 28px control was taller than the 19.5px line it labels, so
+   it — not the text — decided the row height, and the leftover space pooled
+   under the text. That is why the padding looked even with a single unwrapped
+   line (the control is hidden when there is nothing to expand) and uneven as
+   soon as the text was long enough to need the toggle. Cancelling the overhang
+   with a negative margin only papered over the coupling; removing the control
+   from flow removes it.
+
+   `top` centres it on the first line: the row's own top padding, less half the
+   difference between the control and one line. */
+.pinned-prompt .pinned-prompt-toggle {
+	position: absolute;
+	top: calc(
+		var(--pi-field-pad-block) +
+		(var(--pi-line) - var(--pi-control-size)) /
+		2
+	);
+	right: 8px;
 }
 
+/* Expanded: wrap and scroll internally instead of pushing the transcript down.
+   Capped so a long prompt can never own most of the viewport. Only the text
+   changes here — the row's alignment and the first line's position are the same
+   as collapsed, so expanding grows the block downwards and nothing shifts. */
 .pinned-prompt.is-expanded .pinned-prompt-text {
 	max-height: min(30vh, 220px);
 	overflow-y: auto;
@@ -108,10 +139,6 @@
 	text-overflow: clip;
 	white-space: pre-wrap;
 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
-}
-
-.pinned-prompt .pinned-prompt-toggle {
-	flex: 0 0 auto;
 }
 
 .pinned-prompt-toggle[hidden] {
@@ -160,6 +187,24 @@
 	margin-bottom: 12px;
 }
 
+/* Fills come from CSS rather than the SVG markup so the mark stays in one place.
+   The plate is a saturated teal rather than `--pi-accent`: the accent is tuned
+   for hairline borders, and at 29% saturation it turns grey when flooded across
+   a 54px plate. See `--pi-logo-plate` in base.css. */
+.empty-logo-plate {
+	fill: var(--pi-logo-plate);
+}
+
+.empty-logo-glyph {
+	fill: var(--pi-logo-ink);
+}
+
+/* The counter inside the glyph reads as a highlight, so it stays near-white in
+   both themes rather than tracking the palette. */
+.empty-logo-mark {
+	fill: var(--pi-logo-mark);
+}
+
 .empty-wordmark {
 	font-size: 18px;
 	font-weight: 700;
@@ -170,71 +215,116 @@
 	max-width: 260px;
 	margin: 4px 0 0;
 	overflow-wrap: anywhere;
-	color: var(--pi-muted);
+	color: var(--pi-theme-muted);
 }
 
+/* One grid step between messages, the same step the activity timeline uses.
+
+   pi spends a full line here, but pi opens every message with a timestamp line
+   that does the separating. This transcript has no per-message chrome left, so a
+   full line read as a hole — and because a message's first block is often
+   reasoning or a tool box, that hole sat directly above a block whose own
+   bottom gap was half as large, which looked like lopsided padding rather than
+   like message separation. */
 .messages {
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
-	padding: 14px 8px 34px;
-	gap: 20px;
+	padding: var(--pi-line) 8px calc(var(--pi-line) * 2);
+	gap: var(--pi-line-half);
 }
 
 /* `break-word` rather than `anywhere`: the latter breaks mid-identifier, which
    shredded names like handleExtensionUiRequest. Elements that really can
    overflow (path links, URLs, the composer) opt into `anywhere` themselves. */
 .message {
+	position: relative;
 	min-width: 0;
 	overflow-wrap: break-word;
 }
 
+/* pi paints the user turn as a filled block with no border. Translucency makes
+   that tint alone too weak to hold an edge in a narrow sidebar, so a left rule
+   carries the boundary instead. Not a departure from pi's language: its own
+   exported HTML uses `border-left` to mark a distinguished block
+   (`.system-prompt.provider-prompt`). */
 .user-message {
 	align-self: stretch;
 	width: 100%;
 	max-width: none;
-	padding: 9px 11px;
-	border: 1px solid var(--pi-border-subtle);
-	border-left: 2px solid var(--pi-accent);
+	padding: var(--pi-line-half) 11px;
+	border-left: 2px solid var(--pi-theme-accent);
 	border-radius: var(--pi-radius-content);
-	background: color-mix(in srgb, var(--pi-surface) 88%, transparent);
+	background: var(--pi-theme-user-message-bg);
 	white-space: pre-wrap;
 }
 
 .user-message-text {
-	line-height: 1.65;
+	line-height: var(--pi-line-ratio);
 }
 
 .assistant-message {
 	align-self: stretch;
-	line-height: 1.65;
+	line-height: var(--pi-line-ratio);
 }
 
-.assistant-message.ends-with-activity + .assistant-message {
-	margin-top: -8px;
+/* pi pads the assistant turn on all sides, so prose starts on the same column
+   as a tool box's text rather than hugging the sidebar edge. */
+.assistant-text {
+	padding: var(--pi-line-half) 11px 0;
+}
+
+/* A tool box is a filled surface, so it needs real clearance from the prose
+   above it: at the timeline's own tight gap the tint started immediately under
+   the last text line and read as if it belonged to that paragraph. pi spends a
+   full line here (`.assistant-text + .tool-execution`), and so does this. */
+.assistant-text + .activity-timeline,
+.activity-timeline + .assistant-text {
+	margin-top: var(--pi-line);
+}
+
+/* Reasoning is not a filled surface — it is plain italic prose. The clearance a
+   tool box needs would stack on top of the padding both sides already carry,
+   pushing reasoning two full lines away from the answer it belongs to. pi keeps
+   the pair tight for the same reason (`.thinking-block + .assistant-text`).
+
+   Both selectors name the element that actually carries the margin above, so
+   `:has()` tests the neighbour rather than the subject: a timeline led by
+   reasoning cancels its own top margin, and prose after a timeline that ends in
+   reasoning cancels its. A timeline holding both kinds keeps the wide gap on
+   whichever end is a tool box. */
+.assistant-text + .activity-timeline:has(> .thinking-block:first-child),
+.activity-timeline:has(> .thinking-block:last-child) + .assistant-text {
+	margin-top: 0;
 }
 
 .assistant-text > :first-child,
-.thinking-content > :first-child {
+.thinking-text > :first-child {
 	margin-top: 0;
 }
 
 .assistant-text > :last-child,
-.thinking-content > :last-child {
+.thinking-text > :last-child {
 	margin-bottom: 0;
 }
 
 .assistant-text + .assistant-text {
-	margin-top: 12px;
+	margin-top: var(--pi-line);
 }
 
 /* Headings need a real size step to act as scan anchors: at the old
    1.14/1.07/1em an h3 was indistinguishable from body text. Bottom margin
-   stays smaller than the top one so a heading binds to the text below it. */
+   stays smaller than the top one so a heading binds to the text below it.
+
+   pi flattens every level to 1em and separates them by `mdHeading` colour
+   alone. That works in a terminal, where a heading is the only coloured line
+   in view; in a sidebar the size step is what makes a long answer skimmable,
+   so the scale stays and the colour is added on top. */
 .assistant-text h1,
 .assistant-text h2,
 .assistant-text h3 {
-	margin: 18px 0 8px;
+	margin: calc(var(--pi-line) * 1.5) 0 var(--pi-line-half);
+	color: var(--pi-theme-md-heading);
 	font-size: 1.02em;
 	font-weight: 700;
 	letter-spacing: 0;
@@ -253,7 +343,7 @@
 .assistant-text ol,
 .assistant-text pre,
 .assistant-text blockquote {
-	margin-block: 12px;
+	margin-block: var(--pi-line);
 }
 
 .assistant-text ul,
@@ -261,34 +351,38 @@
 	padding-left: 22px;
 }
 
-/* Tight lists otherwise run together at the 1.65 body line height. Loose
-   lists keep their wider rhythm: the item margin collapses with the child
-   paragraph's larger one. */
+/* Tight lists otherwise run together at the body line height. Loose lists keep
+   their wider rhythm: the item margin collapses with the child paragraph's
+   larger one. */
 .assistant-text li + li {
-	margin-top: 4px;
+	margin-top: calc(var(--pi-line) / 4);
 }
 
 .assistant-text li > ul,
 .assistant-text li > ol {
-	margin-block: 4px;
+	margin-block: calc(var(--pi-line) / 4);
+}
+
+.assistant-text li::marker {
+	color: var(--pi-theme-md-list-bullet);
 }
 
 .assistant-text a {
-	color: var(--pi-accent-hover);
+	color: var(--pi-theme-md-link);
 	text-decoration: none;
 }
 
 .assistant-text a:hover {
-	color: var(--pi-accent);
+	color: var(--pi-theme-md-link);
 	text-decoration: underline;
 }
 
 .assistant-text code,
-.thinking-content code,
+.thinking-text code,
 .tool-output,
 .system-message,
 .message-context {
-	font-family: var(--vscode-editor-font-family, monospace);
+	font-family: var(--pi-font-mono);
 }
 
 /* Extension custom messages (e.g. remote-pi's QR pair code) carry
@@ -300,43 +394,89 @@
    drawn with ▀▄█ where each text line encodes two modules vertically, which
    only renders square at roughly 1:1 character cells (line-height ~1.2 with
    a 0.6em monospace advance). The body's 1.5 line-height stretches the art
-   ~28% taller than wide. */
-.custom-message {
+   ~28% taller than wide.
+
+   pi groups extension output, compaction, and skill invocations under one
+   `customMessage*` surface, which is what distinguishes "something other than
+   the model said this" from an ordinary turn.
+
+   Selector carries both classes deliberately: these nodes render as
+   `system-message custom-message`, and the `.system-message` rule further down
+   sets `color` at equal specificity, so a bare `.custom-message` would lose the
+   colour to source order. */
+.system-message.custom-message {
+	padding: var(--pi-line-half) 11px;
+	border-radius: var(--pi-radius-content);
+	color: var(--pi-theme-custom-message-text);
+	background: var(--pi-theme-custom-message-bg);
 	white-space: pre-wrap;
 	line-height: 1.2;
 }
 
-/* Inline code is dense in coding replies, so it carries only the faint
-   background: tinting the text as well turned long answers into noise.
-   `color` must be set explicitly rather than omitted — VS Code injects a base
-   `code` rule painting `--vscode-textPreformat-foreground`, which many themes
-   define as a warm accent (One Dark Pro Darker uses #d19a66), so dropping the
-   declaration hands the color back to the theme instead of clearing it.
-   Covers every container that renders markdown. */
+/* Inline code carries both a faint background and pi's `mdCode` tint. The
+   explicit `color` is load-bearing regardless of which value it holds: VS Code
+   injects a base `code` rule painting `--vscode-textPreformat-foreground`,
+   which many themes define as a warm accent (One Dark Pro Darker uses
+   #d19a66), so omitting the declaration hands the colour back to the theme
+   rather than to us. Covers every container that renders markdown. */
 .assistant-text :not(pre) > code,
-.thinking-content :not(pre) > code,
+.thinking-text :not(pre) > code,
 .system-message :not(pre) > code {
 	padding: 1px 4px;
 	border-radius: 3px;
+	color: var(--pi-theme-md-code);
+	/* Neutral grey, as pi paints it, rather than `textCodeBlock-background`:
+	   many themes give that variable a tinted surface (a green-grey here), which
+	   put a coloured chip behind every inline span. Hardcoded like pi's own value
+	   because it is deliberately theme-independent — grey at low alpha composites
+	   onto both a dark and a light backdrop without carrying a hue of its own. */
+	background: rgba(128, 128, 128, 0.2);
+	font-family: var(--pi-font-mono);
+	font-size: var(--pi-font-code);
+}
+
+/* Clears the background VS Code injects on its base `code` rule. The inline
+   rule above deliberately excludes `pre > code`, so without this the injected
+   `textPreformat.background` reaches code blocks — and because `code` is inline,
+   `white-space: pre` gives every line its own line box and its own background
+   rectangle, so the block renders as a stack of ragged grey bars instead of one
+   surface. The `<pre>` already paints the block background. */
+.assistant-text pre > code,
+.thinking-block pre > code {
+	padding: 0;
 	color: inherit;
-	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+	background: none;
+	font-size: inherit;
 }
 
 .assistant-text pre,
 .thinking-block pre {
 	position: relative;
 	max-width: 100%;
-	padding: 10px 34px 10px 11px;
+	padding: var(--pi-line-half) 34px var(--pi-line-half) 11px;
 	overflow: auto;
-	border: 1px solid var(--pi-border-subtle);
+	border: 1px solid var(--pi-theme-md-code-block-border);
 	border-radius: var(--pi-radius-content);
-	background: var(
-		--vscode-textCodeBlock-background,
-		var(--vscode-editor-background)
-	);
-	font-family: var(--vscode-editor-font-family, monospace);
-	font-size: var(--vscode-editor-font-size, 12px);
-	line-height: 1.65;
+	/* Neutral grey at low alpha, not `textCodeBlock-background`. That variable is
+	   an opaque colour from a different family than the sidebar it sits in — some
+	   themes resolve it to near-black, which reads as a hole punched in the
+	   transcript. A grey mix carries no hue of its own and composites onto
+	   whatever the sidebar actually is, so the block stays one shade off its
+	   surroundings in every theme. Same reasoning as inline `code`, one step
+	   lighter because this surface is much larger.
+
+	   pi paints `pre` fully transparent and lets the border do the work; the tint
+	   is kept here because a sidebar column is narrow enough that a filled block
+	   is easier to pick out mid-scroll. */
+	background: rgba(128, 128, 128, 0.1);
+	font-family: var(--pi-font-mono);
+	font-size: var(--pi-font-code);
+	line-height: var(--pi-line-ratio);
+	/* Two columns, not the browser's default eight: a tab-indented file nested a
+	   few levels deep would otherwise spend most of a narrow sidebar on
+	   whitespace. The composer keeps 4 because that text is the reader's own
+	   typing, matched to their editor; this is read-only display. */
+	tab-size: 2;
 	white-space: pre;
 }
 
@@ -344,13 +484,17 @@
    scrolls, so an absolute button placed in it would drift with the content. */
 .code-block {
 	position: relative;
-	margin-block: 12px;
+	margin-block: var(--pi-line);
 }
 
 .code-block pre {
 	margin-block: 0;
 }
 
+/* Opaque on purpose: the <pre> underneath scrolls, so a translucent chip would
+   let code slide visibly behind the icon. Paints the sidebar's own background
+   rather than the block's tint, which is the one case here that needs to fully
+   hide what is below it. */
 .copy-code-button {
 	position: absolute;
 	top: 3px;
@@ -358,16 +502,14 @@
 	z-index: 1;
 	width: 25px;
 	height: 25px;
-	background: var(
-		--vscode-textCodeBlock-background,
-		var(--vscode-editor-background)
-	);
+	background: var(--pi-page-background);
 }
 
 .assistant-text blockquote {
 	padding-left: 10px;
-	border-left: 2px solid var(--pi-border);
-	color: var(--pi-muted);
+	border-left: 2px solid var(--pi-theme-md-quote-border);
+	color: var(--pi-theme-md-quote);
+	font-style: italic;
 }
 
 .assistant-text table {
@@ -379,15 +521,20 @@
 
 .assistant-text th,
 .assistant-text td {
-	padding: 4px 7px;
-	border: 1px solid var(--pi-border);
+	padding: calc(var(--pi-line) / 4) 7px;
+	border: 1px solid var(--pi-theme-md-code-block-border);
 	text-align: left;
 }
 
+.assistant-text hr {
+	border: none;
+	border-top: 1px solid var(--pi-theme-md-hr);
+}
+
 .message-context {
-	margin-bottom: 7px;
+	margin-bottom: calc(var(--pi-line) / 3);
 	overflow: hidden;
-	color: var(--pi-muted);
+	color: var(--pi-theme-dim);
 	font-size: var(--pi-font-chrome);
 	text-overflow: ellipsis;
 }
@@ -401,27 +548,27 @@
 	width: auto;
 	max-width: 100%;
 	max-height: 260px;
-	margin-top: 8px;
-	border: 1px solid var(--pi-border);
+	margin-top: var(--pi-line-half);
+	border: 1px solid var(--pi-theme-border-muted);
 	border-radius: var(--pi-radius-content);
 	object-fit: contain;
 }
 
+/* Activity items are separated by a real gap rather than a connecting rail.
+
+   The rail this replaces drew a 1px line down the left of the run and punched a
+   hole in it per marker. That reads well against transparent rows, but tool
+   calls now paint a filled surface: a line crossing behind a stack of tinted
+   blocks looks like a rendering artefact rather than structure. pi has no rail
+   either — in a terminal the blocks' own edges group them. */
 .activity-timeline {
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
-}
-
-.activity-timeline::before {
-	position: absolute;
-	top: 14px;
-	bottom: 14px;
-	left: 7px;
-	width: 1px;
-	background: var(--pi-border-subtle);
-	content: "";
+	/* pi separates consecutive tool boxes by a full line
+	   (`.tool-execution + .tool-execution`). Tinted blocks need that much air:
+	   closer together their edges blur into one striped surface. */
+	gap: var(--pi-line-half);
 }
 
 .activity-item {
@@ -430,193 +577,207 @@
 	min-width: 0;
 }
 
-.activity-marker {
-	display: inline-grid;
-	place-items: center;
-	width: 16px;
-	min-width: 16px;
-	color: var(--pi-muted);
-	background: transparent;
-}
+/* Reasoning, following pi: the text itself is the block, in italic
+   `thinkingText`, with a collapsed placeholder swapped in on demand.
 
+   pi drives that swap from a global header toggle. There is no such header
+   here, so the block is its own control and carries the ARIA button contract
+   the `<summary>` it replaces used to provide for free. */
 .thinking-block {
-	min-height: 28px;
-	color: var(--pi-muted);
-	font-size: var(--pi-font-chrome);
-}
-
-.thinking-summary {
-	display: grid;
-	grid-template-columns: 16px auto;
-	align-items: center;
-	width: fit-content;
-	min-height: 28px;
-	cursor: pointer;
-	column-gap: 3px;
-	list-style: none;
-	user-select: none;
-}
-
-.thinking-summary-content {
-	display: grid;
-	grid-template-columns: auto 16px;
-	align-items: center;
-	min-height: 28px;
-	padding-inline: 5px;
-	border-radius: var(--pi-radius-control);
-	column-gap: 7px;
-}
-
-.thinking-summary:hover .thinking-summary-content {
-	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
-}
-
-.thinking-summary::-webkit-details-marker {
-	display: none;
-}
-
-.thinking-block .activity-marker {
-	height: 28px;
-	color: var(--pi-accent);
-}
-
-.thinking-label {
-	font-weight: 650;
-	line-height: 28px;
-	white-space: nowrap;
-}
-
-.thinking-chevron {
-	color: var(--pi-muted);
-	transition: transform 120ms ease;
-}
-
-.thinking-block[open] .thinking-chevron {
-	transform: rotate(90deg);
-}
-
-.thinking-content {
 	min-width: 0;
-	margin: 1px 0 4px 23px;
-	padding: 5px 0 5px 8px;
-	color: var(--pi-muted);
-	line-height: 1.65;
+	cursor: pointer;
 }
 
-.thinking-content p {
+.thinking-block.streaming {
+	cursor: default;
+}
+
+/* Horizontal padding matches `.assistant-text` so reasoning and prose share a
+   left column — pi pads `.thinking-text` on all sides for the same reason. */
+.thinking-text {
+	padding: var(--pi-line-half) 11px;
+	color: var(--pi-theme-thinking-text);
+	font-family: var(--vscode-font-family);
+	font-style: italic;
+	line-height: var(--pi-line-ratio);
+}
+
+.thinking-text p {
 	margin: 0;
 }
 
+.thinking-text p + p {
+	margin-top: var(--pi-line-half);
+}
+
+/* pi keeps both halves in the DOM and swaps them with `display`, so collapsing
+   costs no re-render. That matters more here than in a static export: the
+   reconciler rebuilds this node on every streaming frame. */
+.thinking-collapsed {
+	display: none;
+	padding: var(--pi-line-half) 11px;
+	color: var(--pi-theme-thinking-text);
+	font-family: var(--vscode-font-family);
+	font-style: italic;
+}
+
+.thinking-block:not(.is-expanded) .thinking-text {
+	display: none;
+}
+
+.thinking-block:not(.is-expanded) .thinking-collapsed {
+	display: block;
+}
+
+/* Hover brightens the collapsed placeholder only. On the expanded body it would
+   mean something different: there the text is content being read, not a label
+   on a control, and lifting it to full-strength `text` also drops the contrast
+   step that marks reasoning as secondary to the prose around it. Streaming
+   reasoning is covered by the same selector — it renders `.thinking-text` and
+   is not clickable yet, so it must not react to the pointer either. */
+.thinking-block:hover .thinking-collapsed {
+	color: var(--pi-theme-text);
+}
+
+.thinking-block:focus-visible {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: 2px;
+}
+
+/* The tool box: pi's most recognisable transcript element.
+
+   One filled surface per call, padded a full line on every side — that even
+   inset is what makes it read as a block rather than a table row, and matches
+   pi's `padding: var(--line-height)`.
+
+   The tint is the whole status indicator, as in pi. The three state variables
+   are defined in `pi-theme.css` and are deliberately independent, because how
+   loud "success" should be is a judgement call: success is the overwhelmingly
+   common state, so a tint that works for a lone error box can turn a normal
+   turn into a wall of green.
+
+   `.running` maps to pi's `toolPendingBg`: pi names that token for the state
+   before a result exists, which is exactly this class. */
 .tool-call {
-	margin: 0;
-	border: 0;
-}
-
-.tool-call summary {
-	display: grid;
-	grid-template-columns: 16px minmax(0, 1fr);
-	align-items: center;
-	min-height: 30px;
-	cursor: pointer;
-	gap: 3px;
-	list-style: none;
-	font-size: var(--pi-font-chrome);
-	user-select: none;
-}
-
-.tool-summary-content {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
-	align-items: center;
 	min-width: 0;
-	min-height: 30px;
-	padding: 1px 5px;
-	border-radius: var(--pi-radius-control);
-	gap: 7px;
-}
-
-.tool-call summary:hover .tool-summary-content {
-	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
-}
-
-.tool-call summary::-webkit-details-marker {
-	display: none;
-}
-
-.tool-call.running .activity-marker {
-	color: var(--pi-accent);
-}
-
-.tool-call.success .activity-marker {
-	color: var(--pi-success);
-}
-
-.tool-call.error .activity-marker,
-.message-error {
-	color: var(--pi-danger);
-}
-
-.tool-summary-main {
-	display: flex;
-	align-items: baseline;
-	min-width: 0;
-	gap: 6px;
-}
-
-.tool-name {
-	flex: 0 0 auto;
-	font-weight: 650;
-}
-
-.tool-target {
-	min-width: 0;
-	overflow: hidden;
-	color: var(--pi-muted);
-	font-family: var(--vscode-editor-font-family, monospace);
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.tool-status {
-	color: var(--pi-muted);
-	font-size: var(--pi-font-chrome);
-}
-
-.tool-output {
-	max-height: 280px;
-	margin: 3px 4px 9px 23px;
-	overflow: auto;
-	border: 1px solid var(--pi-border-subtle);
+	padding: var(--pi-line-half) 11px;
 	border-radius: var(--pi-radius-content);
-	color: var(--pi-muted);
-	background: var(
-		--vscode-textCodeBlock-background,
-		var(--vscode-editor-background)
-	);
+	background: var(--pi-theme-tool-pending-bg);
+	font-family: var(--pi-font-mono);
+	font-size: var(--pi-font-chrome);
+	line-height: var(--pi-line-ratio);
+}
+.tool-call.success {
+	background: var(--pi-theme-tool-success-bg);
+}
+
+.tool-call.error {
+	background: var(--pi-theme-tool-error-bg);
+}
+
+/* Bold, wrapping, never ellipsised. For a shell call the command *is* the
+   content: a clipped one cannot be checked against what actually ran. */
+.tool-command,
+.tool-header {
+	min-width: 0;
+	color: var(--pi-theme-tool-title);
+	font-weight: 700;
+	overflow-wrap: break-word;
+	white-space: pre-wrap;
+}
+
+.tool-path {
+	color: var(--pi-theme-accent);
+	font-weight: 400;
+	word-break: break-all;
+}
+
+/* Colour alone cannot carry "in progress" in a still frame, and it is not an
+   accessible status channel on its own; the box also names its state in
+   `aria-label`. Trailing, so its removal when the call settles shifts nothing.
+
+   The three-class selector is load-order insurance, not style: codicon.css is
+   linked after this file and its `.codicon[class*='codicon-']` (two classes of
+   specificity) sets `font: ... 16px/1 codicon` to an icon that would otherwise
+   win a tie and grow the glyph past the chrome text, inflating the header row.
+   With the ink locked to the chrome size and line-height 1, the glyph no
+   longer participates in line-box sizing. */
+.activity-item.tool-call .tool-spinner {
+	display: inline-block;
+	overflow: hidden;
+	margin-left: 5px;
+	height: 1em;
+	line-height: 1;
+	vertical-align: -0.15em;
+	font-size: var(--pi-font-chrome);
+	color: var(--pi-theme-border);
+}
+
+.message-error {
+	color: var(--pi-theme-error);
+}
+
+/* Output sits directly on the tool box with no surface of its own — no border,
+   no background, no inset panel. pi gives it only a top margin and a dimmer
+   text colour, which is what keeps the box reading as one block instead of a
+   card nested in a card.
+
+   Hidden until the box is expanded, so a settled call costs one line. No
+   `max-height`: a scroll region here would compete with the transcript's own
+   scrollbar, and an expanded box is an explicit request to see all of it. */
+.tool-output {
+	min-width: 0;
+	margin-top: var(--pi-line-half);
+	color: var(--pi-theme-tool-output);
+	overflow-wrap: break-word;
 }
 
 .tool-output pre {
 	margin: 0;
-	padding: 7px 9px;
-	font-size: var(--pi-font-chrome);
-	line-height: 1.5;
+	padding: 0;
+	font-family: inherit;
+	font-size: inherit;
+	line-height: var(--pi-line-ratio);
 	white-space: pre-wrap;
 	word-break: break-word;
 }
 
+/* The whole box is the control, so the hit target is the header line the reader
+   already sees rather than a separate affordance. */
+.tool-call.expandable {
+	cursor: pointer;
+}
+
+.tool-call.expandable:not(.expanded) .tool-output,
+.tool-call.expandable:not(.expanded) .tool-diff {
+	display: none;
+}
+
+.tool-call.expandable:focus-visible {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: 2px;
+}
+
+/* Sits at the end of the header line and only means something while collapsed:
+   once the content is on screen, counting it is noise. */
+.tool-hint {
+	margin-left: 7px;
+	color: var(--pi-theme-dim);
+	font-weight: 400;
+	font-style: italic;
+}
+
+.tool-call.expanded .tool-hint {
+	display: none;
+}
+
 .tool-diff {
-	max-height: 320px;
-	margin: 0 4px 9px 23px;
-	overflow: auto;
-	border: 1px solid var(--pi-border-subtle);
-	border-radius: var(--pi-radius-content);
-	background: var(
-		--vscode-textCodeBlock-background,
-		var(--vscode-editor-background)
-	);
-	font-family: var(--vscode-editor-font-family, monospace);
-	font-size: var(--pi-font-chrome);
-	line-height: 1.5;
+	min-width: 0;
+	margin-top: var(--pi-line-half);
+	overflow-x: auto;
+	font-family: inherit;
+	font-size: inherit;
+	line-height: var(--pi-line-ratio);
 }
 
 .diff-line {
@@ -640,25 +801,40 @@
 }
 
 .diff-add {
-	background: color-mix(in srgb, var(--pi-success) 16%, transparent);
+	color: var(--pi-theme-tool-diff-added);
+	background: color-mix(
+		in srgb,
+		var(--pi-theme-tool-diff-added) 14%,
+		transparent
+	);
 }
 
 .diff-remove {
-	background: color-mix(in srgb, var(--pi-danger) 16%, transparent);
+	color: var(--pi-theme-tool-diff-removed);
+	background: color-mix(
+		in srgb,
+		var(--pi-theme-tool-diff-removed) 14%,
+		transparent
+	);
 }
 
 .diff-context {
-	color: var(--pi-muted);
+	color: var(--pi-theme-tool-diff-context);
 }
 
 .system-message,
 .context-divider,
 .history-omitted,
 .cancelled-note {
-	color: var(--pi-muted);
+	color: var(--pi-theme-dim);
+	font-family: var(--pi-font-mono);
 	font-size: var(--pi-font-chrome);
 }
 
+/* The context divider marks a compaction or branch summary. pi tints these
+   with the same `customMessage` family, and uses `borderAccent` for the
+   summary heading — the one place a cyan/teal accent appears in the
+   transcript. */
 .context-divider,
 .history-omitted {
 	display: flex;
@@ -666,6 +842,10 @@
 	justify-content: center;
 	gap: 6px;
 	text-align: center;
+}
+
+.context-divider {
+	color: var(--pi-theme-border-accent);
 }
 
 .connection-banner {
@@ -678,7 +858,7 @@
 	min-height: 34px;
 	padding: 6px 9px;
 	border: 1px solid var(--pi-border-subtle);
-	border-left: 2px solid var(--pi-danger);
+	border-left: 2px solid var(--pi-theme-error);
 	border-radius: var(--pi-radius-content);
 	color: var(--vscode-notifications-foreground, var(--vscode-foreground));
 	background: var(
@@ -705,4 +885,138 @@
 
 .text-button:hover {
 	background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* A date break is its own transcript entry so a day boundary never forces the
+   neighbouring message node to be rebuilt. */
+.day-separator {
+	display: flex;
+	align-items: center;
+	color: var(--pi-theme-dim);
+	font-family: var(--pi-font-mono);
+	font-size: var(--pi-font-chrome);
+	text-align: center;
+	gap: 8px;
+}
+
+.day-separator::before,
+.day-separator::after {
+	flex: 1 1 auto;
+	height: 1px;
+	background: var(--pi-border-subtle);
+	content: "";
+}
+
+/* Syntax highlighting.
+
+   Colours are pi's nine `syntax*` tokens rather than VS Code's
+   `symbolIcon-*`, so a code block matches what the same snippet looks like in
+   the terminal. The class-to-token mapping follows pi's own exported HTML,
+   including hljs v11's compound classes (`.hljs-title.function_`,
+   `.hljs-title.class_`) which a naive mapping misses.
+
+   Token groups also differ in weight or style, not only in hue: hue alone is
+   not a reliable distinction under high-contrast themes or for readers with
+   colour-vision deficiency. */
+.hljs {
+	color: var(--pi-theme-text);
+}
+
+.hljs-comment,
+.hljs-quote {
+	color: var(--pi-theme-syntax-comment);
+	font-style: italic;
+}
+
+.hljs-doctag,
+.hljs-meta,
+.hljs-meta .hljs-keyword,
+.hljs-meta .hljs-string {
+	color: var(--pi-theme-syntax-keyword);
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-section {
+	color: var(--pi-theme-syntax-keyword);
+	font-weight: 600;
+}
+
+.hljs-built_in,
+.hljs-type,
+.hljs-class,
+.hljs-title.class_,
+.hljs-class .hljs-title {
+	color: var(--pi-theme-syntax-type);
+}
+
+.hljs-function,
+.hljs-title,
+.hljs-title.function_,
+.hljs-name {
+	color: var(--pi-theme-syntax-function);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-char.escape_,
+.hljs-link {
+	color: var(--pi-theme-syntax-string);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+	color: var(--pi-theme-syntax-number);
+}
+
+.hljs-variable,
+.hljs-variable.language_,
+.hljs-template-variable,
+.hljs-params,
+.hljs-property,
+.hljs-attr,
+.hljs-attribute,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+	color: var(--pi-theme-syntax-variable);
+}
+
+.hljs-operator {
+	color: var(--pi-theme-syntax-operator);
+}
+
+.hljs-punctuation,
+.hljs-subst {
+	color: var(--pi-theme-syntax-punctuation);
+}
+
+/* Diff blocks carry a background as well as a colour: a red/green pair is the
+   one distinction a colour-blind reader is most likely to miss. */
+.hljs-addition {
+	color: var(--pi-theme-tool-diff-added);
+	background: color-mix(
+		in srgb,
+		var(--pi-theme-tool-diff-added) 14%,
+		transparent
+	);
+}
+
+.hljs-deletion {
+	color: var(--pi-theme-tool-diff-removed);
+	background: color-mix(
+		in srgb,
+		var(--pi-theme-tool-diff-removed) 14%,
+		transparent
+	);
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: 700;
 }

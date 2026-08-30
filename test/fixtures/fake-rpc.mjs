@@ -5,6 +5,26 @@ let buffer = "";
 
 process.stdout.write("null\n");
 
+/** Shapes captured from a live `pi --mode rpc` 0.84.3 probe. */
+const FORK_MESSAGES = {
+	messages: [
+		{ entryId: "user-one", text: "First prompt" },
+		{ entryId: "user-two", text: "Second prompt" },
+	],
+};
+
+function respond(command, payload) {
+	process.stdout.write(
+		`${JSON.stringify({
+			id: command.id,
+			type: "response",
+			command: command.type,
+			success: true,
+			data: payload,
+		})}\n`,
+	);
+}
+
 process.stdin.on("data", (chunk) => {
 	buffer += decoder.write(chunk);
 	while (true) {
@@ -25,6 +45,53 @@ process.stdin.on("data", (chunk) => {
 			process.exitCode = 7;
 			process.stdin.destroy();
 			return;
+		}
+		if (command.type === "get_fork_messages") {
+			respond(command, FORK_MESSAGES);
+			continue;
+		}
+		if (command.type === "cancelled_mutation") {
+			respond(command, { cancelled: true });
+			continue;
+		}
+		// A response whose `command` disagrees with the request must be refused
+		// rather than resolved against the wrong pending request.
+		if (command.type === "mismatched_command") {
+			process.stdout.write(
+				`${JSON.stringify({
+					id: command.id,
+					type: "response",
+					command: "some_other_command",
+					success: true,
+					data: {},
+				})}\n`,
+			);
+			continue;
+		}
+		if (command.type === "invalid_success") {
+			process.stdout.write(
+				`${JSON.stringify({
+					id: command.id,
+					type: "response",
+					command: "invalid_success",
+					success: "yes",
+					data: {},
+				})}\n`,
+			);
+			continue;
+		}
+		if (command.type === "unidentified_response") {
+			// Missing `id`: must be ignored as a protocol error, never matched to a
+			// pending request by position.
+			process.stdout.write(
+				`${JSON.stringify({
+					type: "response",
+					command: "unidentified_response",
+					success: true,
+					data: {},
+				})}\n`,
+			);
+			continue;
 		}
 		if (command.type === "get_state") {
 			const payload = Buffer.from(

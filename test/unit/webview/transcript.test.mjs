@@ -22,8 +22,7 @@ async function loadTranscript() {
 						{ filter: /^dompurify$/, namespace: "mock-markdown" },
 						() => ({
 							loader: "js",
-							contents:
-								"export default { sanitize: (value) => String(value) };",
+							contents: "export default { sanitize: (value) => String(value) };",
 						}),
 					);
 					buildApi.onLoad(
@@ -31,7 +30,7 @@ async function loadTranscript() {
 						() => ({
 							loader: "js",
 							contents:
-								"export const marked = { setOptions() {}, parse: (value) => `<p>${value}</p>` };",
+								"export const marked = { setOptions() {}, use() {}, parse: (value) => `<p>${value}</p>` };",
 						}),
 					);
 				},
@@ -122,12 +121,15 @@ test("assistant transcript preserves activity ordering and stream state", async 
 			"message-7",
 		);
 
-		assert.match(html, /assistant-message starts-with-activity/u);
+		assert.match(html, /class="message assistant-message"/u);
+		// Reasoning is visible while it streams and has no collapse control yet:
+		// there is nothing stable to collapse to until the content settles.
 		assert.match(
 			html,
-			/thinking-block streaming" data-thinking-key="message-7-thinking-0" open/u,
+			/thinking-block streaming is-expanded" data-thinking-key="message-7-thinking-0"/u,
 		);
-		assert.ok(html.indexOf("Reasoning") < html.indexOf("answer"));
+		assert.doesNotMatch(html, /data-expandable="thinking"/u);
+		assert.ok(html.indexOf("checking") < html.indexOf("answer"));
 		assert.match(html, /partial failure/u);
 		assert.match(html, /Cancelled/u);
 	} finally {
@@ -182,8 +184,14 @@ test("live successful tool diff replaces persisted tool output", async () => {
 		);
 
 		assert.match(html, /tool-call success/u);
-		assert.match(html, /Edit file/u);
-		assert.match(html, /src\/file\.ts/u);
+		// pi labels the box with the raw tool name; the friendly name is reserved
+		// for the screen-reader label, where "edit" alone reads as a verb.
+		assert.match(html, /<span class="tool-name">edit<\/span>/u);
+		// Colour is pi's only status channel. A visually-hidden note keeps the
+		// state reachable by assistive tech; it rides in a span rather than an
+		// aria-label because a label on a plain div has no role to attach to.
+		assert.match(html, /<span class="sr-only">Edit file: done<\/span>/u);
+		assert.match(html, /<span class="tool-path">src\/file\.ts<\/span>/u);
 		assert.match(html, /diff-remove/u);
 		assert.match(html, /diff-add/u);
 		assert.doesNotMatch(html, /persisted output|live output/u);

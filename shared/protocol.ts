@@ -25,6 +25,38 @@ export interface PiMessage extends JsonRecord {
 	display?: boolean;
 }
 
+/** A user message that pi explicitly says can be used as a fork cursor. */
+export interface ForkCandidate extends JsonRecord {
+	entryId: string;
+	text: string;
+	timestamp?: number;
+}
+
+/**
+ * Capabilities are response-backed and may be downgraded after an RPC error.
+ *
+ * Deliberately not a `JsonRecord`: an index signature would widen
+ * `keyof PiCapabilities` to `string` and lose the per-flag typing the host
+ * relies on when recording a capability failure.
+ */
+export interface PiCapabilities {
+	clone: boolean;
+	fork: boolean;
+	forkMessages: boolean;
+}
+
+export interface PiTimeContext {
+	locale: string;
+	hostNowMs: number;
+}
+
+export interface PiSessionChangeResult extends JsonRecord {
+	cancelled?: boolean;
+	text?: string;
+	sessionId?: string;
+	sessionFile?: string;
+}
+
 export interface PiModel extends JsonRecord {
 	id: string;
 	name: string;
@@ -92,10 +124,14 @@ export interface PiState extends JsonRecord {
 	sessionName?: string;
 	messageCount?: number;
 	pendingMessageCount?: number;
+	contextPercent?: number | null;
 }
 
 export interface PiStats extends JsonRecord {
 	totalMessages?: number;
+	userMessages?: number;
+	assistantMessages?: number;
+	toolResults?: number;
 	toolCalls?: number;
 	cost?: number;
 	contextUsage?: {
@@ -155,8 +191,17 @@ export interface SessionSummary {
 	path: string;
 	title: string;
 	excerpt: string;
-	timestamp: string;
+	createdAt: string;
+	lastActivityAt?: string;
 	active: boolean;
+}
+
+interface ActionResult {
+	type: "actionResult";
+	actionId: string;
+	ok: boolean;
+	cancelled?: boolean;
+	error?: string;
 }
 
 export type HostToWebviewMessage =
@@ -175,10 +220,20 @@ export type HostToWebviewMessage =
 			thinkingLevels: string[];
 			commands: PiCommand[];
 			workspaceName: string;
+			capabilities?: PiCapabilities;
+			timeContext?: PiTimeContext;
 	  }
 	| { type: "rpcEvent"; event: JsonRecord }
-	| { type: "actionResult"; actionId: string; ok: boolean; error?: string }
+	| { type: "capabilities"; capabilities: PiCapabilities }
+	| ActionResult
 	| { type: "sessionList"; sessions: SessionSummary[] }
+	/**
+	 * The prompts the active session can fork from, in transcript order.
+	 *
+	 * Sent in reply to `listForkCandidates`. An empty array means this session has
+	 * no earlier prompt, which the picker reports in place rather than as an error.
+	 */
+	| { type: "forkCandidates"; candidates: ForkCandidate[] }
 	| { type: "commandList"; commands: PiCommand[] }
 	| {
 			type: "workspaceFileList";
@@ -216,6 +271,21 @@ export type WebviewToHostMessage =
 	  }
 	| { type: "abort"; actionId: string }
 	| { type: "newSession"; actionId: string }
+	| { type: "cloneSession"; actionId: string }
+	/**
+	 * Asks the host for the prompts this session can fork from.
+	 *
+	 * Carries an `actionId` so an RPC failure surfaces as an error on the request
+	 * itself, instead of an empty picker with nothing to explain it.
+	 */
+	| { type: "listForkCandidates"; actionId: string }
+	/**
+	 * `entryId` is chosen in the webview, because the picker is a webview list: the
+	 * host only executes a decision already made. It is re-validated against the
+	 * live session inside the mutation queue, since the list was built earlier and
+	 * the session may have moved on.
+	 */
+	| { type: "forkSession"; actionId: string; entryId: string }
 	| { type: "switchSession"; actionId: string; path: string }
 	| { type: "deleteSession"; actionId: string; path: string }
 	| { type: "renameSession"; actionId: string; name: string }
@@ -238,6 +308,8 @@ export type WebviewToHostMessage =
 	| { type: "showLogs" };
 
 const MAX_ACTION_ID_LENGTH = 128;
+/** Mirrors the host-side entry-id ceiling in `rpcValidation`. */
+const MAX_ENTRY_ID_LENGTH = 512;
 const MAX_PATH_LENGTH = 32 * 1024;
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_MESSAGE_LENGTH = 1_000_000;
@@ -285,7 +357,16 @@ export function parseWebviewMessage(
 			? undefined
 			: { type, requestId, query };
 	}
-	if (["abort", "newSession", "compact", "restart"].includes(type)) {
+	if (
+		[
+			"abort",
+			"newSession",
+			"cloneSession",
+			"listForkCandidates",
+			"compact",
+			"restart",
+		].includes(type)
+	) {
 		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);
 		return actionId ? ({ type, actionId } as WebviewToHostMessage) : undefined;
 	}
@@ -298,9 +379,13 @@ export function parseWebviewMessage(
 			128,
 		);
 		const references = parseReferenceIdentities(message.references);
-		if (!actionId || text === undefined || !attachmentIds || !references)
-			return;
+		if (!actionId || text === undefined || !attachmentIds || !references) return;
 		return { type, actionId, text, attachmentIds, references };
+	}
+	if (type === "forkSession") {
+		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);
+		const entryId = boundedString(message.entryId, MAX_ENTRY_ID_LENGTH);
+		return actionId && entryId ? { type, actionId, entryId } : undefined;
 	}
 	if (type === "switchSession" || type === "deleteSession") {
 		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);

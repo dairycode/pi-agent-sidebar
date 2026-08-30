@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.0
+
+- Fix the light theme: surfaces and accent now carry enough chroma to read on a
+  near-white sidebar. pi's literal light values were authored for a terminal,
+  where dark ink and the user's own backdrop separate the surfaces; at ~3%
+  chroma the tool state tints vanished over a white background (pending,
+  success and error all landed as one pale grey box) and the 17%-chroma accent
+  read as grey where it filled a button. Hue directions and value grades stay
+  pi's; the adjustment is documented as the third deliberate departure in
+  `pi-theme.css`. The light-theme accent hover darkens instead of fading, and
+  state colours (toasts, session delete, fork warning) come from pi's palette
+  like the transcript they summarise.
+- Session history rows share one right-edge action slot. Rename and delete were
+  mutually exclusive (rename needs the active session, delete a non-active
+  one) but each kept its own grid column, so a row showing rename reserved an
+  empty delete column beside it. Each row now renders exactly one action button.
+- Header clone and fork buttons no longer grey out while a turn is running.
+  Clicking them mid-turn shows a toast explaining why the action must wait,
+  matching rename, history, and new session, which already refused that way.
+- The preview devtool applies `vscode-light`/`vscode-dark` to the webview body
+  as VS Code does, so `--theme=light` renders the real light palette instead of
+  the dark one over light variables, and it gains a `--state=history` preset.
+
 ## 0.6.3
 
 - Remove the confirmation dialogs for starting a new session and deleting a

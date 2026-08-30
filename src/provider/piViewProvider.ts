@@ -7,11 +7,16 @@ import {
 	imageMimeTypeFromPath,
 } from "../services/attachmentStore.js";
 import { probePiBinary } from "../rpc/binaryProbe.js";
+import {
+	PiCapabilityTracker,
+	type PiCapabilityName,
+} from "../rpc/piCapabilities.js";
 import { shouldSnapshotFileReference } from "../../shared/composerReferences.js";
 import { PiRpcClient } from "../rpc/piRpcClient.js";
 import { buildPrompt } from "../services/promptBuilder.js";
 import {
 	parseCommandsResponse,
+	parseForkMessagesResponse,
 	parseMessagesResponse,
 	parseModelsResponse,
 	parsePiState,
@@ -45,9 +50,15 @@ import {
 } from "../services/workspaceResources.js";
 import { WorkspaceFileSearch } from "../services/workspaceFileSearch.js";
 import { notificationDestination } from "./notificationPolicy.js";
+import {
+	assertSessionMutationAllowed,
+	assertSessionMutationIdle,
+} from "./sessionMutation.js";
 
 const VIEW_TYPE = "piAgentSidebar.chatView";
 const LONG_COMMAND_TIMEOUT_MS = 10 * 60_000;
+const SESSION_REPLACEMENT_TIMEOUT_MS = 5_000;
+const SESSION_REPLACEMENT_POLL_MS = 50;
 const RESERVED_ARGUMENTS = new Set([
 	"--mode",
 	"--session",
@@ -80,6 +91,18 @@ const PRESET_INSTRUCTIONS: Record<PresetPromptKind, string> = {
 
 class RuntimeUnavailableError extends Error {}
 
+/**
+ * A pi extension refused a session mutation. Cancellation is a neutral outcome
+ * (`success: true` with `data.cancelled: true`), so it must not surface as an
+ * error toast.
+ */
+class SessionMutationCancelledError extends Error {}
+
+interface SessionIdentity {
+	sessionId?: string;
+	sessionFile?: string;
+}
+
 export class PiViewProvider
 	implements vscode.WebviewViewProvider, vscode.Disposable
 {
@@ -111,6 +134,8 @@ export class PiViewProvider
 	private shutdownPromise: Promise<void> | undefined;
 	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
+	private sessionMutationPending = 0;
+	private readonly capabilities = new PiCapabilityTracker();
 	private readonly attachmentStore: AttachmentStore;
 	private readonly workspaceResources: WorkspaceResources;
 	private readonly composerReferenceStore: ComposerReferenceStore;
@@ -192,10 +217,7 @@ export class PiViewProvider
 		this.missedPostWhileHidden = false;
 		if (!this.client?.isRunning) return;
 		try {
-			await Promise.all([
-				this.syncAttachments(),
-				this.syncComposerReferences(),
-			]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
 		} catch (error) {
 			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
@@ -259,9 +281,7 @@ export class PiViewProvider
 		try {
 			if (kind === "explainFile") {
 				const { document } = editor;
-				if (
-					shouldSnapshotFileReference(document.uri.scheme, document.isDirty)
-				) {
+				if (shouldSnapshotFileReference(document.uri.scheme, document.isDirty)) {
 					const fullRange = new vscode.Selection(
 						document.positionAt(0),
 						document.positionAt(document.getText().length),
@@ -321,9 +341,7 @@ export class PiViewProvider
 			title: "Rename Pi Session",
 			prompt: "Enter a display name for the current session.",
 			value:
-				typeof this.state.sessionName === "string"
-					? this.state.sessionName
-					: "",
+				typeof this.state.sessionName === "string" ? this.state.sessionName : "",
 			ignoreFocusOut: true,
 		});
 		if (name === undefined) return;
@@ -337,12 +355,16 @@ export class PiViewProvider
 	 * switching to them first.
 	 */
 	private applySessionName(name: string): Promise<void> {
-		return this.sessionMutations.enqueue(async () => {
+		return this.enqueueSessionMutation(async (generation) => {
 			const trimmed = name.trim();
 			if (!trimmed) throw new Error("Session name cannot be empty.");
+			if (trimmed.length > 200) throw new Error("Session name is too long.");
 			const client = await this.ensureClient();
+			this.assertSessionMutationContext(client, generation);
 			await client.request({ type: "set_session_name", name: trimmed });
+			this.assertSessionMutationContext(client, generation);
 			await this.refreshSnapshot();
+			this.assertSessionMutationContext(client, generation);
 			await this.sendSessionList();
 		});
 	}
@@ -409,19 +431,24 @@ export class PiViewProvider
 		const attachments = this.attachmentStore.resolve(
 			this.attachmentStore.list().map((attachment) => attachment.id),
 		);
-		return this.sessionMutations.enqueue(async () => {
+		return this.enqueueSessionMutation(async (generation) => {
 			const client = await this.ensureClient();
+			this.assertSessionMutationContext(client, generation);
+			const previous = this.sessionIdentity(
+				parsePiState(await client.request({ type: "get_state" })),
+			);
+			this.assertSessionMutationContext(client, generation);
 			const result = parseSessionChangeResult(
 				await client.request({ type: "new_session" }),
 			);
-			if (result?.cancelled) return false;
+			this.assertSessionMutationContext(client, generation);
+			if (result.cancelled) return false;
+			await this.waitForSessionReplacement(client, generation, previous);
 			this.composerReferenceStore.consume(references);
 			await this.attachmentStore.removeResolved(attachments);
-			await Promise.all([
-				this.syncAttachments(),
-				this.syncComposerReferences(),
-			]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
+			await this.sendSessionList();
 			return true;
 		});
 	}
@@ -435,8 +462,7 @@ export class PiViewProvider
 		if (
 			this.workspaceFolder &&
 			folders.some(
-				(folder) =>
-					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+				(folder) => folder.uri.toString() === this.workspaceFolder?.uri.toString(),
 			)
 		) {
 			return;
@@ -498,10 +524,7 @@ export class PiViewProvider
 			switch (message.type) {
 				case "ready": {
 					this.webviewReady = true;
-					await Promise.all([
-						this.syncAttachments(),
-						this.syncComposerReferences(),
-					]);
+					await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 					const wasRunning = Boolean(this.client?.isRunning);
 					await this.ensureClient();
 					if (wasRunning) await this.refreshSnapshot();
@@ -524,16 +547,37 @@ export class PiViewProvider
 					break;
 				}
 				case "abort": {
-					await this.respondToAction(message.actionId, () =>
-						this.abortPrompt(),
-					);
+					await this.respondToAction(message.actionId, () => this.abortPrompt());
 					break;
 				}
 				case "newSession": {
 					await this.respondToAction(message.actionId, async () => {
+						this.assertNoSessionMutationPending();
 						if (!(await this.createNewSession(false))) {
-							throw new Error("New session was cancelled by a pi extension.");
+							throw new SessionMutationCancelledError(
+								"New session was cancelled by a pi extension.",
+							);
 						}
+					});
+					break;
+				}
+				case "cloneSession": {
+					await this.respondToAction(message.actionId, async () => {
+						this.assertNoSessionMutationPending();
+						await this.cloneSession();
+					});
+					break;
+				}
+				case "listForkCandidates": {
+					await this.respondToAction(message.actionId, () =>
+						this.sendForkCandidates(),
+					);
+					break;
+				}
+				case "forkSession": {
+					await this.respondToAction(message.actionId, async () => {
+						this.assertNoSessionMutationPending();
+						await this.forkSession(message.entryId);
 					});
 					break;
 				}
@@ -568,9 +612,7 @@ export class PiViewProvider
 					break;
 				}
 				case "compact": {
-					await this.respondToAction(message.actionId, () =>
-						this.compactSession(),
-					);
+					await this.respondToAction(message.actionId, () => this.compactSession());
 					break;
 				}
 				case "restart": {
@@ -698,46 +740,69 @@ export class PiViewProvider
 	}
 
 	private switchSession(sessionPath: string): Promise<void> {
-		return this.sessionMutations.enqueue(async () => {
+		return this.enqueueSessionMutation(async (generation) => {
 			const client = await this.ensureClient();
+			this.assertSessionMutationContext(client, generation);
 			const folder = await this.workspaceResources.requireWorkspaceFolder();
+			const previousState = parsePiState(
+				await client.request({ type: "get_state" }),
+			);
+			this.assertSessionMutationContext(client, generation);
 			const sessions = await listProjectSessions(
 				folder.uri.fsPath,
-				this.state.sessionFile,
+				previousState.sessionFile,
 				this.configuredSessionDirectory(folder),
 			);
-			if (!sessions.some((session) => session.path === sessionPath)) {
+			const target = sessions.find((session) => session.path === sessionPath);
+			if (!target) {
 				throw new Error("Session is not part of this workspace.");
 			}
+			if (target.active) return;
+			const previous = this.sessionIdentity(previousState);
 			const result = parseSessionChangeResult(
-				await client.request({ type: "switch_session", sessionPath }),
+				await client.request({
+					type: "switch_session",
+					sessionPath: target.path,
+				}),
 			);
-			if (result?.cancelled) {
-				throw new Error("Session switch was cancelled by a pi extension.");
+			this.assertSessionMutationContext(client, generation);
+			if (result.cancelled) {
+				throw new SessionMutationCancelledError(
+					"Session switch was cancelled by a pi extension.",
+				);
 			}
+			await this.waitForSessionReplacement(
+				client,
+				generation,
+				previous,
+				target.path,
+			);
 			await this.refreshSnapshot();
+			await this.sendSessionList();
 		});
 	}
 
 	private deleteSession(sessionPath: string): Promise<void> {
-		return this.sessionMutations.enqueue(async () => {
-			const folder = await this.workspaceResources.requireWorkspaceFolder();
-			const client = await this.ensureClient();
-			const freshState = parsePiState(
-				await client.request({ type: "get_state" }),
-			);
-			if (this.client !== client) {
-				throw new Error("Pi restarted before the session could be deleted.");
-			}
-			this.state = freshState;
-			await deleteProjectSession(
-				folder.uri.fsPath,
-				sessionPath,
-				freshState.sessionFile,
-				this.configuredSessionDirectory(folder),
-			);
-			await this.sendSessionList();
-		});
+		return this.enqueueSessionMutation(
+			async (generation) => {
+				const folder = await this.workspaceResources.requireWorkspaceFolder();
+				const client = await this.ensureClient();
+				this.assertSessionMutationContext(client, generation, false);
+				const freshState = parsePiState(
+					await client.request({ type: "get_state" }),
+				);
+				this.assertSessionMutationContext(client, generation, false);
+				this.state = freshState;
+				await deleteProjectSession(
+					folder.uri.fsPath,
+					sessionPath,
+					freshState.sessionFile,
+					this.configuredSessionDirectory(folder),
+				);
+				await this.sendSessionList();
+			},
+			{ requireIdle: false },
+		);
 	}
 
 	private async setModel(provider: string, modelId: string): Promise<void> {
@@ -765,6 +830,276 @@ export class PiViewProvider
 		const client = await this.ensureClient();
 		await client.request({ type: "compact" }, LONG_COMMAND_TIMEOUT_MS);
 		await this.refreshSnapshot();
+	}
+
+	/**
+	 * Duplicates the current active branch into a new session.
+	 *
+	 * `clone` only ever targets pi's active session — it takes no session path —
+	 * so a non-active history row cannot be cloned without switching to it first.
+	 * The composer draft, attachments, and references are intentionally left
+	 * untouched: cloning does not consume what the user is typing.
+	 */
+	public cloneSession(): Promise<void> {
+		return this.enqueueSessionMutation(async (generation) => {
+			const client = await this.ensureClient();
+			this.assertSessionMutationContext(client, generation);
+			if (!this.capabilities.isAvailable("clone"))
+				throw new Error("This pi build does not support cloning sessions.");
+			const previous = this.sessionIdentity(
+				parsePiState(await client.request({ type: "get_state" })),
+			);
+			this.assertSessionMutationContext(client, generation);
+			const result = parseSessionChangeResult(
+				await this.requestCapability(client, "clone", { type: "clone" }),
+			);
+			this.assertSessionMutationContext(client, generation);
+			if (result.cancelled) {
+				throw new SessionMutationCancelledError(
+					"Clone was cancelled by a pi extension.",
+				);
+			}
+			await this.waitForSessionReplacement(client, generation, previous);
+			await this.refreshSnapshot();
+			await this.sendSessionList();
+		});
+	}
+
+	/**
+	 * Creates a new session branching from an earlier user prompt.
+	 *
+	 * The candidate list comes from pi's `get_fork_messages`, so the fork always
+	 * travels with a real `entryId`. Entry ids are never derived from transcript
+	 * positions, message text, or timestamps: pi owns that identity, and guessing
+	 * it would branch from the wrong point.
+	 */
+	/**
+	 * Sends the prompts the active session can fork from.
+	 *
+	 * Read-only, so it stays out of the mutation queue — holding the queue open
+	 * while the reader decides would block every other session action. The chosen
+	 * entry id is re-validated against the live session when the fork actually
+	 * runs.
+	 *
+	 * Prompt text is collapsed to one line here rather than in the webview: the
+	 * `<pi-context>` block the extension injects would otherwise dominate the row
+	 * and bury the reader's own words.
+	 */
+	public async sendForkCandidates(): Promise<void> {
+		const client = await this.ensureClient();
+		if (!this.capabilities.isAvailable("forkMessages"))
+			throw new Error("This pi build does not support forking sessions.");
+		const candidates = parseForkMessagesResponse(
+			await this.requestCapability(client, "forkMessages", {
+				type: "get_fork_messages",
+			}),
+		);
+		await this.post({
+			type: "forkCandidates",
+			candidates: candidates.map((candidate) => ({
+				...candidate,
+				text: singleLine(candidate.text),
+			})),
+		});
+	}
+
+	/**
+	 * Forks the session at a prompt the reader already picked in the webview.
+	 *
+	 * The picker ran outside the mutation queue, so the entry id is re-checked
+	 * against the live fork list before use: the session may have moved on, and
+	 * pi rejects a stale id with a generic error that would read as a bug.
+	 */
+	public async forkSession(entryId: string): Promise<void> {
+		await this.enqueueSessionMutation(async (generation) => {
+			const forkClient = await this.ensureClient();
+			this.assertSessionMutationContext(forkClient, generation);
+			if (!this.capabilities.isAvailable("fork"))
+				throw new Error("This pi build does not support forking sessions.");
+			const current = parseForkMessagesResponse(
+				await this.requestCapability(forkClient, "forkMessages", {
+					type: "get_fork_messages",
+				}),
+			);
+			this.assertSessionMutationContext(forkClient, generation);
+			if (!current.some((entry) => entry.entryId === entryId)) {
+				throw new Error(
+					"That prompt is no longer part of the active session branch.",
+				);
+			}
+			const previous = this.sessionIdentity(
+				parsePiState(await forkClient.request({ type: "get_state" })),
+			);
+			this.assertSessionMutationContext(forkClient, generation);
+			const result = parseSessionChangeResult(
+				await this.requestCapability(forkClient, "fork", {
+					type: "fork",
+					entryId,
+				}),
+			);
+			this.assertSessionMutationContext(forkClient, generation);
+			// pi returns the forked prompt text alongside `cancelled`, so a cancelled
+			// fork must not be mistaken for a successful one that carried text.
+			if (result.cancelled) {
+				throw new SessionMutationCancelledError(
+					"Fork was cancelled by a pi extension.",
+				);
+			}
+			await this.waitForSessionReplacement(forkClient, generation, previous);
+			await this.refreshSnapshot();
+			await this.sendSessionList();
+			if (typeof result.text === "string") {
+				await this.post({ type: "setComposerText", text: result.text });
+			}
+		});
+	}
+
+	/**
+	 * Sends a command whose availability depends on the pi build.
+	 *
+	 * A failure only counts as "this pi cannot do that" when pi says the command
+	 * is unknown; every other error stays a normal failure of a supported
+	 * command. Disabling a capability re-posts it so the webview can hide the
+	 * entry point rather than offering an action that always fails.
+	 */
+	private async requestCapability(
+		client: PiRpcClient,
+		name: PiCapabilityName,
+		command: JsonRecord,
+		timeoutMs?: number,
+	): Promise<unknown> {
+		try {
+			const response = await client.request(command, timeoutMs);
+			this.capabilities.recordSuccess(name);
+			return response;
+		} catch (error) {
+			if (this.capabilities.recordFailure(name, error)) {
+				this.output.appendLine(
+					`[capability] Disabled '${name}': ${toErrorMessage(error)}`,
+				);
+				await this.postCapabilities();
+			}
+			throw error;
+		}
+	}
+
+	private async postCapabilities(): Promise<void> {
+		await this.post({
+			type: "capabilities",
+			capabilities: this.capabilities.snapshot(),
+		});
+	}
+
+	private enqueueSessionMutation<T>(
+		operation: (generation: number) => Promise<T>,
+		options: { requireIdle?: boolean } = {},
+	): Promise<T> {
+		const generation = this.workspaceGeneration;
+		const requireIdle = options.requireIdle ?? true;
+		this.sessionMutationPending += 1;
+		return this.sessionMutations.enqueue(async () => {
+			try {
+				if (generation !== this.workspaceGeneration)
+					throw new Error(
+						"Workspace changed before the session operation completed.",
+					);
+				if (requireIdle) {
+					assertSessionMutationIdle(
+						this.streaming || this.state.isStreaming === true,
+						this.state.isCompacting === true,
+					);
+				}
+				return await operation(generation);
+			} finally {
+				this.sessionMutationPending -= 1;
+			}
+		});
+	}
+
+	private assertSessionMutationContext(
+		client: PiRpcClient,
+		generation: number,
+		requireIdle = true,
+	): void {
+		assertSessionMutationAllowed(
+			{
+				clientIsRunning: client.isRunning,
+				clientMatches: this.client === client,
+				workspaceGenerationMatches: this.workspaceGeneration === generation,
+				isStreaming: this.streaming || this.state.isStreaming === true,
+				isCompacting: this.state.isCompacting === true,
+			},
+			requireIdle,
+		);
+	}
+
+	/**
+	 * Guards the session-replacement handlers (new/clone/fork) against a double
+	 * submit: a second replacement enqueued behind an in-flight one runs against
+	 * the already-replaced session and duplicates it.
+	 *
+	 * The assert runs before the handler enqueues its own mutation, so any
+	 * positive count means another session operation is already in flight; the
+	 * `> 1` form would let a second click through while the first is still
+	 * running and create a second, unintended session.
+	 */
+	private assertNoSessionMutationPending(): void {
+		if (this.sessionMutationPending > 0)
+			throw new Error("A session operation is already in progress.");
+	}
+
+	private sessionIdentity(state: PiState): SessionIdentity {
+		return {
+			sessionId: state.sessionId,
+			sessionFile: state.sessionFile,
+		};
+	}
+
+	private async waitForSessionReplacement(
+		client: PiRpcClient,
+		generation: number,
+		previous: SessionIdentity,
+		expectedSessionFile?: string,
+	): Promise<void> {
+		const deadline = Date.now() + SESSION_REPLACEMENT_TIMEOUT_MS;
+		const hadIdentity = Boolean(previous.sessionId || previous.sessionFile);
+		while (true) {
+			this.assertSessionMutationContext(client, generation);
+			const next = parsePiState(await client.request({ type: "get_state" }));
+			this.assertSessionMutationContext(client, generation);
+			const expectedPathMatches =
+				expectedSessionFile !== undefined &&
+				next.sessionFile !== undefined &&
+				path.resolve(next.sessionFile) === path.resolve(expectedSessionFile);
+			const identityChanged =
+				(previous.sessionId !== undefined &&
+					next.sessionId !== undefined &&
+					previous.sessionId !== next.sessionId) ||
+				(previous.sessionFile !== undefined &&
+					next.sessionFile !== undefined &&
+					path.resolve(previous.sessionFile) !== path.resolve(next.sessionFile));
+			// With no previous identity there is no baseline to compare against.
+			// Without an expected file (new/clone/fork) any post-command state is
+			// already terminal — including identity appearing from nothing, which is
+			// exactly a fresh pi's first new session — so waiting could only end in a
+			// false timeout. With one (switch), expectedPathMatches does the
+			// verifying and must not be bypassed.
+			const noIdentityToCompare =
+				!hadIdentity && expectedSessionFile === undefined;
+			if (expectedPathMatches || identityChanged || noIdentityToCompare) {
+				this.state = next;
+				return;
+			}
+			if (Date.now() >= deadline)
+				throw new Error(
+					expectedSessionFile
+						? "Pi did not switch to the requested session."
+						: "Pi did not create a replacement session.",
+				);
+			await new Promise<void>((resolve) => {
+				setTimeout(resolve, SESSION_REPLACEMENT_POLL_MS);
+			});
+		}
 	}
 
 	private async ensureClient(): Promise<PiRpcClient> {
@@ -799,8 +1134,7 @@ export class PiViewProvider
 			await this.post({
 				type: "bootstrap",
 				phase: "no-workspace",
-				detail:
-					"Trust this workspace to let pi read, edit, and run project files.",
+				detail: "Trust this workspace to let pi read, edit, and run project files.",
 			});
 			return;
 		}
@@ -862,6 +1196,9 @@ export class PiViewProvider
 			env: process.env,
 		});
 		this.client = client;
+		// A different binary may accept a different command set, so nothing learned
+		// from the previous process carries over.
+		this.capabilities.reset();
 		this.attachClientListeners(client);
 		await client.start();
 		if (generation !== this.workspaceGeneration) {
@@ -873,9 +1210,7 @@ export class PiViewProvider
 		try {
 			await client.request({ type: "set_auto_retry", enabled: autoRetry });
 		} catch (error) {
-			this.output.appendLine(
-				`[runtime] set_auto_retry: ${toErrorMessage(error)}`,
-			);
+			this.output.appendLine(`[runtime] set_auto_retry: ${toErrorMessage(error)}`);
 		}
 		await this.refreshSnapshot();
 	}
@@ -938,8 +1273,7 @@ export class PiViewProvider
 				const message =
 					typeof event.message === "string" ? event.message : "Pi notification";
 				const destination = notificationDestination(event.notifyType);
-				if (destination === "error")
-					void vscode.window.showErrorMessage(message);
+				if (destination === "error") void vscode.window.showErrorMessage(message);
 				else if (destination === "warning")
 					void vscode.window.showWarningMessage(message);
 				else this.output.appendLine(`[pi notification] ${message}`);
@@ -961,16 +1295,13 @@ export class PiViewProvider
 				return;
 			}
 			if (["setStatus", "setWidget"].includes(method)) {
-				if (this.client === client)
-					await this.post({ type: "rpcEvent", event });
+				if (this.client === client) await this.post({ type: "rpcEvent", event });
 				return;
 			}
 
 			if (method === "select") {
 				const options = Array.isArray(event.options)
-					? event.options.filter(
-							(item): item is string => typeof item === "string",
-						)
+					? event.options.filter((item): item is string => typeof item === "string")
 					: [];
 				const value = await vscode.window.showQuickPick(options, {
 					title: typeof event.title === "string" ? event.title : "Pi",
@@ -1002,9 +1333,7 @@ export class PiViewProvider
 				const value = await vscode.window.showInputBox({
 					title: typeof event.title === "string" ? event.title : "Pi input",
 					placeHolder:
-						typeof event.placeholder === "string"
-							? event.placeholder
-							: undefined,
+						typeof event.placeholder === "string" ? event.placeholder : undefined,
 					ignoreFocusOut: true,
 				});
 				await this.notifyExtensionUiResponse(
@@ -1020,12 +1349,9 @@ export class PiViewProvider
 				});
 				await vscode.window.showTextDocument(document, { preview: true });
 				const choice = await vscode.window.showInformationMessage(
-					typeof event.title === "string"
-						? event.title
-						: "Edit the pi response",
+					typeof event.title === "string" ? event.title : "Edit the pi response",
 					{
-						detail:
-							"Edit the opened document, then submit or cancel this request.",
+						detail: "Edit the opened document, then submit or cancel this request.",
 					},
 					"Submit",
 					"Cancel",
@@ -1143,6 +1469,13 @@ export class PiViewProvider
 			thinkingLevels: this.thinkingLevels,
 			commands,
 			workspaceName: folder.name,
+			capabilities: this.capabilities.snapshot(),
+			// The webview formats timestamps in the reader's locale and corrects for
+			// host/webview clock skew, which Remote SSH makes visible.
+			timeContext: {
+				locale: vscode.env.language,
+				hostNowMs: Date.now(),
+			},
 		});
 		await this.post({ type: "connection", phase: "ready" });
 	}
@@ -1175,6 +1508,16 @@ export class PiViewProvider
 			await operation();
 			await this.post({ type: "actionResult", actionId, ok: true });
 		} catch (error) {
+			if (error instanceof SessionMutationCancelledError) {
+				this.output.appendLine(`[session] ${error.message}`);
+				await this.post({
+					type: "actionResult",
+					actionId,
+					ok: true,
+					cancelled: true,
+				});
+				return;
+			}
 			await this.post({
 				type: "actionResult",
 				actionId,
@@ -1316,8 +1659,7 @@ export class PiViewProvider
 		if (
 			this.workspaceFolder &&
 			folders.some(
-				(folder) =>
-					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+				(folder) => folder.uri.toString() === this.workspaceFolder?.uri.toString(),
 			)
 		) {
 			return this.workspaceFolder;
@@ -1407,6 +1749,23 @@ export class PiViewProvider
 	private getHtml(webview: vscode.Webview): string {
 		return createWebviewDocument(webview, this.context.extensionUri);
 	}
+}
+
+/**
+ * Collapses a prompt to one line for a QuickPick row.
+ *
+ * A forked prompt can be long and multi-line; the picker needs a single
+ * readable line. The text is only used for display — the fork itself always
+ * travels with pi's `entryId`.
+ */
+function singleLine(text: string, maxLength = 300): string {
+	const collapsed = text
+		.replace(/^<pi-context>[\s\S]*?<\/pi-context>\s*/u, "")
+		.replace(/\s+/gu, " ")
+		.trim();
+	return collapsed.length > maxLength
+		? `${collapsed.slice(0, maxLength - 1)}\u2026`
+		: collapsed;
 }
 
 async function fileExists(filePath: string): Promise<boolean> {

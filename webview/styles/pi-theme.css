@@ -24,7 +24,8 @@
  * not reproduce. `thinkingText` is here — that one styles reasoning content,
  * which the transcript does render.
  *
- * This file only declares variables. Nothing consumes them yet.
+ * This file only declares variables; `transcript.css` consumes them, keeping
+ * the palette and its uses in separate files.
  */
 
 :root {

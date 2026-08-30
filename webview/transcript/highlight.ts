@@ -160,7 +160,7 @@ export const MAX_HIGHLIGHT_LINE_BYTES = 2 * 1024;
 
 /** Bounds on the memo, so a long conversation cannot grow it without limit. */
 export const MAX_CACHE_ENTRIES = 256;
-export const MAX_CACHE_BYTES = 2 * 1024 * 1024;
+const MAX_CACHE_BYTES = 2 * 1024 * 1024;
 
 let registered = false;
 

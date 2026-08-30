@@ -44,7 +44,7 @@ export function formatRelativeTime(
 	return formatShortDate(epochMs, locale);
 }
 
-export function formatShortDate(epochMs: number, locale?: string): string {
+function formatShortDate(epochMs: number, locale?: string): string {
 	try {
 		return new Intl.DateTimeFormat(locale || undefined, {
 			month: "short",

@@ -114,6 +114,16 @@ body {
 	--pi-focus-ring: var(--vscode-focusBorder, var(--pi-accent));
 }
 
+/* The hover mix above lightens the accent with white, which is the dark-theme
+   reading of "hint": brightening the fill. On a near-white page the same mix
+   pushes an already mid-tone accent toward the composer's white, so a hovered
+   send button recedes instead of standing out. Darkening is the light-theme
+   reading of the same gesture. */
+body.vscode-light,
+body.vscode-high-contrast-light {
+	--pi-accent-hover: color-mix(in srgb, var(--pi-theme-accent) 82%, black);
+}
+
 * {
 	box-sizing: border-box;
 }

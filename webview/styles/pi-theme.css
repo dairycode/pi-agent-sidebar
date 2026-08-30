@@ -18,6 +18,13 @@
  *    the real sidebar background is. Using pi's hue at low alpha keeps the
  *    "green means done" read in every VS Code theme, where a literal `#283228`
  *    would drop a dark green slab into a light one.
+ * 3. The light palette's surface hues and accent are chroma-corrected for a
+ *    near-white page. pi authored its light values against a light terminal,
+ *    where dark ink and the user's own background do the separating; at ~3%
+ *    chroma the surface tints vanish over a white sidebar (the three tool
+ *    states all land as the same pale grey box) and the 17% chroma accent
+ *    reads grey where it fills a button instead of teal. Hue directions and
+ *    value grades stay pi's — see the notes in the light block.
  *
  * Omitted from pi's 51: the seven `thinking*` editor-border tokens and
  * `bashMode`. Those colour the TUI's own input frame, which this extension does
@@ -103,13 +110,18 @@
 
 body.vscode-light,
 body.vscode-high-contrast-light {
-	/* Core UI */
-	--pi-theme-accent: #5a8080;
+	/* Core UI.
+	   The accent and border-accent depart from pi's literal light `teal`
+	   (#5a8080) in chroma only — hue (174°) and mid-tone grade stay pi's. That
+	   value is tuned for hairline marks in a terminal, where it is never a
+	   fill; the sidebar paints it across a 28px button, 2px rules and full
+	   focus borders, where 17% chroma reads as grey rather than teal. */
+	--pi-theme-accent: #47857f;
 	/* The light accent is dark enough that white only reaches 4.34:1; near-black
 	   reaches 4.83:1. The two palettes therefore need opposite ink. */
 	--pi-theme-accent-ink: #04100f;
 	--pi-theme-border: #547da7;
-	--pi-theme-border-accent: #5a8080;
+	--pi-theme-border-accent: #47857f;
 	--pi-theme-border-muted: #b0b0b0;
 	--pi-theme-success: #588458;
 	--pi-theme-error: #aa5555;
@@ -118,22 +130,33 @@ body.vscode-high-contrast-light {
 	--pi-theme-dim: #767676;
 	--pi-theme-thinking-text: #6c6c6c;
 
-	/* Backgrounds & content */
+	/* Backgrounds & content.
+	   Light departure from pi's literal surface values: the light `userMsgBg`
+	   is neutral (#e8e8e8) and the tool tints are ~3% chroma, which a terminal
+	   can afford because dark ink and the user's own backdrop do the
+	   separating. Here the surface is what the state reads through, and a
+	   near-white neutral over a near-white sidebar went grey and
+	   indistinguishable — pending, success and error all landed as the same
+	   pale box. These keep pi's hue directions (cool grey-blue for user and
+	   pending, green for success, red for error) with enough chroma to be
+	   visible at the mix strengths below. */
 	--pi-theme-selected-bg-hue: #d0d0e0;
-	--pi-theme-user-message-bg-hue: #e8e8e8;
+	--pi-theme-user-message-bg-hue: #e6eaf3;
 	--pi-theme-custom-message-bg-hue: #ede7f6;
 	--pi-theme-custom-message-label: #7e57c2;
 	--pi-theme-tool-output: #6c6c6c;
 
-	--pi-theme-tool-pending-bg-hue: #e8e8f0;
-	--pi-theme-tool-success-bg-hue: #e8f0e8;
-	--pi-theme-tool-error-bg-hue: #f0e8e8;
+	--pi-theme-tool-pending-bg-hue: #e3e8f3;
+	--pi-theme-tool-success-bg-hue: #ddf0dd;
+	--pi-theme-tool-error-bg-hue: #f4e2e2;
 
 	/* Markdown */
 	--pi-theme-md-heading: #9a7326;
 	--pi-theme-md-link: #547da7;
 	--pi-theme-md-link-url: #767676;
-	--pi-theme-md-code: #5a8080;
+	/* mdCode resolves to the accent in pi (light: `teal`), so it follows the
+	   accent's chroma-corrected value above. */
+	--pi-theme-md-code: #47857f;
 	--pi-theme-md-code-block: #588458;
 	--pi-theme-md-code-block-border: #6c6c6c;
 	--pi-theme-md-quote: #6c6c6c;
@@ -157,8 +180,8 @@ body.vscode-high-contrast-light {
 	--pi-theme-syntax-operator: #000000;
 	--pi-theme-syntax-punctuation: #000000;
 
-	--pi-theme-tool-bg-strength: 78%;
-	--pi-theme-message-bg-strength: 42%;
+	--pi-theme-tool-bg-strength: 85%;
+	--pi-theme-message-bg-strength: 60%;
 }
 
 /* Derived surfaces live on `body`, not `:root`, and that is load-bearing.

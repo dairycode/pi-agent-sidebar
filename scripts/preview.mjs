@@ -29,7 +29,11 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { findChrome, validatePreview, capturePreview } from "./preview/browser.mjs";
+import {
+	findChrome,
+	validatePreview,
+	capturePreview,
+} from "./preview/browser.mjs";
 import { parsePreviewArgs } from "./preview/cli.mjs";
 import { loadDocumentFactory } from "./preview/document.mjs";
 import { bootstrapScript, themeAssertScript } from "./preview/scenario.mjs";

@@ -153,8 +153,8 @@
 }
 
 .session-delete:hover:not(:disabled) {
-	color: var(--pi-danger);
-	background: color-mix(in srgb, var(--pi-danger) 12%, transparent);
+	color: var(--pi-theme-error);
+	background: color-mix(in srgb, var(--pi-theme-error) 12%, transparent);
 }
 
 .session-delete:disabled {
@@ -259,7 +259,7 @@
 	align-items: center;
 	flex: 0 0 auto;
 	margin: 6px 2px 0;
-	color: var(--vscode-editorWarning-foreground, var(--pi-muted));
+	color: var(--pi-theme-warning);
 	font-size: var(--pi-font-chrome);
 	gap: 5px;
 }

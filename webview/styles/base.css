@@ -1,8 +1,5 @@
 :root {
 	color-scheme: light dark;
-	--pi-success: var(--vscode-testing-iconPassed, #3fb950);
-	--pi-warning: var(--vscode-editorWarning-foreground, #d6a520);
-	--pi-danger: var(--vscode-errorForeground, #f85149);
 	--pi-border: var(
 		--vscode-widget-border,
 		var(--vscode-panel-border, rgba(128, 128, 128, 0.32))
@@ -105,6 +102,15 @@ body {
 	--pi-accent-ink: var(--pi-theme-accent-ink);
 	--pi-accent-soft: color-mix(in srgb, var(--pi-accent) 13%, transparent);
 	--pi-accent-border: color-mix(in srgb, var(--pi-accent) 72%, transparent);
+	/* State colours come from the pi palette, not the editor's semantic
+	   variables: a toast painted with `--vscode-errorForeground` reads as a
+	   different hue than the transcript errors it summarises (the default
+	   theme resolves it to orange, pi's error is a muted red). Declared here,
+	   not at `:root`, for the same substitution reason as the accent chain
+	   above. */
+	--pi-success: var(--pi-theme-success);
+	--pi-warning: var(--pi-theme-warning);
+	--pi-danger: var(--pi-theme-error);
 	--pi-focus-ring: var(--vscode-focusBorder, var(--pi-accent));
 }
 

@@ -28,7 +28,7 @@
 }
 
 .toast.error {
-	border-left-color: var(--pi-danger);
+	border-left-color: var(--pi-theme-error);
 }
 
 .modal-backdrop {

@@ -215,6 +215,47 @@ post({ type: "connection", phase: "ready" });
 // under virtual time — chain two zero timers instead.
 setTimeout(() => setTimeout(() => {
 	const state = ${JSON.stringify(state)};
+	if (state === "history") {
+		document.querySelector("#history-button").click();
+		// Host→webview messages are delivered synchronously here: a plain
+		// window.postMessage task may never run inside Chrome's virtual-time
+		// budget. Delivered after the click, which is what puts the list's
+		// "Loading..." placeholder in place — exactly the reply order of the
+		// real host.
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: {
+					type: "sessionList",
+					sessions: [
+						{
+							path: "/tmp/active",
+							title: "Line up the composer toolbar controls",
+							excerpt: "justify-content — aligned it and...",
+							createdAt: "2026-01-08T14:00:00.000Z",
+							lastActivityAt: "2026-01-08T14:06:30.000Z",
+							active: true,
+						},
+						{
+							path: "/tmp/older",
+							title: "Session 11 — rename list actions",
+							excerpt: "found the grid column bug...",
+							createdAt: "2026-01-08T14:00:00.000Z",
+							lastActivityAt: "2026-01-08T14:06:30.000Z",
+							active: false,
+						},
+						{
+							path: "/tmp/oldest",
+							title: "Session 5 — theme check",
+							excerpt: "light mode contrast...",
+							createdAt: "2026-01-01T10:00:00.000Z",
+							lastActivityAt: "2026-01-01T10:30:00.000Z",
+							active: false,
+						},
+					],
+				},
+			}),
+		);
+	}
 	if (state === "palette") document.querySelector("#command-button").click();
 	if (state === "typing") {
 		const input = document.querySelector("#prompt-input");

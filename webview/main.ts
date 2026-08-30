@@ -2288,41 +2288,34 @@ function renderSessions(): void {
 			closeHistory();
 		});
 
-		const deleteButton = document.createElement("button");
-		deleteButton.type = "button";
-		deleteButton.className = "session-delete";
-		deleteButton.disabled = session.active;
-		deleteButton.title = session.active
-			? "The active session cannot be deleted"
-			: "Delete session";
-		deleteButton.setAttribute(
-			"aria-label",
-			session.active
-				? "The active session cannot be deleted"
-				: `Delete ${session.title}`,
-		);
-		deleteButton.append(createCodicon("trash"));
-		// Deliberately unconfirmed: deleting a history entry is a routine
-		// list-management action, and an extra modal makes cleanup tedious.
-		deleteButton.addEventListener("click", () =>
-			runAction("deleteSession", { path: session.path }),
-		);
+		// Rename requires the active session and delete a non-active one, so the
+		// two are mutually exclusive; share one right-edge action slot instead of
+		// two grid columns, where the disabled twin used to leave a hole beside
+		// whichever button was visible.
+		let actionButton: HTMLButtonElement;
+		if (session.active) {
+			actionButton = document.createElement("button");
+			actionButton.type = "button";
+			actionButton.className = "session-rename";
+			actionButton.title = "Rename session";
+			actionButton.setAttribute("aria-label", `Rename ${session.title}`);
+			actionButton.append(createCodicon("edit"));
+			actionButton.addEventListener("click", () => openRenamePrompt());
+		} else {
+			actionButton = document.createElement("button");
+			actionButton.type = "button";
+			actionButton.className = "session-delete";
+			actionButton.title = "Delete session";
+			actionButton.setAttribute("aria-label", `Delete ${session.title}`);
+			actionButton.append(createCodicon("trash"));
+			// Deliberately unconfirmed: deleting a history entry is a routine
+			// list-management action, and an extra modal makes cleanup tedious.
+			actionButton.addEventListener("click", () =>
+				runAction("deleteSession", { path: session.path }),
+			);
+		}
 
-		const renameButton = document.createElement("button");
-		renameButton.type = "button";
-		renameButton.className = "session-rename";
-		renameButton.disabled = !session.active;
-		renameButton.title = session.active
-			? "Rename session"
-			: "Open the session to rename it";
-		renameButton.setAttribute(
-			"aria-label",
-			session.active ? `Rename ${session.title}` : "Open the session to rename it",
-		);
-		renameButton.append(createCodicon("edit"));
-		renameButton.addEventListener("click", () => openRenamePrompt());
-
-		row.append(openButton, renameButton, deleteButton);
+		row.append(openButton, actionButton);
 		return row;
 	});
 	elements.sessionList.replaceChildren(...rows);

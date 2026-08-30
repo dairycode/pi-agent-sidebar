@@ -2514,8 +2514,16 @@ function moveActiveFork(delta: number): void {
 	const current = activeForkEntryId
 		? renderedForkEntryIds.indexOf(activeForkEntryId)
 		: -1;
-	const next =
-		(current + delta + renderedForkEntryIds.length) % renderedForkEntryIds.length;
+	let next: number;
+	if (current < 0) {
+		// Nothing highlighted yet: the wraparound formula would land ArrowUp on
+		// the second-to-last row instead of the last one.
+		next = delta > 0 ? 0 : renderedForkEntryIds.length - 1;
+	} else {
+		next =
+			(current + delta + renderedForkEntryIds.length) %
+			renderedForkEntryIds.length;
+	}
 	activeForkEntryId = renderedForkEntryIds[next];
 	highlightActiveFork();
 }

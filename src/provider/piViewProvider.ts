@@ -562,7 +562,10 @@ export class PiViewProvider
 					break;
 				}
 				case "cloneSession": {
-					await this.respondToAction(message.actionId, () => this.cloneSession());
+					await this.respondToAction(message.actionId, async () => {
+						this.assertNoSessionMutationPending();
+						await this.cloneSession();
+					});
 					break;
 				}
 				case "listForkCandidates": {
@@ -572,9 +575,10 @@ export class PiViewProvider
 					break;
 				}
 				case "forkSession": {
-					await this.respondToAction(message.actionId, () =>
-						this.forkSession(message.entryId),
-					);
+					await this.respondToAction(message.actionId, async () => {
+						this.assertNoSessionMutationPending();
+						await this.forkSession(message.entryId);
+					});
 					break;
 				}
 				case "switchSession": {
@@ -1030,7 +1034,9 @@ export class PiViewProvider
 	}
 
 	/**
-	 * Guards the new-session handler against a double click.
+	 * Guards the session-replacement handlers (new/clone/fork) against a double
+	 * submit: a second replacement enqueued behind an in-flight one runs against
+	 * the already-replaced session and duplicates it.
 	 *
 	 * The assert runs before the handler enqueues its own mutation, so any
 	 * positive count means another session operation is already in flight; the
@@ -1072,8 +1078,14 @@ export class PiViewProvider
 				(previous.sessionFile !== undefined &&
 					next.sessionFile !== undefined &&
 					path.resolve(previous.sessionFile) !== path.resolve(next.sessionFile));
+			// With no previous identity there is no baseline to compare against.
+			// Without an expected file (new/clone/fork) any post-command state is
+			// already terminal — including identity appearing from nothing, which is
+			// exactly a fresh pi's first new session — so waiting could only end in a
+			// false timeout. With one (switch), expectedPathMatches does the
+			// verifying and must not be bypassed.
 			const noIdentityToCompare =
-				!hadIdentity && !next.sessionId && !next.sessionFile;
+				!hadIdentity && expectedSessionFile === undefined;
 			if (expectedPathMatches || identityChanged || noIdentityToCompare) {
 				this.state = next;
 				return;

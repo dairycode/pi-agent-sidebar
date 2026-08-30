@@ -1,6 +1,5 @@
 node_modules/
 dist/
-preview-out/
 *.vsix
 .DS_Store
 .pi-subagents/

@@ -787,16 +787,24 @@ elements.newSessionButton.addEventListener("click", () =>
 elements.renameSessionButton.addEventListener("click", () =>
 	openRenamePrompt(),
 );
-// Cloning duplicates the active branch into a new session and leaves the
-// current one in history, so it needs no confirmation. The composer draft is
-// deliberately preserved: clone does not consume what the user is typing.
+// Cloning replaces the active session, so it must wait for pi to go idle. The
+// button stays clickable while busy; the refusal is a toast, matching the other
+// header actions.
 elements.cloneSessionButton.addEventListener("click", () => {
-	if (ui.connection !== "ready" || ui.busy) return;
+	if (ui.busy) {
+		showToast("Wait for pi to finish before duplicating this session", "error");
+		return;
+	}
+	if (ui.connection !== "ready") return;
 	runAction("cloneSession");
 });
 // The picker is a webview list, so the whole choice happens here and the host
 // only executes the entry id it is handed.
 elements.forkSessionButton.addEventListener("click", () => {
+	if (ui.busy) {
+		showToast("Wait for pi to finish before forking this session", "error");
+		return;
+	}
 	if (elements.forkPanel.hidden) openForkPicker();
 	else closeForkPicker();
 });
@@ -1348,17 +1356,19 @@ function render(): void {
 	elements.attachButton.disabled = !enabled;
 	elements.commandButton.disabled = !enabled;
 	elements.renameSessionButton.disabled = !enabled;
-	// Cloning replaces the active session, so it must wait for pi to go idle. It
-	// is hidden outright when this pi build has no `clone` command.
+	// Cloning replaces the active session, so it must wait for pi to go idle. The
+	// busy refusal arrives as a toast from the click handler below, not as a
+	// greyed-out control — every header action reads the same way mid-turn.
+	// Hidden outright when this pi build has no `clone` command.
 	elements.cloneSessionButton.hidden = !ui.capabilities.clone;
-	elements.cloneSessionButton.disabled = !enabled || ui.busy;
+	elements.cloneSessionButton.disabled = !enabled;
 	// Forking needs both the candidate list and the fork command itself.
 	elements.forkSessionButton.hidden =
 		!ui.capabilities.fork || !ui.capabilities.forkMessages;
-	elements.forkSessionButton.disabled = !enabled || ui.busy;
+	elements.forkSessionButton.disabled = !enabled;
 	// An open picker outlives neither a disconnect nor a turn starting: its entry
 	// ids belong to the session as it was when the list was fetched.
-	if (elements.forkSessionButton.disabled || elements.forkSessionButton.hidden) {
+	if (elements.forkSessionButton.hidden || !enabled || ui.busy) {
 		dismissForkPicker();
 	}
 	elements.modelSelect.disabled = !enabled || ui.models.length === 0;

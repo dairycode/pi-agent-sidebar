@@ -9,6 +9,104 @@ import {
 
 const root = projectRoot;
 
+test("default session directory encoding matches pi on Windows and POSIX", async () => {
+	const loaded = await loadBundledModule({
+		entry: "src/services/sessionStore.ts",
+		name: "session-store-windows-dir",
+	});
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const agentDir = path.join(loaded.temporaryDirectory, "agent");
+	process.env.PI_CODING_AGENT_DIR = agentDir;
+
+	try {
+		// pi encodes the Windows drive path C:\Users\USER\code\project as
+		// --C--Users-USER-code-project-- (each separator replaced, runs not
+		// collapsed). The old implementation collapsed :\ into one dash and
+		// therefore never found pi's session directory.
+		const windowsCwd = "C:\\Users\\USER\\code\\project";
+		const windowsDirectory = path.join(
+			agentDir,
+			"sessions",
+			"--C--Users-USER-code-project--",
+		);
+		await mkdir(windowsDirectory, { recursive: true });
+		await writeFile(
+			path.join(windowsDirectory, "win.jsonl"),
+			[
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "win",
+					timestamp: "2026-01-02T00:00:00.000Z",
+					cwd: windowsCwd,
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "win-user",
+					parentId: null,
+					timestamp: "2026-01-02T01:00:00.000Z",
+					message: {
+						role: "user",
+						content: "Windows prompt",
+						timestamp: Date.parse("2026-01-02T01:00:00.000Z"),
+					},
+				}),
+			].join("\n"),
+			"utf8",
+		);
+
+		// A fixed POSIX golden value guards against accidental drift the other way.
+		const posixCwd = "/home/user/project";
+		const posixDirectory = path.join(
+			agentDir,
+			"sessions",
+			"--home-user-project--",
+		);
+		await mkdir(posixDirectory, { recursive: true });
+		await writeFile(
+			path.join(posixDirectory, "posix.jsonl"),
+			[
+				JSON.stringify({
+					type: "session",
+					version: 3,
+					id: "posix",
+					timestamp: "2026-01-03T00:00:00.000Z",
+					cwd: posixCwd,
+				}),
+				JSON.stringify({
+					type: "message",
+					id: "posix-user",
+					parentId: null,
+					timestamp: "2026-01-03T01:00:00.000Z",
+					message: {
+						role: "user",
+						content: "POSIX prompt",
+						timestamp: Date.parse("2026-01-03T01:00:00.000Z"),
+					},
+				}),
+			].join("\n"),
+			"utf8",
+		);
+
+		const windowsSessions = await loaded.module.listProjectSessions(windowsCwd);
+		assert.deepEqual(
+			windowsSessions.map((session) => path.basename(session.path)),
+			["win.jsonl"],
+		);
+		assert.equal(windowsSessions[0].excerpt, "Windows prompt");
+
+		const posixSessions = await loaded.module.listProjectSessions(posixCwd);
+		assert.deepEqual(
+			posixSessions.map((session) => path.basename(session.path)),
+			["posix.jsonl"],
+		);
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await loaded.dispose();
+	}
+});
+
 test("session history reads and safely deletes custom-directory sessions", async () => {
 	const loaded = await loadBundledModule({
 		entry: "src/services/sessionStore.ts",

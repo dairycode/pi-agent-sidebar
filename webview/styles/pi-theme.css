@@ -25,12 +25,14 @@
  *    states all land as the same pale grey box) and the 17% chroma accent
  *    reads grey where it fills a button instead of teal. Hue directions and
  *    value grades stay pi's — see the notes in the light block.
- * 4. The dark palette's tool hues are likewise chroma-corrected, this time for
- *    glare: pi's near-black surfaces sit ~2 L* under the sidebar backdrop, so
- *    at 62% alpha the fills measured 1.06–1.12:1 against it — visible in a
- *    dim room, invisible under bright ambient light where dark-on-dark washes
- *    out first. Raising the hues' chroma (not their value grade) and mixing at
- *    75% brings the fills to ~1.15–1.29:1 while keeping pi's hue directions.
+ * 4. The dark palette's tool surfaces are light tints, not pi's dark slabs.
+ *    pi's near-black fills sit ~2 L* under the sidebar backdrop; a chroma boost
+ *    helped (1.06 → ~1.3:1) but dark-on-dark still washes out first under
+ *    bright ambient light, and every step louder turned success into a wall of
+ *    green. Flipping the value relationship escapes that bind: lighter-than-
+ *    backdrop overlays mixed at 20% measure ~1.4:1 against the sidebar and
+ *    survive the same glare that drowns dark-on-dark, while keeping pi's hue
+ *    directions and the light palette untouched.
  * 5. The dark palette's message hues get the same glare treatment: at the old
  *    30% mix the user message box measured 1.08:1 against the sidebar backdrop
  *    and a custom message 1.04:1 — both effectively invisible in bright light.
@@ -79,14 +81,14 @@
 	/* pi gives the three tool states their own background tokens rather than
 	   deriving them from the matching foreground colour, and the difference is
 	   visible: `success` is #b5bd68, a yellow-olive at hue 66°, while
-	   `toolSuccessBg` is hue 120°. Tinting with the foreground hue produced a
-	   muddy yellow-green box. These start from pi's own surface values, raised
-	   in chroma only — the literal near-black hexes carry ~5% chroma, which
-	   mixed over a dark sidebar leaves ~1 L* of separation and disappears under
-	   bright ambient light (departure 4 in the header). */
-	--pi-theme-tool-pending-bg-hue: #2e2e48;
-	--pi-theme-tool-success-bg-hue: #24402a;
-	--pi-theme-tool-error-bg-hue: #48262a;
+	   `toolSuccessBg` is hue 120°. The hues below keep those directions but are
+	   light tints, not pi's dark slabs — a dark fill washes out under glare
+	   while a lighter-than-backdrop overlay holds (departure 4 in the header).
+	   pi's own warning still applies: tinting from the foreground hues would
+	   turn success muddy yellow-olive. */
+	--pi-theme-tool-pending-bg-hue: #6e93f5;
+	--pi-theme-tool-success-bg-hue: #4fc47a;
+	--pi-theme-tool-error-bg-hue: #f27777;
 
 	/* Markdown */
 	--pi-theme-md-heading: #f0c674;
@@ -116,12 +118,14 @@
 	--pi-theme-syntax-operator: #d4d4d4;
 	--pi-theme-syntax-punctuation: #d4d4d4;
 
-	/* How strongly a tool surface tints its backdrop. The hue source is one of
-	   pi's own surface colours, so a higher mix lands closer to pi exactly; full
-	   opacity would match it but stop adapting to the user's editor background,
-	   which is the whole point of mixing. Light themes need a firmer mix: the
-	   same alpha over a near-white background reads as noise rather than state. */
-	--pi-theme-tool-bg-strength: 75%;
+	/* How strongly a tool surface tints its backdrop; full opacity would stop
+	   adapting to the user's editor background, which is the whole point of
+	   mixing. The light palette's hues sit near pi's literal light values, so
+	   its 85% mix lands close to pi. The dark palette's tints are light overlays
+	   pi never shipped, and 20% keeps them from out-shouting the prose they
+	   hold. Light themes need a firmer mix: the same alpha over a near-white
+	   background reads as noise rather than state. */
+	--pi-theme-tool-bg-strength: 20%;
 	/* Message surfaces mix at a lower register than tool states — they hold
 	   prose, so the tint must stay quieter — but 30% left the user box at 1.08:1
 	   in glare. 45% keeps hover and search (selectedBg shares this knob) under

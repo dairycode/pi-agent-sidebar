@@ -18,6 +18,18 @@
   are persistent by nature (pi's LSP extension reports `LSP Active: ...` for the
   whole session), and the row is reserved for queue counts and transient run
   states like compacting and retrying. The host no longer forwards them.
+- Make tool boxes legible under bright ambient light. pi's near-black tool
+  surfaces mixed at the old strength sat within ~2 L* of the sidebar backdrop
+  (1.06–1.12:1), which reads as invisible in a sunlit room. The dark palette's
+  three tool hues gain chroma — hue directions and value grades stay pi's — and
+  mix at 75% instead of 62%, bringing the fills to ~1.15–1.29:1. The light
+  palette is unchanged.
+- Give the user message box the same treatment: at the old 30% mix it measured
+  1.08:1 against the sidebar — nearly as invisible as the tool boxes were. The
+  dark palette's message hues gain chroma and mix at 45%, which also firms up
+  custom messages and, through the shared knob, hover rows, the scrollbar and
+  search matches (still quieter than VS Code's own hover). The light palette is
+  unchanged.
 - Render session cost as `$0.45` rather than `US$0.45`. Chromium's ICU expands a
   plain USD currency to the wide symbol in en locales; pinning the narrow symbol
   matches what Node already produced.

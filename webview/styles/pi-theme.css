@@ -6,7 +6,7 @@
  * own is the whole point: when pi adds or repurposes a token, the gap is
  * obvious here instead of hidden behind a translation layer.
  *
- * Two deliberate departures from a literal port:
+ * Deliberate departures from a literal port:
  *
  * 1. `text`-derived tokens follow VS Code instead of carrying pi's hex. pi
  *    itself declares `"text": ""`, meaning "whatever the terminal uses", so
@@ -25,6 +25,20 @@
  *    states all land as the same pale grey box) and the 17% chroma accent
  *    reads grey where it fills a button instead of teal. Hue directions and
  *    value grades stay pi's — see the notes in the light block.
+ * 4. The dark palette's tool hues are likewise chroma-corrected, this time for
+ *    glare: pi's near-black surfaces sit ~2 L* under the sidebar backdrop, so
+ *    at 62% alpha the fills measured 1.06–1.12:1 against it — visible in a
+ *    dim room, invisible under bright ambient light where dark-on-dark washes
+ *    out first. Raising the hues' chroma (not their value grade) and mixing at
+ *    75% brings the fills to ~1.15–1.29:1 while keeping pi's hue directions.
+ * 5. The dark palette's message hues get the same glare treatment: at the old
+ *    30% mix the user message box measured 1.08:1 against the sidebar backdrop
+ *    and a custom message 1.04:1 — both effectively invisible in bright light.
+ *    Raising their chroma and the shared message mix to 45% brings them to
+ *    ~1.11–1.16:1. selectedBg rides the same knob, so hover rows, the scrollbar
+ *    and search matches firm up from 1.10:1 to ~1.17:1 — still quieter than VS
+ *    Code's own list hover (1.22:1 in One Dark Pro Darker). selectedBg's hue
+ *    itself stays pi's neutral: a hover must not out-shout what it highlights.
  *
  * Omitted from pi's 51: the seven `thinking*` editor-border tokens and
  * `bashMode`. Those colour the TUI's own input frame, which this extension does
@@ -54,10 +68,11 @@
 
 	/* Backgrounds & content. The `*-bg` hues here are mixed into translucent
 	   surfaces further down; these raw values are the hue source, not the
-	   surface. */
+	   surface. userMessage and customMessage start from pi's values raised in
+	   chroma for glare legibility (departure 5); selectedBg stays pi's neutral. */
 	--pi-theme-selected-bg-hue: #3a3a4a;
-	--pi-theme-user-message-bg-hue: #343541;
-	--pi-theme-custom-message-bg-hue: #2d2838;
+	--pi-theme-user-message-bg-hue: #333b55;
+	--pi-theme-custom-message-bg-hue: #342e5c;
 	--pi-theme-custom-message-label: #9575cd;
 	--pi-theme-tool-output: #808080;
 
@@ -65,11 +80,13 @@
 	   deriving them from the matching foreground colour, and the difference is
 	   visible: `success` is #b5bd68, a yellow-olive at hue 66°, while
 	   `toolSuccessBg` is hue 120°. Tinting with the foreground hue produced a
-	   muddy yellow-green box. These are pi's own surface values, used as the hue
-	   source the same way `userMsgBg` is. */
-	--pi-theme-tool-pending-bg-hue: #282832;
-	--pi-theme-tool-success-bg-hue: #283228;
-	--pi-theme-tool-error-bg-hue: #3c2828;
+	   muddy yellow-green box. These start from pi's own surface values, raised
+	   in chroma only — the literal near-black hexes carry ~5% chroma, which
+	   mixed over a dark sidebar leaves ~1 L* of separation and disappears under
+	   bright ambient light (departure 4 in the header). */
+	--pi-theme-tool-pending-bg-hue: #2e2e48;
+	--pi-theme-tool-success-bg-hue: #24402a;
+	--pi-theme-tool-error-bg-hue: #48262a;
 
 	/* Markdown */
 	--pi-theme-md-heading: #f0c674;
@@ -104,8 +121,12 @@
 	   opacity would match it but stop adapting to the user's editor background,
 	   which is the whole point of mixing. Light themes need a firmer mix: the
 	   same alpha over a near-white background reads as noise rather than state. */
-	--pi-theme-tool-bg-strength: 62%;
-	--pi-theme-message-bg-strength: 30%;
+	--pi-theme-tool-bg-strength: 75%;
+	/* Message surfaces mix at a lower register than tool states — they hold
+	   prose, so the tint must stay quieter — but 30% left the user box at 1.08:1
+	   in glare. 45% keeps hover and search (selectedBg shares this knob) under
+	   VS Code's native hover contrast. */
+	--pi-theme-message-bg-strength: 45%;
 }
 
 body.vscode-light,

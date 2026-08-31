@@ -53,6 +53,7 @@ import {
 	type PiStats,
 	type PiTimeContext,
 	type SessionSummary,
+	type SubmitDelivery,
 	type WebviewToHostMessage,
 	type WorkspaceReferenceSuggestion,
 } from "../shared/protocol.js";
@@ -223,6 +224,7 @@ const elements = {
 	thinkingSelectValue: element<HTMLElement>("thinking-select-value"),
 	selectPopup: element<HTMLElement>("select-popup"),
 	sendButton: element<HTMLButtonElement>("send-button"),
+	sendHint: element<HTMLElement>("send-hint"),
 	runtimeMeta: element<HTMLButtonElement>("runtime-meta"),
 	usagePanel: element<HTMLElement>("usage-panel"),
 	toastRegion: element<HTMLElement>("toast-region"),
@@ -655,6 +657,19 @@ elements.input.addEventListener("keydown", (event) => {
 		post({ type: "openComposerReference", id: reference.id });
 		return;
 	}
+	// Alt+Enter queues the draft as a follow-up, mirroring pi's TUI shortcut.
+	// pi ignores the delivery hint when idle, so this doubles as a plain send.
+	if (
+		event.key === "Enter" &&
+		event.altKey &&
+		!event.shiftKey &&
+		!event.isComposing
+	) {
+		event.preventDefault();
+		if (ui.connection !== "ready") return;
+		sendPrompt("followUp");
+		return;
+	}
 	if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
 	event.preventDefault();
 	if (ui.connection !== "ready") return;
@@ -735,6 +750,16 @@ elements.composer.addEventListener("submit", (event) => {
 	if (ui.busy) abortRun();
 	else sendPrompt();
 });
+
+// Alt+Enter has no on-screen control, so hovering the send button is where the
+// two delivery modes get named. Focus is included because a keyboard user
+// reaching the button never triggers a pointer hover.
+for (const event of ["pointerenter", "focus"] as const) {
+	elements.sendButton.addEventListener(event, showSendHint);
+}
+for (const event of ["pointerleave", "blur"] as const) {
+	elements.sendButton.addEventListener(event, hideSendHint);
+}
 
 elements.attachButton.addEventListener("click", () =>
 	post({ type: "pickAttachments" }),
@@ -848,6 +873,12 @@ document.addEventListener("visibilitychange", () => {
 });
 
 window.addEventListener("resize", () => selectorController.reposition());
+
+// The send hint is placed against the button's live rect, so a resize that
+// moves the composer leaves it floating until it is re-placed.
+window.addEventListener("resize", () => {
+	if (!elements.sendHint.hidden) showSendHint();
+});
 
 elements.messages.addEventListener("click", (event) => {
 	const target = event.target as HTMLElement;
@@ -1296,12 +1327,9 @@ function reduceRpcEvent(event: JsonRecord): void {
 
 function reduceExtensionUiEvent(event: JsonRecord): void {
 	const method = stringValue(event.method);
-	if (method === "setStatus") {
-		const key = stringValue(event.statusKey);
-		const text = cleanExtensionText(stringValue(event.statusText));
-		if (key && text) extensionStatuses.set(key, text);
-		else if (key) extensionStatuses.delete(key);
-	}
+	// setStatus reports (e.g. pi's LSP extension's "LSP Active: …") are
+	// deliberately not ingested: they are persistent and noisy in the status
+	// row, which is reserved for queue counts and transient run states.
 	if (method === "setWidget") {
 		const key = stringValue(event.widgetKey);
 		const lines = stringArray(event.widgetLines)
@@ -2066,23 +2094,20 @@ function renderSelectors(): void {
 }
 
 function renderQueue(): void {
-	const total = ui.queue.steering.length + ui.queue.followUp.length;
-	const statuses = [...extensionStatuses.values()].filter(
-		(status) => !isInactiveLspStatus(status),
-	);
+	// pi reports the two queues separately (queue_update), and which queue a
+	// message sits in is the only visible difference between the delivery
+	// modes, so the counts are shown separately rather than merged. The only
+	// statuses kept alongside are transient run states (compacting, retrying).
 	const parts: string[] = [];
-	if (total > 0) parts.push(`${total} queued`);
-	parts.push(...statuses);
+	if (ui.queue.steering.length > 0)
+		parts.push(`${ui.queue.steering.length} steering`);
+	if (ui.queue.followUp.length > 0)
+		parts.push(`${ui.queue.followUp.length} follow-up`);
+	parts.push(...extensionStatuses.values());
 	const text = parts.join(" · ");
 	elements.queueStatus.hidden = text.length === 0;
 	elements.queueStatus.textContent = text;
 	elements.queueStatus.title = text;
-}
-
-function isInactiveLspStatus(status: string): boolean {
-	return /^LSP(?:\s+status)?\s*:?\s*(?:inactive|disabled)\b/iu.test(
-		status.trim(),
-	);
 }
 
 function renderWidgets(): void {
@@ -2246,6 +2271,12 @@ function renderSendButton(): void {
 		ui.connection !== "ready" ||
 		(!ui.busy && (pendingSubmit || composerController.hasPendingReferences));
 	elements.composer.classList.toggle("busy", ui.busy || pendingSubmit);
+	// Enter's meaning flips with the run state, so a hint that is already open has
+	// to be re-rendered rather than left describing the previous state.
+	if (!elements.sendHint.hidden) {
+		if (elements.sendButton.disabled) hideSendHint();
+		else showSendHint();
+	}
 }
 
 function renderSessions(): void {
@@ -2981,7 +3012,7 @@ function clearResourceDragState(): void {
 	elements.app.classList.remove("is-resource-drag");
 }
 
-function sendPrompt(): void {
+function sendPrompt(delivery?: SubmitDelivery): void {
 	if (
 		pendingSubmit ||
 		ui.connection !== "ready" ||
@@ -3012,6 +3043,7 @@ function sendPrompt(): void {
 			start: reference.start,
 			end: reference.end,
 		})),
+		delivery,
 	});
 	scheduleRender();
 }
@@ -3096,6 +3128,52 @@ function updateComposerOverlayOffset(): void {
 	const composerRect = elements.composerShell.getBoundingClientRect();
 	const offset = Math.max(8, Math.round(appRect.bottom - composerRect.top + 8));
 	elements.app.style.setProperty("--pi-composer-overlay-offset", `${offset}px`);
+}
+
+/**
+ * Names what Enter and Alt+Enter will do, next to the button that does it.
+ *
+ * Enter is not one action: pi rejects a prompt sent mid-run unless a delivery
+ * mode is attached, so the host steers a plain Enter while pi is streaming and
+ * sends it outright while pi is idle. The hint therefore has to follow the run
+ * state instead of stating one fixed pair of labels.
+ *
+ * The screen reader equivalent lives in `#prompt-input-help`, so this stays
+ * `aria-hidden` rather than announcing the same thing twice.
+ */
+function showSendHint(): void {
+	if (elements.sendButton.disabled) return;
+	const rows: Array<[keys: string[], label: string]> = [
+		[["Enter"], ui.busy ? "steer" : "send"],
+		[["Alt+Enter"], "follow-up"],
+	];
+	elements.sendHint.replaceChildren(
+		...rows.map(([keys, label]) => {
+			const row = document.createElement("span");
+			row.className = "send-hint-row";
+			for (const key of keys) {
+				const kbd = document.createElement("kbd");
+				kbd.textContent = key;
+				row.append(kbd);
+			}
+			const text = document.createElement("span");
+			text.textContent = label;
+			row.append(text);
+			return row;
+		}),
+	);
+	elements.sendHint.hidden = false;
+	positionPopupAbove({
+		container: elements.app,
+		popup: elements.sendHint,
+		anchor: elements.sendButton,
+		gap: 6,
+		minHeight: 0,
+	});
+}
+
+function hideSendHint(): void {
+	elements.sendHint.hidden = true;
 }
 
 function focusComposerIfRequested(): void {

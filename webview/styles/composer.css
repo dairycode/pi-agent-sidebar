@@ -532,6 +532,48 @@
 	background: var(--pi-accent-hover);
 }
 
+/* Alt+Enter is the only entry point for a follow-up, and a keyboard shortcut
+   with no on-screen control is invisible. Hovering the send button is the one
+   moment the reader is already asking "what happens when I send", so the two
+   modes are named there. Positioned from script against `#app` (the nearest
+   non-clipping positioned ancestor) because `.composer` clips its overflow.
+   `pointer-events: none` keeps it from stealing the hover that spawned it. */
+.send-hint {
+	position: absolute;
+	z-index: 19;
+	display: flex;
+	flex-direction: column;
+	max-width: calc(100% - 16px);
+	padding: 5px 8px;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-content);
+	color: var(--pi-muted);
+	background: var(--pi-raised);
+	box-shadow: 0 3px 10px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.25));
+	font-size: var(--pi-font-chrome);
+	line-height: 17px;
+	white-space: nowrap;
+	pointer-events: none;
+	gap: 1px;
+}
+
+.send-hint-row {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+}
+
+.send-hint kbd {
+	padding: 0 4px;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: 3px;
+	color: var(--vscode-foreground);
+	background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	font-family: inherit;
+	font-size: 10px;
+	line-height: 15px;
+}
+
 /* A button rather than a text node: it opens the usage detail panel. The
    appearance stays identical to the plain status text it replaced. */
 .runtime-meta {

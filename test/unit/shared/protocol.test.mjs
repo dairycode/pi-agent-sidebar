@@ -52,6 +52,47 @@ test("webview submit messages require bounded host identities and marker spans",
 	}
 });
 
+test("webview submit delivery is bounded to pi's streamingBehavior modes", async () => {
+	const loaded = await loadProtocol();
+	try {
+		const base = {
+			type: "submit",
+			actionId: "action",
+			text: "nudge",
+			attachmentIds: [],
+			references: [],
+		};
+		for (const delivery of ["steer", "followUp"]) {
+			const parsed = loaded.module.parseWebviewMessage({
+				...base,
+				delivery,
+			});
+			assert.equal(parsed.delivery, delivery);
+		}
+		for (const delivery of ["queue-everything", "auto", "", 1, null]) {
+			assert.equal(
+				loaded.module.parseWebviewMessage({ ...base, delivery }).delivery,
+				undefined,
+			);
+		}
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				...base,
+				delivery: undefined,
+			}),
+			{
+				type: "submit",
+				actionId: "action",
+				text: "nudge",
+				attachmentIds: [],
+				references: [],
+			},
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("webview protocol rejects malformed action payloads", async () => {
 	const loaded = await loadProtocol();
 	try {

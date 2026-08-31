@@ -34,6 +34,7 @@ import {
 	listProjectSessions,
 	resolveSessionDirectory,
 } from "../services/sessionStore.js";
+import { streamingBehaviorFor } from "./deliveryPolicy.js";
 import {
 	parseWebviewMessage,
 	type HostToWebviewMessage,
@@ -41,6 +42,7 @@ import {
 	type PiModel,
 	type PiState,
 	type PiStats,
+	type SubmitDelivery,
 	type WorkspaceEntrySuggestion,
 } from "../../shared/protocol.js";
 import {
@@ -221,10 +223,7 @@ export class PiViewProvider
 		this.missedPostWhileHidden = false;
 		if (!this.client?.isRunning) return;
 		try {
-			await Promise.all([
-				this.syncAttachments(),
-				this.syncComposerReferences(),
-			]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
 		} catch (error) {
 			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
@@ -288,9 +287,7 @@ export class PiViewProvider
 		try {
 			if (kind === "explainFile") {
 				const { document } = editor;
-				if (
-					shouldSnapshotFileReference(document.uri.scheme, document.isDirty)
-				) {
+				if (shouldSnapshotFileReference(document.uri.scheme, document.isDirty)) {
 					const fullRange = new vscode.Selection(
 						document.positionAt(0),
 						document.positionAt(document.getText().length),
@@ -350,9 +347,7 @@ export class PiViewProvider
 			title: "Rename Pi Session",
 			prompt: "Enter a display name for the current session.",
 			value:
-				typeof this.state.sessionName === "string"
-					? this.state.sessionName
-					: "",
+				typeof this.state.sessionName === "string" ? this.state.sessionName : "",
 			ignoreFocusOut: true,
 		});
 		if (name === undefined) return;
@@ -457,10 +452,7 @@ export class PiViewProvider
 			await this.waitForSessionReplacement(client, generation, previous);
 			this.composerReferenceStore.consume(references);
 			await this.attachmentStore.removeResolved(attachments);
-			await Promise.all([
-				this.syncAttachments(),
-				this.syncComposerReferences(),
-			]);
+			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
 			await this.sendSessionList();
 			return true;
@@ -476,8 +468,7 @@ export class PiViewProvider
 		if (
 			this.workspaceFolder &&
 			folders.some(
-				(folder) =>
-					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+				(folder) => folder.uri.toString() === this.workspaceFolder?.uri.toString(),
 			)
 		) {
 			return;
@@ -539,10 +530,7 @@ export class PiViewProvider
 			switch (message.type) {
 				case "ready": {
 					this.webviewReady = true;
-					await Promise.all([
-						this.syncAttachments(),
-						this.syncComposerReferences(),
-					]);
+					await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 					const wasRunning = Boolean(this.client?.isRunning);
 					await this.ensureClient();
 					if (wasRunning) await this.refreshSnapshot();
@@ -560,14 +548,13 @@ export class PiViewProvider
 							message.text,
 							message.attachmentIds,
 							message.references,
+							message.delivery,
 						),
 					);
 					break;
 				}
 				case "abort": {
-					await this.respondToAction(message.actionId, () =>
-						this.abortPrompt(),
-					);
+					await this.respondToAction(message.actionId, () => this.abortPrompt());
 					break;
 				}
 				case "newSession": {
@@ -632,9 +619,7 @@ export class PiViewProvider
 					break;
 				}
 				case "compact": {
-					await this.respondToAction(message.actionId, () =>
-						this.compactSession(),
-					);
+					await this.respondToAction(message.actionId, () => this.compactSession());
 					break;
 				}
 				case "restart": {
@@ -728,6 +713,7 @@ export class PiViewProvider
 		text: string,
 		attachmentIds: unknown,
 		referenceIdentities: unknown,
+		delivery?: SubmitDelivery,
 	): Promise<void> {
 		const attachments = this.attachmentStore.resolve(attachmentIds);
 		const references = this.composerReferenceStore.resolve(
@@ -747,7 +733,7 @@ export class PiViewProvider
 			type: "prompt",
 			message: prompt.message,
 			images: prompt.images.length > 0 ? prompt.images : undefined,
-			streamingBehavior: this.streaming ? "steer" : undefined,
+			streamingBehavior: streamingBehaviorFor(delivery, this.streaming),
 		});
 		this.composerReferenceStore.consume(
 			references.map(({ reference }) => reference),
@@ -1099,8 +1085,7 @@ export class PiViewProvider
 					previous.sessionId !== next.sessionId) ||
 				(previous.sessionFile !== undefined &&
 					next.sessionFile !== undefined &&
-					path.resolve(previous.sessionFile) !==
-						path.resolve(next.sessionFile));
+					path.resolve(previous.sessionFile) !== path.resolve(next.sessionFile));
 			// With no previous identity there is no baseline to compare against.
 			// Without an expected file (new/clone/fork) any post-command state is
 			// already terminal — including identity appearing from nothing, which is
@@ -1157,8 +1142,7 @@ export class PiViewProvider
 			await this.post({
 				type: "bootstrap",
 				phase: "no-workspace",
-				detail:
-					"Trust this workspace to let pi read, edit, and run project files.",
+				detail: "Trust this workspace to let pi read, edit, and run project files.",
 			});
 			return;
 		}
@@ -1240,9 +1224,7 @@ export class PiViewProvider
 		try {
 			await client.request({ type: "set_auto_retry", enabled: autoRetry });
 		} catch (error) {
-			this.output.appendLine(
-				`[runtime] set_auto_retry: ${toErrorMessage(error)}`,
-			);
+			this.output.appendLine(`[runtime] set_auto_retry: ${toErrorMessage(error)}`);
 		}
 		await this.refreshSnapshot();
 	}
@@ -1305,8 +1287,7 @@ export class PiViewProvider
 				const message =
 					typeof event.message === "string" ? event.message : "Pi notification";
 				const destination = notificationDestination(event.notifyType);
-				if (destination === "error")
-					void vscode.window.showErrorMessage(message);
+				if (destination === "error") void vscode.window.showErrorMessage(message);
 				else if (destination === "warning")
 					void vscode.window.showWarningMessage(message);
 				else this.output.appendLine(`[pi notification] ${message}`);
@@ -1327,17 +1308,19 @@ export class PiViewProvider
 				this.view.title = event.title;
 				return;
 			}
-			if (["setStatus", "setWidget"].includes(method)) {
-				if (this.client === client)
-					await this.post({ type: "rpcEvent", event });
+			// setStatus is fire-and-forget on pi's side and the webview no longer
+			// renders it: the composer status row is reserved for queue counts and
+			// transient run states, where a persistent "LSP Active: ..." was only
+			// noise. Dropped here so the payload never crosses into the webview.
+			if (method === "setStatus") return;
+			if (method === "setWidget") {
+				if (this.client === client) await this.post({ type: "rpcEvent", event });
 				return;
 			}
 
 			if (method === "select") {
 				const options = Array.isArray(event.options)
-					? event.options.filter(
-							(item): item is string => typeof item === "string",
-						)
+					? event.options.filter((item): item is string => typeof item === "string")
 					: [];
 				const value = await vscode.window.showQuickPick(options, {
 					title: typeof event.title === "string" ? event.title : "Pi",
@@ -1369,9 +1352,7 @@ export class PiViewProvider
 				const value = await vscode.window.showInputBox({
 					title: typeof event.title === "string" ? event.title : "Pi input",
 					placeHolder:
-						typeof event.placeholder === "string"
-							? event.placeholder
-							: undefined,
+						typeof event.placeholder === "string" ? event.placeholder : undefined,
 					ignoreFocusOut: true,
 				});
 				await this.notifyExtensionUiResponse(
@@ -1387,12 +1368,9 @@ export class PiViewProvider
 				});
 				await vscode.window.showTextDocument(document, { preview: true });
 				const choice = await vscode.window.showInformationMessage(
-					typeof event.title === "string"
-						? event.title
-						: "Edit the pi response",
+					typeof event.title === "string" ? event.title : "Edit the pi response",
 					{
-						detail:
-							"Edit the opened document, then submit or cancel this request.",
+						detail: "Edit the opened document, then submit or cancel this request.",
 					},
 					"Submit",
 					"Cancel",
@@ -1700,8 +1678,7 @@ export class PiViewProvider
 		if (
 			this.workspaceFolder &&
 			folders.some(
-				(folder) =>
-					folder.uri.toString() === this.workspaceFolder?.uri.toString(),
+				(folder) => folder.uri.toString() === this.workspaceFolder?.uri.toString(),
 			)
 		) {
 			return this.workspaceFolder;
@@ -1792,11 +1769,7 @@ export class PiViewProvider
 				);
 			}
 			try {
-				const probe = await probePiBinary(
-					launch.binary,
-					cwd,
-					launch.prependArgs,
-				);
+				const probe = await probePiBinary(launch.binary, cwd, launch.prependArgs);
 				this.output.appendLine(
 					`[runtime] Windows fallback for '${binary}': ${launch.binary} ${launch.prependArgs.join(" ")}`,
 				);

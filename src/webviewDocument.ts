@@ -99,7 +99,7 @@ export function createWebviewDocument(
 			<div id="attachment-list" class="attachment-list" aria-label="Attachments"></div>
 			<form id="composer" class="composer">
 				<label class="sr-only" for="prompt-input">Message pi</label>
-				<span id="prompt-input-help" class="sr-only">File and selection references begin with an at sign. Type an at sign to search workspace files, then use the arrow keys and Enter to add one. Move the caret inside a reference and press F12 to open its source. Hold Shift to drag files from VS Code Explorer into this input.</span>
+				<span id="prompt-input-help" class="sr-only">File and selection references begin with an at sign. Type an at sign to search workspace files, then use the arrow keys and Enter to add one. Move the caret inside a reference and press F12 to open its source. Hold Shift to drag files from VS Code Explorer into this input. While pi is running, press Alt plus Enter to queue the message as a follow-up.</span>
 				<div id="prompt-editor" class="prompt-editor">
 					<div class="prompt-highlight-backdrop" aria-hidden="true"><div id="prompt-highlights" class="prompt-highlights"></div></div>
 					<textarea id="prompt-input" rows="1" placeholder="Ask pi to build, fix, or explain..." aria-label="Message pi" aria-describedby="prompt-input-help"></textarea>
@@ -124,6 +124,7 @@ export function createWebviewDocument(
 			</form>
 		</footer>
 
+		<div id="send-hint" class="send-hint" aria-hidden="true" hidden></div>
 		<div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
 		<div id="live-status" class="sr-only" role="status" aria-live="polite"></div>
 		<div id="select-popup" class="select-popup" role="listbox" hidden></div>

@@ -290,6 +290,38 @@ setTimeout(() => setTimeout(() => {
 			throw new Error("Full-sidebar resource drag did not activate the overlay");
 		}
 	}
+	// Enter means "send" when pi is idle and "steer" mid-run, so both hover
+	// states are previewable: the labels differ between them.
+	if (state === "send-hint" || state === "send-hint-busy") {
+		const busy = state === "send-hint-busy";
+		if (busy) {
+			// Delivered synchronously for the same reason as the session list above:
+			// a queued postMessage task may never run inside the virtual-time budget.
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "rpcEvent", event: { type: "agent_start" } },
+				}),
+			);
+		}
+		document.querySelector("#send-button").dispatchEvent(
+			new PointerEvent("pointerenter", { bubbles: false }),
+		);
+		const hint = document.querySelector("#send-hint");
+		if (hint.hidden) throw new Error("Hovering the send button did not open the hint");
+		const text = hint.textContent;
+		if (!text.includes("follow-up")) {
+			throw new Error("Send hint does not name the follow-up shortcut");
+		}
+		// A plain Enter steers mid-run and sends outright when idle; the hint must
+		// name one and not the other.
+		const expected = busy ? "steer" : "send";
+		const forbidden = busy ? "send" : "steer";
+		if (!text.includes(expected) || text.includes(forbidden)) {
+			throw new Error(
+				"Send hint should say '" + expected + "' and not '" + forbidden + "', got: " + text,
+			);
+		}
+	}
 	window.__validatePreviewTheme();
 	document.documentElement.dataset.previewReady = "true";
 }, 0), 0);

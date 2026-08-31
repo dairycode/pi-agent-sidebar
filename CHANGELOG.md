@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.2
+
+- Queue a message as a follow-up with `Alt+Enter`, matching pi's TUI shortcut.
+  `Enter` sends as before. The choice is forwarded as pi's public
+  `streamingBehavior` field, so a follow-up waits until the current run ends
+  instead of interrupting it; pi ignores the field when idle, so the shortcut
+  doubles as a plain send. A plain `Enter` keeps the previous behavior and
+  steers only when the host knows pi is streaming. Hovering or focusing the send
+  button names both shortcuts, since a keyboard-only affordance is otherwise
+  invisible.
+- Show the steering and follow-up queues separately in the composer status row
+  (`2 steering · 1 follow-up`). Which queue a message sits in is the only
+  visible difference between the delivery modes, so a single merged count could
+  not convey it.
+- Stop rendering extension `setStatus` reports in the composer status row. They
+  are persistent by nature (pi's LSP extension reports `LSP Active: ...` for the
+  whole session), and the row is reserved for queue counts and transient run
+  states like compacting and retrying. The host no longer forwards them.
+- Render session cost as `$0.45` rather than `US$0.45`. Chromium's ICU expands a
+  plain USD currency to the wide symbol in en locales; pinning the narrow symbol
+  matches what Node already produced.
+
 ## 0.7.1
 
 - Start pi out of the box on Windows. npm installs the global `pi` command as a

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadSelectController() {
 	return loadBundledModule({
 		entry: "webview/ui/selectController.ts",
@@ -17,9 +16,7 @@ class FakeClassList {
 	}
 
 	toggle(name, force) {
-		const values = new Set(
-			this.element.className.split(/\s+/u).filter(Boolean),
-		);
+		const values = new Set(this.element.className.split(/\s+/u).filter(Boolean));
 		const enabled = force === undefined ? !values.has(name) : force;
 		if (enabled) values.add(name);
 		else values.delete(name);

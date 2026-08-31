@@ -92,8 +92,7 @@ export class SelectController {
 		trigger.setAttribute("aria-expanded", "true");
 		this.reposition();
 		this.focusOption(
-			rows.find((row) => row.getAttribute("aria-selected") === "true") ??
-				rows[0],
+			rows.find((row) => row.getAttribute("aria-selected") === "true") ?? rows[0],
 		);
 	}
 

@@ -181,6 +181,9 @@ export function formatCost(value: unknown, locale?: string): string {
 		return new Intl.NumberFormat(locale || undefined, {
 			style: "currency",
 			currency: "USD",
+			// Chromium's ICU renders plain USD as "US$" in en locales; the narrow
+			// symbol pins it to "$" across runtimes (Node already formats "$").
+			currencyDisplay: "narrowSymbol",
 			minimumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
 			maximumFractionDigits: 4,
 		}).format(value);

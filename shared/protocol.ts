@@ -254,6 +254,15 @@ export type HostToWebviewMessage =
 	  }
 	| { type: "setComposerText"; text: string };
 
+/**
+ * How a submitted prompt is delivered relative to a turn pi is already running.
+ *
+ * Forwarded as pi's `streamingBehavior`. Omitting the field keeps the historical
+ * behavior: the host steers only when it knows pi is streaming. pi ignores the
+ * field when idle, so a forced mode degrades to a plain prompt.
+ */
+export type SubmitDelivery = "steer" | "followUp";
+
 export type WebviewToHostMessage =
 	| { type: "ready" }
 	| { type: "composerFocused"; requestId: number }
@@ -268,6 +277,8 @@ export type WebviewToHostMessage =
 				start: number;
 				end: number;
 			}>;
+			/** Omitted lets the host decide from the streaming state it knows. */
+			delivery?: SubmitDelivery;
 	  }
 	| { type: "abort"; actionId: string }
 	| { type: "newSession"; actionId: string }
@@ -380,7 +391,10 @@ export function parseWebviewMessage(
 		);
 		const references = parseReferenceIdentities(message.references);
 		if (!actionId || text === undefined || !attachmentIds || !references) return;
-		return { type, actionId, text, attachmentIds, references };
+		const delivery = parseSubmitDelivery(message.delivery);
+		return delivery
+			? { type, actionId, text, attachmentIds, references, delivery }
+			: { type, actionId, text, attachmentIds, references };
 	}
 	if (type === "forkSession") {
 		const actionId = boundedString(message.actionId, MAX_ACTION_ID_LENGTH);
@@ -456,6 +470,10 @@ export function parseWebviewMessage(
 			: { type, path: workspacePath, line };
 	}
 	return;
+}
+
+function parseSubmitDelivery(value: unknown): SubmitDelivery | undefined {
+	return value === "steer" || value === "followUp" ? value : undefined;
 }
 
 function parseReferenceIdentities(value: unknown):

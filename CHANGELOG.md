@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.3
+
+- Fix session history coming up empty on Windows. The sidebar encodes the
+  workspace path into pi's per-project session directory name
+  (`~/.pi/agent/sessions/--<encoded-cwd>--`), but collapsed separator runs
+  where pi replaces each one, so the Windows drive prefix `C:\` produced
+  `--C-Users-...--` where pi writes `--C--Users-...--`. The encoding now
+  matches pi's `getDefaultSessionDirPath` character for character, so existing
+  Windows sessions are found without the `piAgentSidebar.sessionDirectory`
+  workaround. POSIX-encoded names are unchanged.
+
 ## 0.7.2
 
 - Queue a message as a follow-up with `Alt+Enter`, matching pi's TUI shortcut.

@@ -27,8 +27,13 @@ interface SessionLines {
 }
 
 function sessionDirectoryName(cwd: string): string {
-	const normalized = cwd.replace(/^[/\\]+/, "").replace(/[:/\\]+/g, "-");
-	return path.basename(`--${normalized}--`);
+	// Must match pi's getDefaultSessionDirPath character for character
+	// (dist/core/session-manager.js): strip exactly one leading separator and
+	// replace each separator individually. Collapsing runs turns the Windows
+	// drive prefix C:\Users\... into --C-Users-...-- while pi writes
+	// --C--Users-...-- so the session history silently comes up empty.
+	const normalized = cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
+	return `--${normalized}--`;
 }
 
 export function resolveSessionDirectory(

@@ -173,6 +173,8 @@ export function messageHtml(
 
 function userMessageHtml(message: PiMessage): string {
 	const rawText = contentText(message.content);
+	const skill = parseSkillBlock(rawText);
+	if (skill) return skillMessageHtml(skill);
 	const contextMatch = rawText.match(
 		/^<pi-context>\n([\s\S]*?)\n<\/pi-context>\n\n/u,
 	);
@@ -190,6 +192,57 @@ function userMessageHtml(message: PiMessage): string {
 		)
 		.join("");
 	return `<article class="message user-message"><div class="user-message-text">${bodyHtml}</div>${imageHtml}</article>`;
+}
+
+/**
+ * One `<skill>` payload pi inlines into a user turn when a `/skill:name`
+ * command expands, plus whatever text the reader typed after the command.
+ *
+ * The regex mirrors pi's `parseSkillBlock` (pi core/agent-session.js), the same
+ * shape its TUI matches before collapsing the block into a `[skill]` card —
+ * dumping the whole SKILL.md into the user bubble instead would bury the
+ * reader's own words under a screenful of markdown source.
+ */
+interface SkillBlock {
+	name: string;
+	location: string;
+	content: string;
+	userMessage: string;
+}
+
+function parseSkillBlock(text: string): SkillBlock | undefined {
+	const match = text.match(
+		/^<skill name="([^"]+)" location="([^"]+)">\n([\s\S]*?)\n<\/skill>(?:\n\n([\s\S]+))?$/u,
+	);
+	if (!match) return undefined;
+	return {
+		name: match[1] ?? "",
+		location: match[2] ?? "",
+		content: match[3] ?? "",
+		userMessage: match[4] ?? "",
+	};
+}
+
+/**
+ * A skill invocation, split the way pi's TUI splits it: the SKILL.md payload
+ * becomes a collapsed `[skill] name` card (expand to read the rendered
+ * markdown), and the arguments typed after the command stay a separate user
+ * bubble below it.
+ *
+ * The card is its own control carrying the same `data-expandable` contract as
+ * a tool box — this webview's CSP forbids inline handlers, so toggling goes
+ * through the delegated handler in `main.ts`, and the file path rides in the
+ * `title` because the card itself has no room for it.
+ */
+function skillMessageHtml(skill: SkillBlock): string {
+	const lines = skill.content.replace(/\n$/u, "").split("\n").length;
+	const hint = `<span class="skill-hint">${lines} ${lines === 1 ? "line" : "lines"}</span>`;
+	const header = `<div class="skill-header"><span class="skill-label">[skill]</span> <span class="skill-name">${escapeHtml(skill.name)}</span>${hint}</div>`;
+	const body = `<div class="skill-body">${markdown(skill.content, true)}</div>`;
+	const card = `<div class="skill-block expandable" data-expandable="skill" data-skill-key="${escapeHtml(skill.name)}" role="button" tabindex="0" aria-expanded="false" title="${escapeHtml(skill.location)}">${header}${body}</div>`;
+	if (!skill.userMessage) return card;
+	const messageHtml = renderUserBodyHtml(skill.userMessage, []);
+	return `${card}<article class="message user-message"><div class="user-message-text">${messageHtml}</div></article>`;
 }
 
 function markerSpanHtml(marker: InlineMarker): string {

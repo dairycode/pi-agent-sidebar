@@ -1777,7 +1777,7 @@ function createMessageNode(
  * it. Reasoning has to carry both directions because its default is expanded:
  * restoring only "was open" would re-expand every block the reader had just
  * collapsed. A tool box defaults to collapsed, so only the expanded ones need
- * recording.
+ * recording; skill cards share that collapsed-by-default shape.
  *
  * Streaming reasoning is skipped: it has no collapse control while its content
  * is still arriving.
@@ -1785,6 +1785,7 @@ function createMessageNode(
 interface ExpandableSnapshot {
 	thinking: Map<string, boolean>;
 	tools: Set<string>;
+	skills: Set<string>;
 }
 
 function captureExpandableState(previous: Element): ExpandableSnapshot {
@@ -1802,14 +1803,26 @@ function captureExpandableState(previous: Element): ExpandableSnapshot {
 		const key = tool.dataset.toolKey;
 		if (key) tools.add(key);
 	}
-	return { thinking, tools };
+	const skills = new Set<string>();
+	for (const skill of previous.querySelectorAll<HTMLElement>(
+		".skill-block[data-skill-key]",
+	)) {
+		const key = skill.dataset.skillKey;
+		if (key && skill.classList.contains("expanded")) skills.add(key);
+	}
+	return { thinking, tools, skills };
 }
 
 function applyExpandableState(
 	node: Element,
 	snapshot: ExpandableSnapshot,
 ): void {
-	if (snapshot.thinking.size === 0 && snapshot.tools.size === 0) return;
+	if (
+		snapshot.thinking.size === 0 &&
+		snapshot.tools.size === 0 &&
+		snapshot.skills.size === 0
+	)
+		return;
 	for (const block of node.querySelectorAll<HTMLElement>(
 		".thinking-block:not(.streaming)[data-thinking-key]",
 	)) {
@@ -1823,6 +1836,12 @@ function applyExpandableState(
 	)) {
 		const key = tool.dataset.toolKey;
 		if (key && snapshot.tools.has(key)) setExpandedState(tool, true);
+	}
+	for (const skill of node.querySelectorAll<HTMLElement>(
+		".skill-block[data-skill-key]",
+	)) {
+		const key = skill.dataset.skillKey;
+		if (key && snapshot.skills.has(key)) setExpandedState(skill, true);
 	}
 }
 

@@ -70,11 +70,13 @@
 
 	/* Backgrounds & content. The `*-bg` hues here are mixed into translucent
 	   surfaces further down; these raw values are the hue source, not the
-	   surface. userMessage and customMessage start from pi's values raised in
-	   chroma for glare legibility (departure 5); selectedBg stays pi's neutral. */
+	   surface. userMessage starts from pi's value raised in chroma for glare
+	   legibility (departure 5); selectedBg stays pi's neutral. customMessage
+	   has no hue of its own any more — its surface resolves to the tool-box
+	   tint (see the mix below), which is what fixed the glare legibility the
+	   old dark slab lacked. */
 	--pi-theme-selected-bg-hue: #3a3a4a;
 	--pi-theme-user-message-bg-hue: #333b55;
-	--pi-theme-custom-message-bg-hue: #342e5c;
 	--pi-theme-custom-message-label: #9575cd;
 	--pi-theme-tool-output: #808080;
 
@@ -167,7 +169,6 @@ body.vscode-high-contrast-light {
 	   visible at the mix strengths below. */
 	--pi-theme-selected-bg-hue: #d0d0e0;
 	--pi-theme-user-message-bg-hue: #e6eaf3;
-	--pi-theme-custom-message-bg-hue: #ede7f6;
 	--pi-theme-custom-message-label: #7e57c2;
 	--pi-theme-tool-output: #6c6c6c;
 
@@ -262,11 +263,13 @@ body {
 		var(--pi-theme-user-message-bg-hue) var(--pi-theme-message-bg-strength),
 		transparent
 	);
-	--pi-theme-custom-message-bg: color-mix(
-		in srgb,
-		var(--pi-theme-custom-message-bg-hue) var(--pi-theme-message-bg-strength),
-		transparent
-	);
+	/* Extension custom messages and skill cards share one surface, and it is
+	   the tool-box tint rather than a mix of their own hue: the dark palette's
+	   old customMessage slab (#342e5c at 45%) measured ~1:1 against the
+	   sidebar — invisible under glare, the exact failure the light-tint tool
+	   fix (commit 1112d40) already solved. Both consumers render dense content
+	   on the surface, so they inherit that fix wholesale. */
+	--pi-theme-custom-message-bg: var(--pi-theme-tool-pending-bg);
 
 	/* pi lets these fall back to `selectedBg` / `text`; mirroring that here
 	   means a future explicit value only has to be set in one place. */

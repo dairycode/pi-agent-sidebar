@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.4
+
+- Render pi's `/skill:name` invocations the way its TUI does. The SKILL.md
+  payload collapses into a `[skill] name` card — markdown body rendered on
+  demand, expansion state preserved across transcript rebuilds — and the
+  arguments typed after the command stay a separate user bubble, instead of
+  the whole block dumping into the user message as raw markdown source.
+- Unify extension custom messages and skill cards on the tool-box surface
+  tint. The dark palette's custom-message fill was a dark slab measuring ~1:1
+  against the sidebar, invisible under bright light — the same failure an
+  earlier fix solved for tool boxes. Both surfaces now inherit that fix.
+
 ## 0.7.3
 
 - Fix session history coming up empty on Windows. The sidebar encodes the

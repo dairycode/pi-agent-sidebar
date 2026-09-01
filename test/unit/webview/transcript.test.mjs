@@ -199,3 +199,101 @@ test("live successful tool diff replaces persisted tool output", async () => {
 		await loaded.dispose();
 	}
 });
+
+test("skill invocation renders as a collapsed card with the arguments below", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const content = [
+			'<skill name="code-review" location="/skills/code-review/SKILL.md">',
+			"References are relative to /skills/code-review.",
+			"",
+			"# Code Review Skill",
+			"",
+			"Review the diff carefully.",
+			"</skill>",
+			"",
+			"please review my branch",
+		].join("\n");
+		const html = loaded.module.messageHtml(
+			{ role: "user", content },
+			new Map(),
+			new Map(),
+			false,
+			"message-skill",
+		);
+
+		assert.match(
+			html,
+			/class="skill-block expandable" data-expandable="skill" data-skill-key="code-review"/u,
+		);
+		// Collapsed by default, like pi's SkillInvocationMessageComponent; the
+		// file path has no room in the card so it rides in the title.
+		assert.match(html, /aria-expanded="false"/u);
+		assert.match(html, /title="\/skills\/code-review\/SKILL\.md"/u);
+		assert.match(html, /<span class="skill-label">\[skill\]<\/span>/u);
+		assert.match(html, /<span class="skill-name">code-review<\/span>/u);
+		assert.match(html, /<span class="skill-hint">5 lines<\/span>/u);
+		// The body renders through the same sanitized markdown pipeline as any
+		// other message content (the mocked marked wraps it in <p>).
+		assert.match(html, /<div class="skill-body"><p>/u);
+		// The typed arguments stay a separate user bubble, not raw text inside
+		// the card.
+		assert.match(
+			html,
+			/<article class="message user-message"><div class="user-message-text">please review my branch<\/div><\/article>/u,
+		);
+		// No arguments after </skill> means no empty bubble.
+		const bare = loaded.module.messageHtml(
+			{
+				role: "user",
+				content:
+					'<skill name="code-review" location="/skills/code-review/SKILL.md">\nbody\n</skill>',
+			},
+			new Map(),
+			new Map(),
+			false,
+			"message-skill-bare",
+		);
+		assert.match(bare, /skill-block/u);
+		assert.doesNotMatch(bare, /user-message/u);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("skill card escapes the payload and leaves plain user text alone", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const hostile = loaded.module.messageHtml(
+			{
+				role: "user",
+				content:
+					'<skill name="<img src=x onerror=alert(1)>" location="<script>">\nbody\n</skill>',
+			},
+			new Map(),
+			new Map(),
+			false,
+			"message-skill-hostile",
+		);
+		assert.match(
+			hostile,
+			/data-skill-key="&lt;img src=x onerror=alert\(1\)&gt;"/u,
+		);
+		assert.match(hostile, /title="&lt;script&gt;"/u);
+		assert.doesNotMatch(hostile, /<img src=x/u);
+
+		// An unclosed tag is ordinary prose, not a skill invocation: it must
+		// keep the plain user-message rendering.
+		const partial = loaded.module.messageHtml(
+			{ role: "user", content: '<skill name="broken">\nnever closed' },
+			new Map(),
+			new Map(),
+			false,
+			"message-skill-partial",
+		);
+		assert.doesNotMatch(partial, /skill-block/u);
+		assert.match(partial, /class="message user-message"/u);
+	} finally {
+		await loaded.dispose();
+	}
+});

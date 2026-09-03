@@ -49,11 +49,12 @@
 	left: 8px;
 	display: flex;
 	min-width: 0;
-	/* Frames its text exactly like the composer's field, since the two are read as
-	   the same kind of surface at opposite ends of the pane. The right inset is the
-	   edge gap plus the out-of-flow toggle's own width plus a 4px gutter, so text
-	   ellipsises before it reaches the control. */
-	padding: var(--pi-field-pad-block) 8px;
+	/* Keep the pinned navigator denser than the source message so it occupies less
+	   reading space. Font, line height, and left inset still match the source; only
+	   the vertical frame tightens. The right inset is the edge gap plus the
+	   out-of-flow toggle's own width plus a 4px gutter, so text ellipsises before
+	   it reaches the control. */
+	padding: 7px 8px;
 	padding-right: calc(8px + var(--pi-control-size) + 4px);
 	padding-left: 9px;
 	border-bottom: 1px solid var(--pi-border-subtle);
@@ -120,11 +121,7 @@
    difference between the control and one line. */
 .pinned-prompt .pinned-prompt-toggle {
 	position: absolute;
-	top: calc(
-		var(--pi-field-pad-block) +
-		(var(--pi-line) - var(--pi-control-size)) /
-		2
-	);
+	top: calc(7px + (var(--pi-line) - var(--pi-control-size)) / 2);
 	right: 8px;
 }
 

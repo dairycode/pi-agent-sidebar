@@ -77,12 +77,6 @@
 	/* Shared size for every composer-toolbar control: icon buttons, the model
 	   and thinking pickers, and the send button. */
 	--pi-control-size: 28px;
-	/* Vertical distance from a field's border to its first line of text. Owned
-	   here rather than by the composer because the pinned prompt row frames its
-	   text the same way, and the two are seen one above the other — a drift
-	   between them reads as one of the surfaces being misaligned. See
-	   `.prompt-highlights` for where the value itself comes from. */
-	--pi-field-pad-block: 12.5px;
 }
 
 /* The accent chain, resolved from the pi palette so the composer, buttons, and

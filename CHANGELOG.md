@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.5
+
+- Keep the pinned prompt compact without changing the source message. Its font,
+  line height, and text column still align with the original user turn, while a
+  tighter vertical inset makes the persistent navigation surface consume less
+  reading space. The bottom divider, shadow, and expansion control remain.
+
 ## 0.7.4
 
 - Render pi's `/skill:name` invocations the way its TUI does. The SKILL.md

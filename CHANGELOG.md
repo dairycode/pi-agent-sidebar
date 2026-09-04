@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.6
+
+- Smoothly follow streaming transcript growth instead of jumping on every delta,
+  while respecting the user's reduced-motion preference and immediately yielding
+  when they scroll toward older messages.
+- Make bottom reattachment resilient to inertial scrolling without mistaking
+  delayed programmatic scroll events or browser overflow anchoring for reader
+  intent, preventing the transcript from pulling an upward-scrolling reader back
+  to the latest message.
+
 ## 0.7.5
 
 - Keep the pinned prompt compact without changing the source message. Its font,

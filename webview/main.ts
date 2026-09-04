@@ -349,7 +349,15 @@ const pinnedPrompt = new PinnedPromptController({
  * Streaming appends to the transcript every frame, so this is what keeps an
  * upward scroll from being undone by the next delta.
  */
-const scrollAnchor = new ScrollAnchor({ viewport: elements.transcript });
+const reducedMotionQuery = window.matchMedia(
+	"(prefers-reduced-motion: reduce)",
+);
+const scrollAnchor = new ScrollAnchor({
+	viewport: elements.transcript,
+	requestFrame: (callback) => window.requestAnimationFrame(callback),
+	cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+	shouldAnimate: () => !reducedMotionQuery.matches,
+});
 
 const transcriptView = new TranscriptView<Element>({
 	container: elements.messages,

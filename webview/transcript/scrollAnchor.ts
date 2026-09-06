@@ -69,6 +69,10 @@ export class ScrollAnchor {
 	private animationTargetScrollTop: number | undefined;
 	private previousFrameTime: number | undefined;
 	private lastDistanceFromBottom: number | undefined;
+	private lastScrollTop: number | undefined;
+	private readerControlsViewport = false;
+	private readerReachedBottom = false;
+	private readerScrollDirection: -1 | 0 | 1 = 0;
 	private readonly bottomThresholdPx: number;
 	private readonly attachWindowPx: number;
 
@@ -83,20 +87,44 @@ export class ScrollAnchor {
 		return this.following;
 	}
 
+	/** True while native user scrolling exclusively owns scrollTop. */
+	public get isReaderScrolling(): boolean {
+		return this.readerControlsViewport;
+	}
+
 	/**
 	 * Reports a reader gesture, in the wheel event's sign convention (negative
 	 * scrolls up, towards older messages).
 	 *
 	 * Upward gestures detach here rather than waiting for the resulting scroll
 	 * event, so the very first frame of the gesture is already exempt from
-	 * auto-scrolling. Downward gestures are ignored: they are handled by the
-	 * bottom check in `noteScroll`, which re-attaches only once the bottom is
-	 * actually reached instead of guessing from momentum.
+	 * auto-scrolling. A downward gesture records the direction but does not
+	 * re-attach by itself: `noteScroll` still waits until the viewport reaches the
+	 * bottom window. Keeping that direction lets native inertia win over content
+	 * growth during the handoff.
 	 */
-	public noteUserIntent(deltaY: number): void {
-		if (deltaY >= 0) return;
+	public noteUserIntent(deltaY: number): boolean {
+		if (deltaY === 0) return false;
+		// A downward wheel/touch gesture at an already-followed bottom cannot move
+		// the native viewport. Detaching here would let streaming content drift for
+		// the debounce interval and create a visible catch-up pause for no reason.
+		if (
+			deltaY > 0 &&
+			this.following &&
+			!this.readerControlsViewport &&
+			this.distanceFromBottom() <= this.bottomThresholdPx
+		) {
+			return false;
+		}
+		this.readerControlsViewport = true;
+		this.readerScrollDirection = deltaY > 0 ? 1 : -1;
+		if (deltaY < 0) this.readerReachedBottom = false;
+		else if (this.distanceFromBottom() <= this.bottomThresholdPx) {
+			this.readerReachedBottom = true;
+		}
 		this.following = false;
 		this.cancelAnimation();
+		return true;
 	}
 
 	/**
@@ -105,49 +133,102 @@ export class ScrollAnchor {
 	 * Safe to call on every scroll event: it only reads scroll offsets, which are
 	 * already up to date inside a scroll handler and so force no extra layout.
 	 */
-	public noteScroll(): void {
+	public noteScroll(): boolean {
 		const { scrollTop } = this.options.viewport;
 		const distanceFromBottom = this.distanceFromBottom();
 		const previousDistanceFromBottom = this.lastDistanceFromBottom;
+		const previousScrollTop = this.lastScrollTop;
 		this.lastDistanceFromBottom = distanceFromBottom;
+		this.lastScrollTop = scrollTop;
 
-		// A programmatic assignment can dispatch its scroll event after an upward
-		// gesture has already cancelled the animation. Classify it before any
-		// re-attachment rule so that stale event cannot undo the reader's intent.
-		if (this.isAtExpectedScrollTop(scrollTop)) return;
-		if (distanceFromBottom <= this.bottomThresholdPx) {
-			this.following = true;
-			this.expectedScrollTop = scrollTop;
-			if (distanceFromBottom <= SMOOTH_SCROLL_SETTLE_PX) {
-				this.cancelAnimation();
+		// A delayed event from our own assignment must not steal ownership after a
+		// newer gesture. The explicit gesture state remains intact for its debounce.
+		if (this.isAtExpectedScrollTop(scrollTop)) {
+			return this.readerControlsViewport;
+		}
+
+		if (this.readerControlsViewport) {
+			const distanceChanged =
+				previousDistanceFromBottom === undefined ||
+				Math.abs(distanceFromBottom - previousDistanceFromBottom) >
+					PROGRAMMATIC_TOLERANCE_PX;
+			if (
+				distanceChanged &&
+				previousScrollTop !== undefined &&
+				scrollTop !== previousScrollTop
+			) {
+				this.readerScrollDirection = scrollTop > previousScrollTop ? 1 : -1;
+				if (scrollTop < previousScrollTop) this.readerReachedBottom = false;
 			}
-			return;
+			if (distanceFromBottom <= this.bottomThresholdPx) {
+				this.readerReachedBottom = true;
+			}
+			this.following = false;
+			this.cancelAnimation();
+			// Overflow anchoring raises scrollTop by exactly the content growth while
+			// preserving bottom distance. It is not continued reader motion and must
+			// not keep resetting the native-scroll settle timer during a long stream.
+			return distanceChanged;
 		}
-		// A return-to-bottom can land in the attach window on its final inertial
-		// tick even though it is still short of the strict bottom line — and when
-		// streaming keeps growing the content, no further scroll event ever
-		// arrives, so the detached state would stick forever. Compare bottom
-		// distance rather than scrollTop: overflow anchoring can increase scrollTop
-		// while preserving the reader's exact visual position.
-		const scrollingTowardBottom =
-			previousDistanceFromBottom !== undefined &&
-			distanceFromBottom < previousDistanceFromBottom;
-		if (
-			!this.following &&
-			scrollingTowardBottom &&
-			distanceFromBottom <= this.attachWindowPx
-		) {
-			this.following = true;
-			this.expectedScrollTop = scrollTop;
-			return;
-		}
+
+		// Scrollbar drags and keyboard scrolling have no wheel/touch intent event.
+		// Every unexpected offset, including a direct drag onto the bottom line,
+		// starts an exclusive reader-owned phase. Re-attaching inside this event
+		// would race a thumb still being dragged or native momentum still running.
+		this.readerControlsViewport = true;
+		this.readerReachedBottom = distanceFromBottom <= this.bottomThresholdPx;
+		this.readerScrollDirection =
+			previousScrollTop === undefined || scrollTop === previousScrollTop
+				? this.readerReachedBottom
+					? 1
+					: 0
+				: scrollTop > previousScrollTop
+					? 1
+					: -1;
+		this.following = false;
+		this.cancelAnimation();
+		return true;
+	}
+
+	/**
+	 * Ends the debounced native-scroll phase and reports whether following resumed.
+	 * Content may have grown after the reader touched the bottom, so reaching it
+	 * at any point during a downward gesture is enough to hand ownership back.
+	 */
+	public finishUserScroll(): boolean {
+		if (!this.readerControlsViewport) return false;
+		const shouldFollow =
+			this.readerScrollDirection > 0 &&
+			(this.readerReachedBottom ||
+				this.distanceFromBottom() <= this.attachWindowPx);
+		this.readerControlsViewport = false;
+		this.readerReachedBottom = false;
+		this.readerScrollDirection = 0;
+		if (!shouldFollow) return false;
+		this.following = true;
+		this.expectedScrollTop = this.options.viewport.scrollTop;
+		return true;
+	}
+
+	/** Detaches for a local layout change without starting native-scroll ownership. */
+	public detach(): void {
+		this.readerControlsViewport = false;
+		this.readerReachedBottom = false;
+		this.readerScrollDirection = 0;
 		this.following = false;
 		this.cancelAnimation();
 	}
 
 	/** Forces following again, for actions that imply "show me the latest". */
 	public follow(): void {
+		this.readerControlsViewport = false;
+		this.readerReachedBottom = false;
+		this.readerScrollDirection = 0;
 		this.following = true;
+		this.cancelAnimation();
+		this.expectedScrollTop = undefined;
+		this.lastDistanceFromBottom = undefined;
+		this.lastScrollTop = undefined;
 	}
 
 	/**
@@ -157,18 +238,29 @@ export class ScrollAnchor {
 	 * clamped value still counts as ours in `noteScroll`.
 	 */
 	public stickToBottomIfFollowing(): boolean {
-		if (!this.following) return false;
 		const { viewport } = this.options;
 		const targetScrollTop = Math.max(
 			0,
 			viewport.scrollHeight - viewport.clientHeight,
 		);
+		if (!this.following) return false;
 		if (
 			this.canAnimate() &&
 			targetScrollTop - viewport.scrollTop > SMOOTH_SCROLL_SETTLE_PX
 		) {
+			const isStartingAnimation = this.animationTargetScrollTop === undefined;
 			this.animationTargetScrollTop = targetScrollTop;
 			this.expectedScrollTop = viewport.scrollTop;
+			// render() has already grown the transcript in this animation frame. If
+			// following only schedules another rAF, the newly attached viewport stays
+			// visibly still for one paint while its bottom moves away. Advance once
+			// when starting, then let rAF continue and retarget the same motion.
+			if (
+				isStartingAnimation &&
+				this.advanceAnimation(DEFAULT_FRAME_DURATION_MS)
+			) {
+				return true;
+			}
 			this.scheduleAnimationFrame();
 			return true;
 		}
@@ -211,23 +303,34 @@ export class ScrollAnchor {
 			MAX_FRAME_DURATION_MS,
 		);
 		this.previousFrameTime = timestamp;
-		const progress =
-			1 - Math.exp(-frameDuration / SMOOTH_SCROLL_TIME_CONSTANT_MS);
-		const remaining = targetScrollTop - viewport.scrollTop;
-		viewport.scrollTop =
-			remaining <= SMOOTH_SCROLL_SETTLE_PX
-				? targetScrollTop
-				: viewport.scrollTop + remaining * progress;
-		this.expectedScrollTop = viewport.scrollTop;
-
-		if (targetScrollTop - viewport.scrollTop <= SMOOTH_SCROLL_SETTLE_PX) {
-			viewport.scrollTop = targetScrollTop;
-			this.expectedScrollTop = viewport.scrollTop;
-			this.cancelAnimation();
-			return;
-		}
+		if (this.advanceAnimation(frameDuration)) return;
 		this.scheduleAnimationFrame();
 	};
+
+	/** Advances toward the current target and reports whether it settled. */
+	private advanceAnimation(frameDuration: number): boolean {
+		const targetScrollTop = this.animationTargetScrollTop;
+		if (targetScrollTop === undefined) return true;
+		const { viewport } = this.options;
+		const remaining = targetScrollTop - viewport.scrollTop;
+		if (remaining <= 0) {
+			this.expectedScrollTop = viewport.scrollTop;
+			this.cancelAnimation();
+			return true;
+		}
+		const progress =
+			1 - Math.exp(-frameDuration / SMOOTH_SCROLL_TIME_CONSTANT_MS);
+		viewport.scrollTop += remaining * progress;
+		this.expectedScrollTop = viewport.scrollTop;
+
+		if (targetScrollTop - viewport.scrollTop > SMOOTH_SCROLL_SETTLE_PX) {
+			return false;
+		}
+		viewport.scrollTop = targetScrollTop;
+		this.expectedScrollTop = viewport.scrollTop;
+		this.cancelAnimation();
+		return true;
+	}
 
 	private cancelAnimation(): void {
 		if (this.animationFrame !== undefined) {

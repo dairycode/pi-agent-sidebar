@@ -10,9 +10,28 @@ async function loadScrollAnchor() {
 	});
 }
 
-/** A scroll container whose height and offset the test drives directly. */
+/** A scroll container with the same bottom clamping as a real element. */
 function fakeViewport({ scrollHeight = 1000, clientHeight = 400 } = {}) {
-	return { scrollTop: scrollHeight - clientHeight, scrollHeight, clientHeight };
+	let currentScrollHeight = scrollHeight;
+	let currentScrollTop = scrollHeight - clientHeight;
+	return {
+		get scrollTop() {
+			return currentScrollTop;
+		},
+		set scrollTop(value) {
+			currentScrollTop = Math.max(
+				0,
+				Math.min(value, currentScrollHeight - clientHeight),
+			);
+		},
+		get scrollHeight() {
+			return currentScrollHeight;
+		},
+		set scrollHeight(value) {
+			currentScrollHeight = value;
+		},
+		clientHeight,
+	};
 }
 
 test("a fresh anchor follows the bottom and pins on request", async () => {
@@ -24,7 +43,7 @@ test("a fresh anchor follows the bottom and pins on request", async () => {
 		assert.equal(anchor.isFollowing, true);
 		viewport.scrollHeight = 1200;
 		assert.equal(anchor.stickToBottomIfFollowing(), true);
-		assert.equal(viewport.scrollTop, 1200);
+		assert.equal(viewport.scrollTop, 800);
 	} finally {
 		await loaded.dispose();
 	}
@@ -56,9 +75,16 @@ test("streaming growth is eased into the latest bottom position", async () => {
 
 		viewport.scrollHeight = 1200;
 		anchor.stickToBottomIfFollowing();
-		assert.equal(viewport.scrollTop, 600, "the first update must not jump");
+		const positionAfterStart = viewport.scrollTop;
+		assert.ok(
+			positionAfterStart > 600 && positionAfterStart < 800,
+			"the first update should move without jumping to the bottom",
+		);
 		runFrame(0);
-		assert.ok(viewport.scrollTop > 600 && viewport.scrollTop < 800);
+		assert.ok(
+			viewport.scrollTop > positionAfterStart && viewport.scrollTop < 800,
+			"the next frame should continue the same smooth motion",
+		);
 
 		const positionBeforeRetarget = viewport.scrollTop;
 		viewport.scrollHeight = 1400;
@@ -145,7 +171,7 @@ test("an upward gesture detaches before any scrolling happens", async () => {
 	}
 });
 
-test("downward gestures alone do not re-attach; reaching the bottom does", async () => {
+test("downward gestures re-attach only after native scrolling settles", async () => {
 	const loaded = await loadScrollAnchor();
 	try {
 		const viewport = fakeViewport();
@@ -155,15 +181,58 @@ test("downward gestures alone do not re-attach; reaching the bottom does", async
 		anchor.noteScroll();
 		assert.equal(anchor.isFollowing, false);
 
-		// Scrolling back down mid-flight is not enough: re-attaching early would
-		// make the transcript jump ahead of the reader's own momentum.
 		anchor.noteUserIntent(40);
 		viewport.scrollTop = 500;
 		anchor.noteScroll();
 		assert.equal(anchor.isFollowing, false);
+		assert.equal(anchor.stickToBottomIfFollowing(), false);
 
 		viewport.scrollTop = 600;
 		anchor.noteScroll();
+		assert.equal(
+			anchor.isFollowing,
+			false,
+			"reaching the bottom must not race native momentum",
+		);
+		assert.equal(anchor.finishUserScroll(), true);
+		assert.equal(anchor.isFollowing, true);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a downward gesture at an already-followed bottom keeps following", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+
+		anchor.noteUserIntent(40);
+		viewport.scrollHeight += 20;
+
+		assert.equal(anchor.isReaderScrolling, false);
+		assert.equal(anchor.isFollowing, true);
+		assert.equal(anchor.stickToBottomIfFollowing(), true);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a scrollbar drag can reverse direction and settle at the bottom", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+
+		viewport.scrollTop = 200;
+		anchor.noteScroll();
+		viewport.scrollTop = 400;
+		anchor.noteScroll();
+		viewport.scrollTop = 600;
+		anchor.noteScroll();
+
+		assert.equal(anchor.isFollowing, false);
+		assert.equal(anchor.finishUserScroll(), true);
 		assert.equal(anchor.isFollowing, true);
 	} finally {
 		await loaded.dispose();
@@ -221,6 +290,29 @@ test("follow() overrides a detached state for send and session switches", async 
 	}
 });
 
+test("follow clears scroll observations from the previous session", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+		anchor.noteUserIntent(-100);
+		viewport.scrollTop = 200;
+		anchor.noteScroll();
+
+		anchor.follow();
+		viewport.scrollTop = 300;
+		anchor.noteScroll();
+
+		assert.equal(
+			anchor.isFollowing,
+			false,
+			"the first new-session scroll must not inherit the old direction",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("the bottom threshold is tight enough that short drags still detach", async () => {
 	const loaded = await loadScrollAnchor();
 	try {
@@ -241,33 +333,93 @@ test("the bottom threshold is tight enough that short drags still detach", async
 	}
 });
 
-test("a downward scroll into the attach window re-attaches before the strict line", async () => {
+test("a downward scroll in the attach window waits for scroll settle", async () => {
 	const loaded = await loadScrollAnchor();
 	try {
 		const viewport = fakeViewport();
 		const anchor = new loaded.module.ScrollAnchor({ viewport });
 		anchor.noteUserIntent(-40);
+		viewport.scrollTop = 576;
+		anchor.noteScroll();
 		assert.equal(anchor.isFollowing, false);
 
-		// The last inertial tick of a return-to-bottom can land a few pixels
-		// short of the strict 4px line while streaming keeps growing the content;
-		// with no further scroll event arriving, that state would stick forever.
-		// A scroll still moving towards the bottom inside the attach window is
-		// the next tick of the same gesture, so it re-attaches.
-		viewport.scrollTop = 576; // 24px above the bottom: unknown direction
+		anchor.noteUserIntent(40);
+		viewport.scrollTop = 580;
 		anchor.noteScroll();
-		assert.equal(
-			anchor.isFollowing,
-			false,
-			"the first observed scroll must be conservative",
-		);
+		assert.equal(anchor.isFollowing, false);
+		assert.equal(anchor.stickToBottomIfFollowing(), false);
 
-		viewport.scrollTop = 580; // 20px above the bottom, moving downwards
+		assert.equal(anchor.finishUserScroll(), true);
+		assert.equal(anchor.isFollowing, true);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("continued downward inertia exclusively owns scrollTop until settle", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+		anchor.noteUserIntent(-40);
+		viewport.scrollTop = 500;
 		anchor.noteScroll();
-		assert.equal(
-			anchor.isFollowing,
-			true,
-			"a downward scroll into the window re-attaches",
+		anchor.noteUserIntent(40);
+
+		for (const scrollTop of [576, 580, 584, 588, 592, 600]) {
+			viewport.scrollTop = scrollTop;
+			anchor.noteScroll();
+			assert.equal(anchor.isFollowing, false);
+			assert.equal(
+				anchor.stickToBottomIfFollowing(),
+				false,
+				"the follower must never write during native inertia",
+			);
+		}
+
+		assert.equal(anchor.finishUserScroll(), true);
+		assert.equal(anchor.isFollowing, true);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("smooth following starts only after native return-to-bottom settles", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		let nextHandle = 0;
+		let nextFrame;
+		const anchor = new loaded.module.ScrollAnchor({
+			viewport,
+			requestFrame: (callback) => {
+				nextHandle += 1;
+				nextFrame = callback;
+				return nextHandle;
+			},
+			cancelFrame: () => {
+				nextFrame = undefined;
+			},
+		});
+
+		anchor.noteUserIntent(-40);
+		viewport.scrollTop = 500;
+		anchor.noteScroll();
+		anchor.noteUserIntent(40);
+		viewport.scrollTop = 600;
+		anchor.noteScroll();
+		// Streaming may grow after the reader touched the bottom but before the
+		// native-scroll debounce fires. The recorded contact still permits handoff.
+		viewport.scrollHeight += 12;
+		assert.equal(anchor.stickToBottomIfFollowing(), false);
+		assert.equal(nextFrame, undefined);
+
+		assert.equal(anchor.finishUserScroll(), true);
+		anchor.stickToBottomIfFollowing();
+		assert.ok(viewport.scrollTop > 600 && viewport.scrollTop < 612);
+		assert.ok(
+			nextFrame,
+			"the follower should continue after ownership transfers",
 		);
 	} finally {
 		await loaded.dispose();

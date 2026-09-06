@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { marked } from "marked";
+import { marked, type Token, type Tokens } from "marked";
 import {
 	parseFileReferencePayload,
 	parseSelectionReferencePayload,
@@ -59,7 +59,10 @@ export interface TranscriptLiveTool {
 	name: string;
 	args: JsonRecord;
 	status: "running" | "success" | "error";
-	output: string;
+	/** Raw pi result retained until the reader expands the collapsed card. */
+	result?: unknown;
+	/** Legacy/test inputs; the webview hot path stores `result` instead. */
+	output?: string;
 	diff?: string;
 	startedAt: number;
 	/**
@@ -375,25 +378,75 @@ function assistantMessageHtml(
  * leading sections of an earlier frame always match the leading sections of the
  * next, which is exactly the alignment an in-place updater needs.
  */
+export interface AssistantMessageSection {
+	key: string;
+	hash: string;
+	html: string;
+	streamUpdate?: {
+		selector?: string;
+		text: string;
+		format: "markdown" | "plain";
+	};
+}
+
 export function assistantMessageSections(
 	message: PiMessage,
 	results: ReadonlyMap<string, PiMessage>,
 	liveTools: ReadonlyMap<string, TranscriptLiveTool>,
 	streaming: boolean,
 	messageKey: string,
-): Array<{ key: string; hash: string; html: string }> {
+	deferStreamingTextHtml = false,
+): AssistantMessageSection[] {
 	const blocks = Array.isArray(message.content) ? message.content : [];
-	const sections: Array<{ key: string; hash: string; html: string }> = [];
-	let activity: string[] = [];
+	const sections: AssistantMessageSection[] = [];
+	type ActivityEntry = {
+		signature: string;
+		render: (omitThinkingText: boolean) => string;
+		thinking?: PiContentBlock;
+	};
+	let activity: ActivityEntry[] = [];
 	let activityOrdinal = 0;
 	let contentOrdinal = 0;
 	let thinkingIndex = 0;
 	const flushActivity = (): void => {
 		if (activity.length === 0) return;
-		const html = `<div class="activity-timeline">${activity.join("")}</div>`;
+		const firstActivity = activity[0];
+		const onlyThinking =
+			activity.length === 1 && firstActivity?.thinking
+				? firstActivity.thinking
+				: undefined;
+		const streamText =
+			streaming && onlyThinking ? (onlyThinking.thinking ?? "") : undefined;
+		const omitThinkingText = Boolean(deferStreamingTextHtml && onlyThinking);
+		const cacheKey = `${messageKey}:${activityOrdinal}:${streaming ? 1 : 0}:${deferStreamingTextHtml ? 1 : 0}`;
+		const signature = `${activity.map((entry) => entry.signature).join("|")}|omit:${omitThinkingText ? 1 : 0}`;
+		let cached = activitySectionCache.get(cacheKey);
+		if (cached?.signature !== signature) {
+			const body = activity
+				.map((entry) => entry.render(omitThinkingText && Boolean(entry.thinking)))
+				.join("");
+			const html = `<div class="activity-timeline">${body}</div>`;
+			cached = { signature, body, hash: contentHash(html) };
+			setActivitySectionCache(cacheKey, cached);
+		}
+
+		const html = `<div class="activity-timeline">${cached.body}</div>`;
 		const key = `activity-${activityOrdinal}`;
-		const hash = contentHash(html);
-		sections.push({ key, hash, html: withSectionMarker(html, key, hash) });
+		const hash =
+			streamText === undefined ? cached.hash : streamingTextHash(streamText);
+		sections.push({
+			key,
+			hash,
+			html: withSectionMarker(html, key, hash, streamText?.length),
+			streamUpdate:
+				streamText === undefined
+					? undefined
+					: {
+							selector: ".thinking-text",
+							text: streamText,
+							format: "markdown",
+						},
+		});
 		activityOrdinal += 1;
 		activity = [];
 	};
@@ -401,28 +454,59 @@ export function assistantMessageSections(
 	for (const block of blocks) {
 		if (block.type === "text") {
 			flushActivity();
-			const html = `<div class="assistant-text">${markdown(block.text ?? "", !streaming)}</div>`;
+			const streamText = streaming ? (block.text ?? "") : undefined;
+			const body =
+				streamText === undefined
+					? markdown(block.text ?? "", true)
+					: deferStreamingTextHtml
+						? ""
+						: markdown(streamText);
+			const html = `<div class="assistant-text">${body}</div>`;
 			const key = `content-${contentOrdinal}`;
-			const hash = contentHash(html);
-			sections.push({ key, hash, html: withSectionMarker(html, key, hash) });
+			const hash =
+				streamText === undefined
+					? contentHash(html)
+					: streamingTextHash(streamText);
+			sections.push({
+				key,
+				hash,
+				html: withSectionMarker(html, key, hash, streamText?.length),
+				streamUpdate:
+					streamText === undefined
+						? undefined
+						: { text: streamText, format: "markdown" },
+			});
 			contentOrdinal += 1;
 		}
 		if (block.type === "thinking") {
 			const thinkingKey = `${messageKey}-thinking-${thinkingIndex}`;
 			const streamingState = streaming ? " streaming" : "";
 			thinkingIndex += 1;
-			activity.push(thinkingBlockHtml(thinkingKey, streamingState, block));
+			activity.push({
+				signature: `thinking:${objectIdentity(block)}:${streamingState}`,
+				thinking: block,
+				render: (omitThinkingText) =>
+					thinkingBlockHtml(
+						thinkingKey,
+						streamingState,
+						omitThinkingText ? { ...block, thinking: "" } : block,
+					),
+			});
 		}
 		if (block.type === "toolCall" && block.id && block.name) {
-			activity.push(
-				toolCallHtml(
-					block.id,
-					block.name,
-					block.arguments ?? {},
-					results.get(block.id),
-					liveTools.get(block.id),
-				),
-			);
+			const result = results.get(block.id);
+			const live = liveTools.get(block.id);
+			activity.push({
+				signature: `tool:${objectIdentity(block)}:${objectIdentity(result)}:${live?.status ?? "-"}:${live?.revision ?? -1}`,
+				render: () =>
+					toolCallHtml(
+						block.id ?? "",
+						block.name ?? "tool",
+						block.arguments ?? {},
+						result,
+						live,
+					),
+			});
 		}
 	}
 	flushActivity();
@@ -453,15 +537,58 @@ export function assistantMessageSections(
  * incremental frames can match — the patcher never pays a full rebuild to
  * learn that nothing changed.
  */
-function withSectionMarker(html: string, key: string, hash: string): string {
+function withSectionMarker(
+	html: string,
+	key: string,
+	hash: string,
+	streamLength?: number,
+): string {
 	// The sections this module emits are single-rooted elements (divs); the
 	// marker goes on that root only.
 	const rootEnd = html.search(/>/u);
 	if (rootEnd < 0) return html;
 	const rootTag = html.slice(0, rootEnd);
 	if (!/^<[a-z]+(?:\s|$)/iu.test(rootTag)) return html;
-	const marker = ` data-section-key="${escapeHtml(key)}" data-section-hash="${hash}"`;
+	const streamMarker =
+		streamLength === undefined ? "" : ` data-stream-length="${streamLength}"`;
+	const marker = ` data-section-key="${escapeHtml(key)}" data-section-hash="${hash}"${streamMarker}`;
 	return `${rootTag}${marker}${html.slice(rootEnd)}`;
+}
+
+const activitySectionCache = new Map<
+	string,
+	{ signature: string; body: string; hash: string }
+>();
+const MAX_ACTIVITY_SECTION_CACHE = 256;
+const objectIdentityMap = new WeakMap<object, number>();
+let nextObjectIdentity = 0;
+
+function objectIdentity(value: object | undefined): number {
+	if (!value) return 0;
+	const existing = objectIdentityMap.get(value);
+	if (existing !== undefined) return existing;
+	nextObjectIdentity += 1;
+	objectIdentityMap.set(value, nextObjectIdentity);
+	return nextObjectIdentity;
+}
+
+function setActivitySectionCache(
+	key: string,
+	value: { signature: string; body: string; hash: string },
+): void {
+	activitySectionCache.delete(key);
+	activitySectionCache.set(key, value);
+	if (activitySectionCache.size <= MAX_ACTIVITY_SECTION_CACHE) return;
+	const oldest = activitySectionCache.keys().next().value;
+	if (oldest !== undefined) activitySectionCache.delete(oldest);
+}
+
+/** O(1) marker for append-only streaming text; settled content gets a full hash. */
+function streamingTextHash(value: string): string {
+	if (value.length === 0) return "s0";
+	return `s${value.length.toString(36)}x${value.charCodeAt(0).toString(36)}x${value
+		.charCodeAt(value.length - 1)
+		.toString(36)}`;
 }
 
 /** FNV-1a, 32-bit. Cheap enough to run per section per frame, stable across runs. */
@@ -495,10 +622,11 @@ function thinkingBlockHtml(
 	streamingState: string,
 	block: PiContentBlock,
 ): string {
-	const body = markdown(block.thinking ?? "");
+	const rawText = block.thinking ?? "";
 	if (streamingState) {
-		return `<div class="activity-item thinking-block streaming is-expanded" data-thinking-key="${escapeHtml(thinkingKey)}"><div class="thinking-text">${body}</div></div>`;
+		return `<div class="activity-item thinking-block streaming is-expanded" data-thinking-key="${escapeHtml(thinkingKey)}"><div class="thinking-text">${markdown(rawText)}</div></div>`;
 	}
+	const body = markdown(rawText);
 	return `<div class="activity-item thinking-block" data-thinking-key="${escapeHtml(thinkingKey)}" data-expandable="thinking" role="button" tabindex="0" aria-expanded="false" aria-label="Reasoning, click to expand"><div class="thinking-text">${body}</div><div class="thinking-collapsed">Thinking …</div></div>`;
 }
 
@@ -530,38 +658,63 @@ function toolCallHtml(
 	live?: TranscriptLiveTool,
 ): string {
 	const status = resolveToolStatus(result, live);
-	const output = live?.output || (result ? contentText(result.content) : "");
-	const diff = live?.diff ?? (result ? extractResultDiff(result) : "");
-	const diffHtml = status === "success" && diff ? renderDiffBlock(diff) : "";
-	const outputHtml =
-		output && !diffHtml
-			? `<div class="tool-output"><pre>${escapeHtml(truncate(output, 20_000))}</pre></div>`
-			: "";
-	const body = `${outputHtml}${diffHtml}`;
+	const hasBody = Boolean(
+		live
+			? live.result !== undefined || live.output || live.diff
+			: result !== undefined,
+	);
 	const spinner =
 		status === "running"
 			? '<i class="codicon codicon-loading codicon-modifier-spin tool-spinner" aria-hidden="true"></i>'
 			: "";
 	const statusNote = `<span class="sr-only">${escapeHtml(`${friendlyToolName(name)}: ${toolStatusLabel(status)}`)}</span>`;
-	if (!body) {
+	if (!hasBody) {
 		return `<div class="activity-item tool-call ${status}">${statusNote}${toolHeaderHtml(name, args, spinner, "")}</div>`;
 	}
-	// The hint is the only thing a collapsed box says about what it is hiding, so
-	// it counts the body actually rendered — a diff, or the raw output.
-	const hint = lineCountHint(diffHtml ? diff : output);
-	return `<div class="activity-item tool-call ${status} expandable" data-tool-key="${escapeHtml(id)}" data-expandable="tool" role="button" tabindex="0" aria-expanded="false">${statusNote}${toolHeaderHtml(name, args, spinner, hint)}${body}</div>`;
+	// The collapsed hot path carries only the header. Large output and diffs are
+	// materialized by the delegated click handler when the reader asks to expand.
+	// Avoid even counting lines here: tool_end must remain constant-time with
+	// respect to result size so the next assistant text frame is never delayed.
+	const hint = '<span class="tool-hint">output</span>';
+	return `<div class="activity-item tool-call ${status} expandable" data-tool-key="${escapeHtml(id)}" data-tool-body="lazy" data-expandable="tool" role="button" tabindex="0" aria-expanded="false">${statusNote}${toolHeaderHtml(name, args, spinner, hint)}</div>`;
 }
 
-/**
- * How much a collapsed box is holding back.
- *
- * No accessible-name concern here: the box takes its name from its contents, so
- * this rides along with the tool name and path instead of being hidden from
- * assistive tech the way a decorative marker would be.
- */
-function lineCountHint(text: string): string {
-	const lines = text.replace(/\n$/u, "").split("\n").length;
-	return `<span class="tool-hint">${lines} ${lines === 1 ? "line" : "lines"}</span>`;
+/** Builds a tool body on demand instead of parsing hidden output at tool end. */
+export function toolBodyHtml(
+	result?: PiMessage,
+	live?: TranscriptLiveTool,
+): string {
+	const status = resolveToolStatus(result, live);
+	const rawResult = live?.result;
+	const output =
+		live?.output ??
+		(rawResult === undefined
+			? result
+				? contentText(result.content)
+				: ""
+			: resultContentText(rawResult));
+	const diff =
+		live?.diff ??
+		(rawResult === undefined
+			? result
+				? extractResultDiff(result)
+				: ""
+			: extractResultDiff(rawResult));
+	if (status === "success" && diff) return renderDiffBlock(diff);
+	return output
+		? `<div class="tool-output"><pre>${escapeHtml(truncate(output, MAX_TOOL_OUTPUT_LENGTH))}</pre></div>`
+		: "";
+}
+
+function resultContentText(value: unknown): string {
+	const content = objectValue(value).content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const item of content) {
+		const text = stringValue(objectValue(item).text);
+		if (text) parts.push(text);
+	}
+	return parts.join("\n");
 }
 
 const MAX_TOOL_TARGET_LENGTH = 2000;
@@ -597,6 +750,7 @@ function toolHeaderHtml(
 	return `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span>${targetHtml}${hint}${spinner}</div>`;
 }
 
+const MAX_TOOL_OUTPUT_LENGTH = 20_000;
 const MAX_DIFF_LINES = 400;
 
 function renderDiffBlock(diff: string): string {
@@ -635,25 +789,536 @@ function contentImages(content: unknown): PiContentBlock[] {
 	);
 }
 
+type StreamingMarkdownAppendMode = "none" | "plain" | "code";
+
+export interface StreamingMarkdownParts {
+	/** Newly stable top-level tokens, rendered once and never touched again. */
+	stableHtml: string;
+	/** The one top-level token that may still absorb future characters. */
+	activeHtml: string;
+	/** Absolute source offset after the newly stable token prefix. */
+	stableSourceLength: number;
+	/** How the next suffix may update the active DOM without reparsing it. */
+	appendMode: StreamingMarkdownAppendMode;
+	/** Non-local Markdown (notably reference definitions) invalidated the prefix. */
+	reset: boolean;
+}
+
+/**
+ * Splits an append-only Markdown stream into immutable prefix and active tail.
+ *
+ * Marked's top-level tokens carry their exact raw source. Keeping the final
+ * token active is the crucial correctness rule: a paragraph may gain emphasis,
+ * a list may gain items, and an unterminated fence may gain arbitrary lines.
+ * Once a later top-level token exists, the previous one cannot absorb more
+ * source and can be mounted permanently. Each frame therefore lexes only the
+ * unfinished tail, not the full assistant response.
+ */
+export function streamingMarkdownParts(
+	text: string,
+	stableSourceLength = 0,
+): StreamingMarkdownParts {
+	const safeStableLength =
+		Number.isSafeInteger(stableSourceLength) &&
+		stableSourceLength >= 0 &&
+		stableSourceLength <= text.length
+			? stableSourceLength
+			: 0;
+	const remainingText = text.slice(safeStableLength);
+	const tokens = marked.lexer(remainingText);
+	if (tokens.length === 0) {
+		if (remainingText.length > 0) {
+			return {
+				stableHtml: "",
+				activeHtml: markdown(text),
+				stableSourceLength: 0,
+				appendMode: "none",
+				reset: true,
+			};
+		}
+		return {
+			stableHtml: "",
+			activeHtml: "",
+			stableSourceLength: safeStableLength,
+			appendMode: "none",
+			reset: false,
+		};
+	}
+	const tokenSourceLength = tokens.reduce(
+		(total, token) => total + token.raw.length,
+		0,
+	);
+	if (tokenSourceLength !== remainingText.length) {
+		// Marked removes reference definitions from the emitted token list and keeps
+		// them in `tokens.links`. They can retroactively change already mounted
+		// paragraphs, so abandon the prefix cache and render the authoritative full
+		// stream until the non-local construct is complete.
+		return {
+			stableHtml: "",
+			activeHtml: markdown(text),
+			stableSourceLength: 0,
+			appendMode: "none",
+			reset: true,
+		};
+	}
+	const stableTokens = tokens.slice(0, -1);
+	const activeTokens = tokens.slice(-1);
+	const newlyStableLength = stableTokens.reduce(
+		(total, token) => total + token.raw.length,
+		0,
+	);
+	const activeToken = activeTokens[0];
+	return {
+		stableHtml: markdownTokens(stableTokens),
+		activeHtml: activeToken ? streamingActiveTokenHtml(activeToken) : "",
+		stableSourceLength: safeStableLength + newlyStableLength,
+		appendMode: activeToken ? tokenAppendMode(activeToken) : "none",
+		reset: false,
+	};
+}
+
+function streamingActiveTokenHtml(token: Token): string {
+	if (token.type === "code") {
+		return markdownTokens([stabilizeStreamingCodeToken(token)]);
+	}
+	const stableToken = stabilizeStreamingToken(token);
+	return stableToken ? markdownTokens([stableToken]) : "";
+}
+
+/**
+ * Reuses marked's block token tree and only re-lexes the growing inline leaf.
+ * A long list is one top-level token, so parsing `token.raw` again here would
+ * make every list-item boundary process the entire response twice.
+ */
+function stabilizeStreamingToken(token: Token): Token | undefined {
+	if (token.type === "list") {
+		const list = token as Tokens.List;
+		const lastItem = list.items.at(-1);
+		if (!lastItem) return token;
+		if (isEmptyStreamingListItem(lastItem)) {
+			const stableItems = list.items.slice(0, -1);
+			return stableItems.length > 0 ? { ...list, items: stableItems } : undefined;
+		}
+		const stableItem = stabilizeStreamingListItem(lastItem);
+		if (!stableItem) return token;
+		return { ...list, items: [...list.items.slice(0, -1), stableItem] };
+	}
+	if (token.type === "blockquote") {
+		const blockquote = token as Tokens.Blockquote;
+		const stableTokens = stabilizeLastStreamingToken(blockquote.tokens);
+		return { ...blockquote, tokens: stableTokens };
+	}
+	if (
+		token.type === "heading" &&
+		isPendingSetextHeading(token as Tokens.Heading)
+	) {
+		const heading = token as Tokens.Heading;
+		return {
+			type: "paragraph",
+			raw: heading.raw,
+			text: heading.text,
+			tokens: heading.tokens,
+		};
+	}
+	if (
+		token.type === "paragraph" ||
+		token.type === "heading" ||
+		token.type === "text"
+	) {
+		return stabilizeStreamingInlineToken(
+			token as Tokens.Paragraph | Tokens.Heading | Tokens.Text,
+		);
+	}
+	return token;
+}
+
+function isPendingSetextHeading(token: Tokens.Heading): boolean {
+	return /(?:^|\n) {0,3}(?:=+|-+)[ \t]*(?:\n)?$/u.test(token.raw);
+}
+
+function isEmptyStreamingListItem(item: Tokens.ListItem): boolean {
+	return item.tokens.length === 0 && item.text.trim().length === 0;
+}
+
+function stabilizeStreamingListItem(
+	item: Tokens.ListItem,
+): Tokens.ListItem | undefined {
+	const tokens = stabilizeLastStreamingToken(item.tokens);
+	return { ...item, tokens };
+}
+
+function stabilizeLastStreamingToken(tokens: Token[]): Token[] {
+	const lastToken = tokens.at(-1);
+	if (!lastToken) return tokens;
+	const stableToken = stabilizeStreamingToken(lastToken);
+	return stableToken
+		? [...tokens.slice(0, -1), stableToken]
+		: tokens.slice(0, -1);
+}
+
+function stabilizeStreamingInlineToken(
+	token: Tokens.Paragraph | Tokens.Heading | Tokens.Text,
+): Token | undefined {
+	// `raw` includes block syntax for headings (`# `), while `text` is exactly the
+	// inline source consumed by the token's child parser. Stabilizing `raw` would
+	// accidentally render the heading marker inside <h1> when emphasis is open.
+	const stableSource = stabilizeStreamingBlockPrefix(token.text);
+	if (!stableSource) return undefined;
+	if (stableSource === token.text) return token;
+	return {
+		...token,
+		text: stableSource,
+		tokens: marked.Lexer.lexInline(stableSource),
+	};
+}
+
+function stabilizeStreamingBlockPrefix(source: string): string {
+	// A line-start marker can still become a list marker on the next character.
+	// Keep the candidate line invisible until marked can classify it, otherwise
+	// `1` or `- ` appears as text and disappears when the list item is formed.
+	let stable = source.replace(
+		/(^|\n) {0,3}(?:(?:[-*_][ \t]*){1,2}|\+[ \t]*|\d+(?:[.)][ \t]*)?)$/u,
+		"$1",
+	);
+	stable = stabilizeStreamingLink(stable);
+	stable = stabilizeTrailingEscape(stable);
+	return stabilizeStreamingDelimiters(stable);
+}
+
+function stabilizeStreamingLink(source: string): string {
+	const replaceCandidate = (
+		_match: string,
+		imageMarker: string | undefined,
+		label: string,
+	): string => (imageMarker ? "" : label);
+	// Incomplete labels and destinations are the only link forms that marked may
+	// reinterpret retroactively. Show link labels as text, but never leak brackets,
+	// destination URLs, or image alt text that the completed construct consumes.
+	let stable = source.replace(/(!?)\[([^\]\n]*)\]\([^\n)]*$/u, replaceCandidate);
+	stable = stable.replace(/(!?)\[([^\]\n]*)\]$/u, replaceCandidate);
+	return stable.replace(/(!?)\[([^\]\n]*)$/u, replaceCandidate);
+}
+
+function stabilizeTrailingEscape(source: string): string {
+	let slashCount = 0;
+	for (
+		let index = source.length - 1;
+		index >= 0 && source[index] === "\\";
+		index -= 1
+	) {
+		slashCount += 1;
+	}
+	return slashCount % 2 === 1 ? source.slice(0, -1) : source;
+}
+
+function stabilizeStreamingCodeToken(token: Token): Token {
+	if (token.type !== "code") return token;
+	const opener = /^(?: {0,3})(`{3,}|~{3,})[^\n]*(?:\n|$)/u.exec(token.raw);
+	const marker = opener?.[1];
+	if (!opener || !marker || !isOpenFencedCode(token.raw)) return token;
+
+	// Marked exposes one or two leading closing-fence characters as code text,
+	// then consumes them when the full fence arrives. Hide only such a partial
+	// fence at the start of the current line so visible code never moves backwards.
+	const bodySource = token.raw.slice(opener[0].length);
+	let stableText = token.text;
+	if (bodySource.endsWith("\n") && stableText.endsWith("\n")) {
+		stableText = stableText.slice(0, -1);
+	}
+	const partialFence = new RegExp(
+		`(?:^|\\n) {0,3}${marker[0]}{1,${marker.length - 1}}$`,
+		"u",
+	).exec(bodySource);
+	if (partialFence) {
+		stableText = token.text.slice(0, -partialFence[0].length);
+	}
+	return stableText === token.text ? token : { ...token, text: stableText };
+}
+
+/**
+ * Removes only unmatched inline Markdown delimiters from the active token.
+ *
+ * A delimiter that is visible as plain text in one frame and consumed as syntax
+ * in the next makes characters appear to move backwards. Matched runs remain in
+ * the source so marked can render emphasis/code immediately; unmatched runs are
+ * held invisible until either a mate arrives or the token settles, at which point
+ * the authoritative Markdown pass restores any genuinely literal punctuation.
+ */
+function stabilizeStreamingDelimiters(source: string): string {
+	let stable = maskUnmatchedRuns(source, "`");
+	stable = maskUnmatchedRuns(stable, "*");
+	stable = maskUnmatchedRuns(stable, "_");
+	stable = maskUnmatchedRuns(stable, "~");
+	return stable;
+}
+
+interface DelimiterRun {
+	start: number;
+	end: number;
+	length: number;
+	canOpen: boolean;
+	canClose: boolean;
+	matched: boolean;
+}
+
+function maskUnmatchedRuns(
+	source: string,
+	marker: "`" | "*" | "_" | "~",
+	minimumLength = 1,
+): string {
+	const runs: DelimiterRun[] = [];
+	for (let index = 0; index < source.length; ) {
+		if (source[index] !== marker || isEscapedAt(source, index)) {
+			index += 1;
+			continue;
+		}
+		let end = index + 1;
+		while (source[end] === marker) end += 1;
+		const length = end - index;
+		if (length < minimumLength) {
+			index = end;
+			continue;
+		}
+		const flanking =
+			marker === "`"
+				? { canOpen: true, canClose: true }
+				: delimiterFlanking(source, index, end, marker);
+		runs.push({
+			start: index,
+			end,
+			length,
+			canOpen: flanking.canOpen,
+			canClose: flanking.canClose,
+			matched: false,
+		});
+		index = end;
+	}
+
+	const openRuns: number[] = [];
+	for (let index = 0; index < runs.length; index += 1) {
+		const run = runs[index];
+		if (!run) continue;
+		let openerPosition = -1;
+		if (run.canClose) {
+			for (
+				let stackIndex = openRuns.length - 1;
+				stackIndex >= 0;
+				stackIndex -= 1
+			) {
+				const opener = runs[openRuns[stackIndex] ?? -1];
+				if (opener?.length === run.length) {
+					openerPosition = stackIndex;
+					break;
+				}
+			}
+		}
+		if (openerPosition >= 0) {
+			const openerIndex = openRuns[openerPosition];
+			const opener = openerIndex === undefined ? undefined : runs[openerIndex];
+			if (opener) opener.matched = true;
+			run.matched = true;
+			openRuns.splice(openerPosition, 1);
+			continue;
+		}
+		if (run.canOpen) openRuns.push(index);
+	}
+
+	if (
+		runs.every(
+			(run) =>
+				run.matched || (!run.canOpen && !run.canClose && run.end < source.length),
+		)
+	) {
+		return source;
+	}
+	const hidden = new Set<number>();
+	for (const run of runs) {
+		if (
+			run.matched ||
+			(!run.canOpen && !run.canClose && run.end < source.length)
+		) {
+			continue;
+		}
+		for (let index = run.start; index < run.end; index += 1) hidden.add(index);
+	}
+	let result = "";
+	for (let index = 0; index < source.length; index += 1) {
+		if (!hidden.has(index)) result += source[index];
+	}
+	return result;
+}
+
+function delimiterFlanking(
+	source: string,
+	start: number,
+	end: number,
+	marker: "*" | "_" | "~",
+): { canOpen: boolean; canClose: boolean } {
+	const previous = start > 0 ? (source[start - 1] ?? "") : "";
+	const next = end < source.length ? (source[end] ?? "") : "";
+	const previousWhitespace = previous === "" || /\s/u.test(previous);
+	const nextWhitespace = next === "" || /\s/u.test(next);
+	const previousPunctuation = previous !== "" && /[\p{P}\p{S}]/u.test(previous);
+	const nextPunctuation = next !== "" && /[\p{P}\p{S}]/u.test(next);
+	const leftFlanking =
+		!nextWhitespace &&
+		(!nextPunctuation || previousWhitespace || previousPunctuation);
+	const rightFlanking =
+		!previousWhitespace &&
+		(!previousPunctuation || nextWhitespace || nextPunctuation);
+	if (marker !== "_") {
+		return { canOpen: leftFlanking, canClose: rightFlanking };
+	}
+	return {
+		canOpen: leftFlanking && (!rightFlanking || previousPunctuation),
+		canClose: rightFlanking && (!leftFlanking || nextPunctuation),
+	};
+}
+
+function isEscapedAt(source: string, index: number): boolean {
+	let slashCount = 0;
+	for (
+		let cursor = index - 1;
+		cursor >= 0 && source[cursor] === "\\";
+		cursor -= 1
+	) {
+		slashCount += 1;
+	}
+	return slashCount % 2 === 1;
+}
+
+function tokenAppendMode(token: Token): StreamingMarkdownAppendMode {
+	if (tokenHasPendingStreamingSyntax(token)) return "none";
+	if (token.type === "code") {
+		// Marked omits the final source newline from the rendered code text. If a
+		// frame stops exactly there, reparse once when the next characters arrive so
+		// two source lines cannot be concatenated in the DOM. After the next visible
+		// character, arbitrary code suffixes append directly until a fence marker.
+		return isOpenFencedCode(token.raw) &&
+			token.raw.includes("\n") &&
+			!token.raw.endsWith("\n")
+			? "code"
+			: "none";
+	}
+	if (token.raw.endsWith("\n")) return "none";
+	if (token.type === "paragraph" || token.type === "heading") {
+		return inlineTokensEndInPlainText(token.tokens) ? "plain" : "none";
+	}
+	if (token.type === "blockquote") {
+		const lastNested = token.tokens?.at(-1);
+		return lastNested ? tokenAppendMode(lastNested) : "none";
+	}
+	if (token.type === "list") {
+		const lastNested = token.items.at(-1)?.tokens.at(-1);
+		return lastNested ? tokenAppendMode(lastNested) : "none";
+	}
+	if (token.type === "text") {
+		return token.tokens
+			? inlineTokensEndInPlainText(token.tokens)
+				? "plain"
+				: "none"
+			: "plain";
+	}
+	return "none";
+}
+
+function tokenHasPendingStreamingSyntax(token: Token): boolean {
+	if (
+		token.type === "heading" &&
+		isPendingSetextHeading(token as Tokens.Heading)
+	) {
+		return true;
+	}
+	if (token.type === "list") {
+		const list = token as Tokens.List;
+		const lastNested = list.items.at(-1)?.tokens.at(-1);
+		return lastNested ? tokenHasPendingStreamingSyntax(lastNested) : false;
+	}
+	if (token.type === "blockquote") {
+		const blockquote = token as Tokens.Blockquote;
+		const lastNested = blockquote.tokens.at(-1);
+		return lastNested ? tokenHasPendingStreamingSyntax(lastNested) : false;
+	}
+	return hasPendingStreamingSyntax(token.raw);
+}
+
+function hasPendingStreamingSyntax(source: string): boolean {
+	if (
+		/(?:^|\n) {0,3}(?:[-*_]+[ \t]*|\+[ \t]*|\d+(?:[.)][ \t]*)?)$/u.test(source)
+	) {
+		return true;
+	}
+	if (
+		/!?\[[^\]\n]*(?:\]|\]\([^\n)]*)?$/u.test(source) ||
+		hasOddTrailingBackslash(source)
+	) {
+		return true;
+	}
+	return /(?:`+|\*+|_+|~+)$/u.test(source);
+}
+
+function hasOddTrailingBackslash(source: string): boolean {
+	let slashCount = 0;
+	for (
+		let index = source.length - 1;
+		index >= 0 && source[index] === "\\";
+		index -= 1
+	) {
+		slashCount += 1;
+	}
+	return slashCount % 2 === 1;
+}
+
+function inlineTokensEndInPlainText(tokens: Token[] | undefined): boolean {
+	const lastToken = tokens?.at(-1);
+	if (!lastToken || lastToken.type !== "text") return false;
+	return lastToken.tokens ? inlineTokensEndInPlainText(lastToken.tokens) : true;
+}
+
+function isOpenFencedCode(raw: string): boolean {
+	const opener = /^(?: {0,3})(`{3,}|~{3,})[^\n]*(?:\n|$)/u.exec(raw);
+	if (!opener) return false;
+	const marker = opener[1];
+	if (!marker) return false;
+	const closingFence = new RegExp(
+		`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*(?:\\n|$)`,
+		"mu",
+	);
+	return !closingFence.test(raw.slice(opener[0].length));
+}
+
 /**
  * Markdown to sanitized HTML.
  *
  * `highlight` is off by default: highlighting a streaming message would re-run
- * the highlighter on every delta, and pi replaces the message object each time.
- * Only settled content opts in.
+ * the highlighter on every delta. Streaming still gets full Markdown structure;
+ * only syntax highlighting waits for the settled authoritative message.
  */
 function markdown(text: string, highlight = false): string {
 	highlightEnabled = highlight;
 	try {
-		return DOMPurify.sanitize(marked.parse(text) as string, {
-			USE_PROFILES: { html: true },
-			ADD_ATTR: ["target", "rel"],
-		});
+		return sanitizeMarkdown(marked.parse(text) as string);
 	} finally {
 		// Reset unconditionally: a throw must not leave highlighting armed for the
 		// next, possibly streaming, pass.
 		highlightEnabled = false;
 	}
+}
+
+function markdownTokens(tokens: Token[]): string {
+	highlightEnabled = false;
+	try {
+		return sanitizeMarkdown(marked.parser(tokens));
+	} finally {
+		highlightEnabled = false;
+	}
+}
+
+function sanitizeMarkdown(html: string): string {
+	return DOMPurify.sanitize(html, {
+		USE_PROFILES: { html: true },
+		ADD_ATTR: ["target", "rel"],
+	});
 }
 
 function toolTarget(args: JsonRecord): string {

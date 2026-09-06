@@ -5,7 +5,7 @@ import type { ManagedComposerReference } from "./composer/model.js";
 import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { MentionController } from "./composer/mentions.js";
-import { applyAssistantMessageDelta } from "./transcript/streaming.js";
+import { StreamingMessagePlayback } from "./transcript/streaming.js";
 import {
 	formatAbsoluteTime,
 	formatCost,
@@ -19,6 +19,7 @@ import {
 import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
 import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
+import { SubmitFollowCoordinator } from "./transcript/submitFollow.js";
 import {
 	TranscriptView,
 	type TranscriptEntry,
@@ -26,11 +27,12 @@ import {
 import {
 	assistantMessageSections,
 	contentText,
-	extractResultDiff,
 	friendlyToolName,
 	isRenderableMessage,
 	messageHtml,
 	messageRenderSignature,
+	streamingMarkdownParts,
+	toolBodyHtml,
 } from "./transcript/renderer.js";
 import {
 	containsDroppedResources,
@@ -39,6 +41,7 @@ import {
 import { ModalController } from "./ui/modalController.js";
 import { positionPopupAbove } from "./ui/popupPosition.js";
 import { SelectController } from "./ui/selectController.js";
+import { FrameCoordinator } from "./ui/frameCoordinator.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	type AttachmentRef,
@@ -74,10 +77,9 @@ interface LiveTool {
 	name: string;
 	args: JsonRecord;
 	status: "running" | "success" | "error";
-	output: string;
-	diff?: string;
+	result?: unknown;
 	startedAt: number;
-	/** Bumped on every in-place edit so render signatures see the change. */
+	/** Bumped only when the visible collapsed card needs rebuilding. */
 	revision: number;
 }
 
@@ -141,13 +143,16 @@ const ui: UiState = {
 };
 
 const liveTools = new Map<string, LiveTool>();
+const toolResults = new Map<string, PiMessage>();
+/** Last streamed source text per live streaming section, for exact change checks. */
+const streamingSectionSource = new WeakMap<HTMLElement, string>();
 const pendingActions = new Map<string, PendingAction>();
 const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
-let renderQueued = false;
 /** Single transcript-wide timer for relative time labels. */
 let relativeTimeTimer: ReturnType<typeof setTimeout> | undefined;
-let transcriptMeasureQueued = false;
+/** Debounces expensive prompt-bound measurements until native scrolling stops. */
+let transcriptScrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSubmit = false;
 let composerFocusRequestId: number | undefined;
 let composerFocusQueued = false;
@@ -352,11 +357,23 @@ const pinnedPrompt = new PinnedPromptController({
 const reducedMotionQuery = window.matchMedia(
 	"(prefers-reduced-motion: reduce)",
 );
-const scrollAnchor = new ScrollAnchor({
-	viewport: elements.transcript,
+const streamingPlayback = new StreamingMessagePlayback();
+const frameCoordinator = new FrameCoordinator({
 	requestFrame: (callback) => window.requestAnimationFrame(callback),
 	cancelFrame: (handle) => window.cancelAnimationFrame(handle),
+	measure: () => pinnedPrompt.sync(),
+	advance: advanceStreamingPlayback,
+	render,
+	renderAdvance: renderStreamingFrame,
+});
+const scrollAnchor = new ScrollAnchor({
+	viewport: elements.transcript,
+	requestFrame: (callback) => frameCoordinator.requestScrollFrame(callback),
+	cancelFrame: (handle) => frameCoordinator.cancelScrollFrame(handle),
 	shouldAnimate: () => !reducedMotionQuery.matches,
+});
+const submitFollowCoordinator = new SubmitFollowCoordinator({
+	onFollow: () => scrollAnchor.follow(),
 });
 
 const transcriptView = new TranscriptView<Element>({
@@ -575,13 +592,13 @@ elements.input.addEventListener("blur", () =>
 elements.input.addEventListener("scroll", syncPromptHighlightScroll);
 window.addEventListener("resize", syncPromptHighlightScroll);
 
-// The pinned turn label is driven by scroll position, which fires no state
-// change, so it is re-evaluated here as well as in render().
+// A scroll event stays layout-read-free. Native wheel/touch/scrollbar movement
+// owns scrollTop until it has been quiet for a short interval; only then do we
+// measure prompt bounds and, if the reader reached the bottom, resume following.
 elements.transcript.addEventListener(
 	"scroll",
 	() => {
-		scrollAnchor.noteScroll();
-		pinnedPrompt.sync();
+		if (scrollAnchor.noteScroll()) scheduleTranscriptScrollSettle();
 	},
 	{ passive: true },
 );
@@ -593,9 +610,34 @@ elements.transcript.addEventListener(
 // like it was fighting back.
 elements.transcript.addEventListener(
 	"wheel",
-	(event) => scrollAnchor.noteUserIntent(event.deltaY),
+	(event) => {
+		if (event.deltaY < 0) submitFollowCoordinator.cancelAll();
+		if (scrollAnchor.noteUserIntent(event.deltaY)) {
+			scheduleTranscriptScrollSettle();
+		}
+	},
 	{ passive: true },
 );
+
+// A scrollbar drag has no wheel/touch intent event. The scrollbar itself targets
+// the viewport, while clicks on transcript content target descendants.
+elements.transcript.addEventListener(
+	"pointerdown",
+	(event) => {
+		if (event.target === elements.transcript) submitFollowCoordinator.cancelAll();
+	},
+	{ passive: true },
+);
+elements.transcript.addEventListener("keydown", (event) => {
+	if (
+		event.key === "ArrowUp" ||
+		event.key === "PageUp" ||
+		event.key === "Home" ||
+		(event.key === " " && event.shiftKey)
+	) {
+		submitFollowCoordinator.cancelAll();
+	}
+});
 
 let touchAnchorY: number | undefined;
 elements.transcript.addEventListener(
@@ -612,12 +654,26 @@ elements.transcript.addEventListener(
 		if (currentY === undefined || touchAnchorY === undefined) return;
 		// Dragging a finger down moves content down, which scrolls up: the sign is
 		// inverted relative to the wheel convention noteUserIntent expects.
-		scrollAnchor.noteUserIntent(touchAnchorY - currentY);
+		const deltaY = touchAnchorY - currentY;
+		if (deltaY < 0) submitFollowCoordinator.cancelAll();
+		if (scrollAnchor.noteUserIntent(deltaY)) {
+			scheduleTranscriptScrollSettle();
+		}
 		touchAnchorY = currentY;
 	},
 	{ passive: true },
 );
-window.addEventListener("resize", () => pinnedPrompt.sync());
+const clearTouchAnchor = () => {
+	touchAnchorY = undefined;
+	if (scrollAnchor.isReaderScrolling) scheduleTranscriptScrollSettle();
+};
+elements.transcript.addEventListener("touchend", clearTouchAnchor, {
+	passive: true,
+});
+elements.transcript.addEventListener("touchcancel", clearTouchAnchor, {
+	passive: true,
+});
+window.addEventListener("resize", scheduleTranscriptMeasure);
 
 elements.pinnedPromptBody.addEventListener("click", () =>
 	pinnedPrompt.revealActivePrompt(),
@@ -643,9 +699,14 @@ composerToolsResizeObserver.observe(elements.composerTools);
 
 // Keep floating feedback immediately above the composer when attachments or a
 // multi-line draft change its height.
-const composerShellResizeObserver = new ResizeObserver(
-	updateComposerOverlayOffset,
-);
+const composerShellResizeObserver = new ResizeObserver(() => {
+	updateComposerOverlayOffset();
+	if (submitFollowCoordinator.noteComposerResize()) {
+		// Grid row sizes are final only in ResizeObserver. Re-targeting here avoids
+		// retaining the bottom computed while a multi-line composer was still tall.
+		scrollAnchor.stickToBottomIfFollowing();
+	}
+});
 composerShellResizeObserver.observe(elements.composerShell);
 updateComposerOverlayOffset();
 
@@ -1084,9 +1145,27 @@ function applySnapshot(
 		ui.clockSkewMs = message.timeContext.hostNowMs - Date.now();
 	}
 	ui.busy = Boolean(message.state.isStreaming || message.state.isCompacting);
-	ui.streamingMessage = undefined;
+	streamingPlayback.reset();
+	const streamingMessage = snapshotStreamingMessage(message);
+	if (streamingMessage) {
+		// A snapshot can arrive while pi is mid-stream (connection recovery, state
+		// refresh). Its final assistant message already holds the delivered prefix;
+		// resuming there keeps subsequent message_update deltas continuous instead
+		// of resetting the playback to an empty shell that would re-reveal text the
+		// reader has already seen.
+		ui.streamingMessage = streamingPlayback.resume(streamingMessage);
+	} else {
+		ui.streamingMessage = undefined;
+	}
 	liveTools.clear();
+	toolResults.clear();
+	for (const existingMessage of ui.messages) {
+		if (existingMessage.role === "toolResult" && existingMessage.toolCallId) {
+			toolResults.set(existingMessage.toolCallId, existingMessage);
+		}
+	}
 	if (sessionChanged) {
+		submitFollowCoordinator.cancelAll();
 		extensionStatuses.clear();
 		extensionWidgets.clear();
 		// Nothing in a different session's transcript can be reused, and the reader
@@ -1095,6 +1174,18 @@ function applySnapshot(
 		scrollAnchor.follow();
 	}
 	scheduleRender();
+}
+
+/** The in-flight assistant message a streaming snapshot carries, if any. */
+function snapshotStreamingMessage(
+	message: Extract<HostToWebviewMessage, { type: "snapshot" }>,
+): PiMessage | undefined {
+	if (!message.state.isStreaming) return undefined;
+	for (let index = message.messages.length - 1; index >= 0; index -= 1) {
+		const candidate = message.messages[index];
+		if (candidate?.role === "assistant") return candidate;
+	}
+	return undefined;
 }
 
 function applyConnection(
@@ -1114,9 +1205,12 @@ function applyConnection(
 }
 
 function finishInterruptedRun(detail?: string): void {
+	submitFollowCoordinator.cancelAll();
 	ui.busy = false;
-	if (ui.streamingMessage) {
-		const interrupted = { ...ui.streamingMessage, stopReason: "aborted" };
+	const bufferedMessage = streamingPlayback.completeImmediately();
+	const activeMessage = bufferedMessage ?? ui.streamingMessage;
+	if (activeMessage) {
+		const interrupted = { ...activeMessage, stopReason: "aborted" };
 		inheritMessageIdentity(ui.streamingMessage, interrupted);
 		if (!hasEquivalentTail(ui.messages, interrupted))
 			ui.messages.push(interrupted);
@@ -1125,8 +1219,16 @@ function finishInterruptedRun(detail?: string): void {
 	for (const tool of liveTools.values()) {
 		if (tool.status === "running") {
 			tool.status = "error";
-			if (!tool.output)
-				tool.output = detail || "Pi disconnected before this tool completed.";
+			if (tool.result === undefined) {
+				tool.result = {
+					content: [
+						{
+							type: "text",
+							text: detail || "Pi disconnected before this tool completed.",
+						},
+					],
+				};
+			}
 			tool.revision += 1;
 		}
 	}
@@ -1142,7 +1244,12 @@ function handleActionResult(
 ): void {
 	const action = pendingActions.get(actionId);
 	pendingActions.delete(actionId);
-	if (action?.type === "submit") pendingSubmit = false;
+	if (action?.type === "submit") {
+		pendingSubmit = false;
+		if (!ok || cancelled) {
+			submitFollowCoordinator.settleAction(actionId, false, 0);
+		}
+	}
 	if (
 		ok &&
 		!cancelled &&
@@ -1154,6 +1261,16 @@ function handleActionResult(
 			(attachment) => !submittedIds.has(attachment.id),
 		);
 		composerController.completeSubmittedReferences(action);
+		if (action.type === "submit") {
+			// The action result can precede or follow the user-message RPC echo. In
+			// either order, clearing a multi-line composer is part of the same explicit
+			// "show me what I sent" action and must keep the transcript attached.
+			submitFollowCoordinator.settleAction(
+				actionId,
+				true,
+				elements.input.getBoundingClientRect().height,
+			);
+		}
 	}
 	if (ok && !cancelled && action?.type === "pasteImages") {
 		showToast("Clipboard image attached", "info");
@@ -1194,6 +1311,7 @@ function handleActionResult(
 }
 
 function reduceRpcEvent(event: JsonRecord): void {
+	let needsImmediateRender = true;
 	switch (event.type) {
 		case "agent_start":
 			ui.busy = true;
@@ -1206,29 +1324,42 @@ function reduceRpcEvent(event: JsonRecord): void {
 		case "message_start": {
 			const message = asMessage(event.message);
 			if (!message) break;
-			if (message.role === "assistant") ui.streamingMessage = message;
-			else if (
-				(message.role === "user" || message.role === "custom") &&
+			if (message.role === "assistant") {
+				const overlappingMessage = streamingPlayback.completeImmediately();
+				if (overlappingMessage) settleStreamingMessage(overlappingMessage);
+				ui.streamingMessage = streamingPlayback.start(message);
+				frameCoordinator.scheduleAdvance();
+				needsImmediateRender = false;
+			} else if (message.role === "user") {
+				submitFollowCoordinator.noteUserMessage(contentText(message.content));
+				if (!hasEquivalentTail(ui.messages, message)) ui.messages.push(message);
+			} else if (
+				message.role === "custom" &&
 				!hasEquivalentTail(ui.messages, message)
-			)
+			) {
 				ui.messages.push(message);
+			}
 			break;
 		}
 		case "message_update": {
-			if (event.assistantMessageEvent !== undefined && ui.streamingMessage) {
-				const previous = ui.streamingMessage;
-				ui.streamingMessage = applyAssistantMessageDelta(previous, event);
-				// Each delta returns a new object. Handing the slot identity over keeps
-				// the reader's open tool disclosures alive: without it every frame would
-				// look like a brand new message and its node would be rebuilt from
-				// scratch rather than updated in place.
-				inheritMessageIdentity(previous, ui.streamingMessage);
+			needsImmediateRender = false;
+			if (
+				event.assistantMessageEvent !== undefined &&
+				streamingPlayback.isActive
+			) {
+				streamingPlayback.applyDelta(event);
+				frameCoordinator.scheduleAdvance();
 			} else {
-				// Older pi builds sent a cumulative message snapshot here.
+				// Older pi builds sent a cumulative message snapshot here. It still enters
+				// the same playback buffer so provider batching never becomes a visual jump.
 				const message = asMessage(event.message);
 				if (message) {
-					inheritMessageIdentity(ui.streamingMessage, message);
-					ui.streamingMessage = message;
+					if (streamingPlayback.isActive) {
+						streamingPlayback.updateTarget(message);
+					} else {
+						ui.streamingMessage = streamingPlayback.start(message);
+					}
+					frameCoordinator.scheduleAdvance();
 				}
 			}
 			break;
@@ -1237,13 +1368,16 @@ function reduceRpcEvent(event: JsonRecord): void {
 			const message = asMessage(event.message);
 			if (!message) break;
 			if (message.role === "assistant") {
-				// The authoritative copy replaces the streamed partial, so it has to
-				// take over the same transcript slot.
-				inheritMessageIdentity(ui.streamingMessage, message);
-				if (!hasEquivalentTail(ui.messages, message)) ui.messages.push(message);
-				ui.streamingMessage = undefined;
+				streamingPlayback.finish(message);
+				frameCoordinator.scheduleAdvance();
+				needsImmediateRender = false;
+			} else if (message.role === "toolResult" && message.toolCallId) {
+				if (!toolResults.has(message.toolCallId)) ui.messages.push(message);
+				toolResults.set(message.toolCallId, message);
+				frameCoordinator.scheduleTranscriptRender();
+				needsImmediateRender = false;
 			} else if (
-				(message.role === "toolResult" || message.role === "custom") &&
+				message.role === "custom" &&
 				!hasEquivalentTail(ui.messages, message)
 			) {
 				ui.messages.push(message);
@@ -1258,23 +1392,32 @@ function reduceRpcEvent(event: JsonRecord): void {
 				name: stringValue(event.toolName) || "tool",
 				args: objectValue(event.args),
 				status: "running",
-				output: "",
 				startedAt: Date.now(),
 				revision: 0,
 			});
+			frameCoordinator.scheduleTranscriptRender();
+			needsImmediateRender = false;
 			break;
 		}
 		case "tool_execution_update": {
 			const id = stringValue(event.toolCallId);
 			const tool = liveTools.get(id);
 			if (!tool) break;
-			const output = extractResultText(event.partialResult);
-			// Streaming tools re-send output that has not grown. Skipping the bump
-			// keeps the render signature stable, so the transcript reuses the node
-			// instead of rebuilding it for an identical result.
-			if (output === tool.output) break;
-			tool.output = output;
-			tool.revision += 1;
+			const hadResult = tool.result !== undefined;
+			tool.result = event.partialResult;
+			const isExpanded = Boolean(
+				elements.messages.querySelector(
+					`.tool-call.expanded[data-tool-key="${CSS.escape(id)}"]`,
+				),
+			);
+			// A collapsed card only needs one transition from no body to body. Further
+			// chunks replace the retained raw result without touching DOM or scanning
+			// output. An explicitly expanded card keeps showing current content.
+			if (!hadResult || isExpanded) {
+				tool.revision += 1;
+				frameCoordinator.scheduleTranscriptRender();
+			}
+			needsImmediateRender = false;
 			break;
 		}
 		case "tool_execution_end": {
@@ -1289,14 +1432,15 @@ function reduceRpcEvent(event: JsonRecord): void {
 				args:
 					Object.keys(eventArgs).length > 0 ? eventArgs : (existing?.args ?? {}),
 				status,
-				output: extractResultText(event.result),
-				diff: extractResultDiff(event.result),
+				result: event.result,
 				startedAt: existing?.startedAt ?? Date.now(),
 				revision: (existing?.revision ?? 0) + 1,
 			});
 			announce(
 				`${friendlyToolName(toolName)} ${status === "error" ? "failed" : "completed"}`,
 			);
+			frameCoordinator.scheduleTranscriptRender();
+			needsImmediateRender = false;
 			break;
 		}
 		case "queue_update":
@@ -1330,7 +1474,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 		default:
 			break;
 	}
-	scheduleRender();
+	if (needsImmediateRender) scheduleRender();
 }
 
 function reduceExtensionUiEvent(event: JsonRecord): void {
@@ -1349,12 +1493,50 @@ function reduceExtensionUiEvent(event: JsonRecord): void {
 }
 
 function scheduleRender(): void {
-	if (renderQueued) return;
-	renderQueued = true;
-	requestAnimationFrame(() => {
-		renderQueued = false;
-		render();
-	});
+	frameCoordinator.scheduleRender();
+}
+
+/** Advances buffered text independently of whether the viewport follows it. */
+function advanceStreamingPlayback(timestamp: number): boolean {
+	const frame = streamingPlayback.advance(timestamp);
+	if (!frame) return streamingPlayback.needsFrame;
+	if (frame.completed) {
+		settleStreamingMessage(frame.message);
+		scheduleTranscriptMeasure();
+		return false;
+	}
+	inheritMessageIdentity(ui.streamingMessage, frame.message);
+	ui.streamingMessage = frame.message;
+	return streamingPlayback.needsFrame;
+}
+
+function settleStreamingMessage(message: PiMessage): void {
+	inheritMessageIdentity(ui.streamingMessage, message);
+	if (!hasEquivalentTail(ui.messages, message)) ui.messages.push(message);
+	ui.streamingMessage = undefined;
+}
+
+/**
+ * Patches only the active assistant node on character/tool frames.
+ *
+ * Full reconciliation scans up to 150 historical messages and recomputes their
+ * signatures. That work is appropriate for snapshots and settled messages, but
+ * not for every character. The active slot already has a stable key, so update
+ * it directly and fall back only for its first frame or an unexpected structure.
+ */
+function renderStreamingFrame(): void {
+	const message = ui.streamingMessage;
+	if (!message) {
+		renderMessages();
+		scrollAnchor.stickToBottomIfFollowing();
+		return;
+	}
+	const key = messageKey(message);
+	const slot = transcriptView.nodeFor(key);
+	if (!slot || !patchStreamingMessage(slot, message, toolResults, key)) {
+		renderMessages();
+	}
+	scrollAnchor.stickToBottomIfFollowing();
 }
 
 function render(): void {
@@ -1420,13 +1602,14 @@ function render(): void {
 	reflowComposerTools();
 	focusComposerIfRequested();
 
+	// Relative labels can change text width, so update them before measuring the
+	// transcript's final bottom for this render pass.
+	refreshRelativeTimes();
 	// Bottom-pinning happens after every DOM write in this pass, so the height it
 	// reads is final. Whether it runs at all is the ScrollAnchor's decision, which
 	// was already made from scroll events and reader gestures.
 	scrollAnchor.stickToBottomIfFollowing();
 	scheduleTranscriptMeasure();
-	// Relabels the nodes this pass created and arms the next boundary timer.
-	refreshRelativeTimes();
 }
 
 /**
@@ -1485,23 +1668,27 @@ function bindImageReflow(root: ParentNode): void {
 }
 
 /**
- * Defers the pinned label's layout reads to after the browser has laid out this
- * frame's DOM writes.
+ * Queues the pinned label's layout reads in the coordinator's measure phase.
  *
- * `pinnedPrompt.sync()` reads `getBoundingClientRect` for each rendered prompt.
- * Called straight after the writes in `render()`, every one of those reads
- * forces a synchronous re-layout of freshly invalidated content, which is the
- * read/write interleaving that made streaming frames overrun their budget.
- * Running it in its own rAF costs one frame of label latency and removes the
- * forced layout entirely.
+ * A scroll and a streaming update often arrive before the same paint. Reading
+ * prompt bounds before render writes the next delta avoids a forced layout and
+ * keeps measurement, rendering, and bottom following inside one native frame.
  */
 function scheduleTranscriptMeasure(): void {
-	if (transcriptMeasureQueued) return;
-	transcriptMeasureQueued = true;
-	requestAnimationFrame(() => {
-		transcriptMeasureQueued = false;
-		pinnedPrompt.sync();
-	});
+	frameCoordinator.scheduleMeasure();
+}
+
+function scheduleTranscriptScrollSettle(): void {
+	if (transcriptScrollSettleTimer !== undefined) {
+		clearTimeout(transcriptScrollSettleTimer);
+	}
+	transcriptScrollSettleTimer = setTimeout(() => {
+		transcriptScrollSettleTimer = undefined;
+		if (scrollAnchor.finishUserScroll()) {
+			scrollAnchor.stickToBottomIfFollowing();
+		}
+		scheduleTranscriptMeasure();
+	}, 120);
 }
 
 function renderConnectionBanner(): void {
@@ -1534,7 +1721,7 @@ function renderConnectionBanner(): void {
  * untouched and the reader's scroll position keeps its anchor.
  */
 function renderMessages(): void {
-	const resultMap = buildToolResultMap();
+	const resultMap = toolResults;
 	const streamingMessage = ui.streamingMessage;
 	// pi opens assistant messages with an empty `content: []` and fills them
 	// via message_update deltas. Rendering that empty shell would insert a
@@ -1643,15 +1830,16 @@ function renderMessages(): void {
 function patchStreamingMessage(
 	slot: Element,
 	message: PiMessage,
-	context: MessageRenderContext,
+	resultMap: ReadonlyMap<string, PiMessage>,
 	messageKey: string,
 ): Element | undefined {
 	const sections = assistantMessageSections(
 		message,
-		context.resultMap,
+		resultMap,
 		liveTools,
 		true,
 		messageKey,
+		true,
 	);
 	const host = slot.querySelector(":scope > .message");
 	if (!host || !host.classList.contains("assistant-message")) return undefined;
@@ -1677,7 +1865,19 @@ function patchStreamingMessage(
 		const old = previous.get(section.key);
 		if (old && old.dataset.sectionHash === section.hash) {
 			// Unchanged since the last frame: keep the node and everything the
-			// browser has computed for it.
+			// browser has computed for it. Streaming sections cannot trust the
+			// O(1) marker alone: it samples only length plus edge characters, so
+			// an equal-length rewrite in the middle (a provider correction) would
+			// slip through as "unchanged". Confirm against the last source text
+			// before skipping; static sections hash the full content and are safe.
+			if (
+				!section.streamUpdate ||
+				streamingSectionUnchanged(old, section.streamUpdate.text)
+			) {
+				continue;
+			}
+		}
+		if (old && section.streamUpdate && appendStreamingText(old, section)) {
 			continue;
 		}
 		const nodes = sanitizedNodes(section.html);
@@ -1685,12 +1885,15 @@ function patchStreamingMessage(
 			return undefined;
 		}
 		const fresh = nodes[0] as HTMLElement;
+		if (section.streamUpdate) {
+			materializeStreamingText(fresh, section.streamUpdate);
+		}
 		if (old) {
 			host.replaceChild(fresh, old);
 		} else {
 			host.append(fresh);
 		}
-		freshNodes.push(fresh);
+		if (!section.streamUpdate) freshNodes.push(fresh);
 	}
 
 	// Drop sections whose key left the list (a pending activity timeline that
@@ -1716,6 +1919,194 @@ function patchStreamingMessage(
 	applyExpandableState(host, snapshot);
 
 	return slot;
+}
+
+function materializeStreamingText(
+	sectionRoot: HTMLElement,
+	update: {
+		selector?: string;
+		text: string;
+		format: "markdown" | "plain";
+	},
+): void {
+	const target = update.selector
+		? sectionRoot.querySelector<HTMLElement>(update.selector)
+		: sectionRoot;
+	if (!target) return;
+	streamingSectionSource.set(sectionRoot, update.text);
+	if (update.format === "plain") {
+		target.replaceChildren(document.createTextNode(update.text));
+		return;
+	}
+	materializeStreamingMarkdown(sectionRoot, target, update.text);
+}
+
+/**
+ * True when a streaming section's text has not changed since its last patch.
+ *
+ * Streaming text is almost always append-only, so the length/edge-character
+ * section hash already routes grown frames past this check. Only the rare
+ * equal-length frame reaches here: "nothing changed" compares by reference and
+ * exits in O(1), while a genuine equal-length rewrite pays one exact string
+ * comparison and is re-materialized instead of being skipped as unchanged.
+ */
+function streamingSectionUnchanged(
+	sectionRoot: HTMLElement,
+	currentText: string,
+): boolean {
+	const previousText = streamingSectionSource.get(sectionRoot);
+	if (previousText === undefined) return false;
+	return previousText === currentText;
+}
+
+function materializeStreamingMarkdown(
+	sectionRoot: HTMLElement,
+	target: HTMLElement,
+	text: string,
+): void {
+	const parts = streamingMarkdownParts(text);
+	const stableNodes = sanitizedNodes(parts.stableHtml);
+	const active = document.createElement("div");
+	active.className = "streaming-markdown-active";
+	active.replaceChildren(...sanitizedNodes(parts.activeHtml));
+	target.replaceChildren(...stableNodes, active);
+	sectionRoot.dataset.streamStableLength = String(parts.stableSourceLength);
+	sectionRoot.dataset.streamAppendMode = parts.appendMode;
+	enhanceStableStreamingNodes(stableNodes);
+}
+
+/** Updates only the active Markdown tail and mounts newly stable tokens once. */
+function appendStreamingText(
+	sectionRoot: HTMLElement,
+	section: {
+		hash: string;
+		streamUpdate?: {
+			selector?: string;
+			text: string;
+			format: "markdown" | "plain";
+		};
+	},
+): boolean {
+	const update = section.streamUpdate;
+	if (!update) return false;
+	const target = update.selector
+		? sectionRoot.querySelector<HTMLElement>(update.selector)
+		: sectionRoot;
+	if (!target) return false;
+	const previousLength = Number(sectionRoot.dataset.streamLength);
+	if (
+		!Number.isSafeInteger(previousLength) ||
+		previousLength < 0 ||
+		update.text.length < previousLength
+	) {
+		return false;
+	}
+
+	if (update.format === "plain") {
+		const textNode = target.firstChild;
+		if (
+			!(textNode instanceof Text) ||
+			target.childNodes.length !== 1 ||
+			textNode.data.length !== previousLength
+		) {
+			return false;
+		}
+		textNode.appendData(update.text.slice(previousLength));
+	} else {
+		const active = Array.from(target.children).find((child) =>
+			child.classList.contains("streaming-markdown-active"),
+		);
+		const stableSourceLength = Number(sectionRoot.dataset.streamStableLength);
+		if (
+			!(active instanceof HTMLElement) ||
+			!Number.isSafeInteger(stableSourceLength)
+		) {
+			materializeStreamingMarkdown(sectionRoot, target, update.text);
+		} else {
+			const suffix = update.text.slice(previousLength);
+			const appendMode = sectionRoot.dataset.streamAppendMode;
+			const didAppend =
+				appendMode === "plain"
+					? isPlainMarkdownSuffix(suffix) && appendToLastTextNode(active, suffix)
+					: appendMode === "code"
+						? isSafeCodeSuffix(suffix) && appendToCodeTail(active, suffix)
+						: false;
+			if (didAppend) {
+				sectionRoot.dataset.streamLength = String(update.text.length);
+				sectionRoot.dataset.sectionHash = section.hash;
+				return true;
+			}
+			const parts = streamingMarkdownParts(update.text, stableSourceLength);
+			if (parts.reset) {
+				materializeStreamingMarkdown(sectionRoot, target, update.text);
+			} else {
+				const stableNodes = sanitizedNodes(parts.stableHtml);
+				if (stableNodes.length > 0) {
+					active.before(...stableNodes);
+					enhanceStableStreamingNodes(stableNodes);
+				}
+				active.replaceChildren(...sanitizedNodes(parts.activeHtml));
+				sectionRoot.dataset.streamStableLength = String(parts.stableSourceLength);
+				sectionRoot.dataset.streamAppendMode = parts.appendMode;
+			}
+		}
+	}
+	sectionRoot.dataset.streamLength = String(update.text.length);
+	sectionRoot.dataset.sectionHash = section.hash;
+	streamingSectionSource.set(sectionRoot, update.text);
+	return true;
+}
+
+function isPlainMarkdownSuffix(value: string): boolean {
+	return value.length > 0 && /^[\p{L}\p{M}\p{N}\p{Zs}]+$/u.test(value);
+}
+
+function isSafeCodeSuffix(value: string): boolean {
+	return value.length > 0 && !/[\r\n`~]/u.test(value);
+}
+
+function appendToCodeTail(root: Element, suffix: string): boolean {
+	const code = root.querySelector("pre > code");
+	if (!code) return false;
+	const lastChild = code.lastChild;
+	if (lastChild instanceof Text) lastChild.appendData(suffix);
+	else code.append(document.createTextNode(suffix));
+	return true;
+}
+
+function appendToLastTextNode(root: Element, suffix: string): boolean {
+	if (!suffix) return true;
+	// Marked emits formatting whitespace between block nodes. Appending to the
+	// last text node in a TreeWalker can therefore put characters after `</p>` or
+	// `</li>`; the next Markdown pass moves them back inside the block and creates
+	// the visible jump reported by readers. Always descend from the final semantic
+	// element instead, ignoring whitespace-only siblings owned by the serializer.
+	const semanticRoot = streamingAppendRoot(root);
+	const walker = document.createTreeWalker(semanticRoot, NodeFilter.SHOW_TEXT);
+	let lastText: Text | undefined;
+	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+		lastText = node as Text;
+	}
+	if (!lastText) return false;
+	lastText.appendData(suffix);
+	return true;
+}
+
+function streamingAppendRoot(root: Element): Element {
+	let current = root.lastElementChild ?? root;
+	while (current.matches("ul, ol, blockquote") && current.lastElementChild) {
+		current = current.lastElementChild;
+	}
+	return current;
+}
+
+function enhanceStableStreamingNodes(nodes: Node[]): void {
+	for (const node of nodes) {
+		if (!(node instanceof Element)) continue;
+		enhanceCodeBlocks(node);
+		linkifyWorkspacePaths(node);
+		bindImageReflow(node);
+	}
 }
 
 function createMessageNode(
@@ -1751,18 +2142,24 @@ function createMessageNode(
 	// stable, rewrite only the blocks whose content actually changed, and hand
 	// it straight back so TranscriptView swaps nothing either.
 	if (previous && message === ui.streamingMessage) {
-		const patched = patchStreamingMessage(previous, message, context, entry.key);
+		const patched = patchStreamingMessage(
+			previous,
+			message,
+			context.resultMap,
+			entry.key,
+		);
 		if (patched) return patched;
 	}
 
 	// The same stable key feeds messageHtml's per-block keys. A positional index
 	// would shift for every message once history passes the render cap, which
 	// would silently collapse reasoning blocks the reader had opened.
+	const isStreaming = message === ui.streamingMessage;
 	const html = messageHtml(
 		message,
 		context.resultMap,
 		liveTools,
-		message === ui.streamingMessage,
+		isStreaming,
 		entry.key,
 	);
 
@@ -1772,9 +2169,11 @@ function createMessageNode(
 	node.className = "message-slot";
 	node.replaceChildren(...sanitizedNodes(html));
 	restoreExpandableState(node, previous);
-	enhanceCodeBlocks(node);
-	linkifyWorkspacePaths(node);
-	bindImageReflow(node);
+	if (!isStreaming) {
+		enhanceCodeBlocks(node);
+		linkifyWorkspacePaths(node);
+		bindImageReflow(node);
+	}
 	return node;
 }
 
@@ -1843,7 +2242,10 @@ function applyExpandableState(
 		".tool-call.expandable[data-tool-key]",
 	)) {
 		const key = tool.dataset.toolKey;
-		if (key && snapshot.tools.has(key)) setExpandedState(tool, true);
+		if (key && snapshot.tools.has(key)) {
+			ensureToolBodyMounted(tool);
+			setExpandedState(tool, true);
+		}
 	}
 	for (const skill of node.querySelectorAll<HTMLElement>(
 		".skill-block[data-skill-key]",
@@ -1893,9 +2295,28 @@ function setExpandedState(element: HTMLElement, expanded: boolean): void {
  */
 function toggleExpandable(element: HTMLElement): void {
 	if (window.getSelection()?.toString()) return;
+	// Expanding content is an explicit request to inspect the current viewport.
+	// Detach before the height changes so the next streaming delta cannot pull the
+	// reader back to the bottom through the newly revealed block.
+	scrollAnchor.detach();
 	const expandedClass =
 		element.dataset.expandable === "thinking" ? "is-expanded" : "expanded";
-	setExpandedState(element, !element.classList.contains(expandedClass));
+	const isExpanding = !element.classList.contains(expandedClass);
+	if (isExpanding && element.dataset.expandable === "tool") {
+		ensureToolBodyMounted(element);
+	}
+	setExpandedState(element, isExpanding);
+	scheduleTranscriptMeasure();
+}
+
+function ensureToolBodyMounted(element: HTMLElement): void {
+	if (element.dataset.toolBody !== "lazy") return;
+	const toolId = element.dataset.toolKey;
+	if (!toolId) return;
+	const html = toolBodyHtml(toolResults.get(toolId), liveTools.get(toolId));
+	if (!html) return;
+	element.append(...sanitizedNodes(html));
+	element.dataset.toolBody = "mounted";
 }
 
 function enhanceCodeBlocks(root: ParentNode): void {
@@ -1985,15 +2406,6 @@ function linkifyWorkspacePaths(root: Element): void {
 		if (lastIndex < text.length) fragment.append(text.slice(lastIndex));
 		textNode.parentNode?.replaceChild(fragment, textNode);
 	}
-}
-
-function buildToolResultMap(): Map<string, PiMessage> {
-	const results = new Map<string, PiMessage>();
-	for (const message of ui.messages) {
-		if (message.role === "toolResult" && message.toolCallId)
-			results.set(message.toolCallId, message);
-	}
-	return results;
 }
 
 function renderAttachments(): void {
@@ -3061,7 +3473,7 @@ function sendPrompt(delivery?: SubmitDelivery): void {
 	// Sending is an explicit "show me what happens next", so it re-attaches the
 	// transcript to its bottom edge even if the reader had scrolled up.
 	scrollAnchor.follow();
-	runAction("submit", {
+	const actionId = runAction("submit", {
 		text,
 		attachmentIds: ui.attachments.map((attachment) => attachment.id),
 		references: composerController.references.map((reference) => ({
@@ -3072,6 +3484,11 @@ function sendPrompt(delivery?: SubmitDelivery): void {
 		})),
 		delivery,
 	});
+	submitFollowCoordinator.start(
+		actionId,
+		text,
+		elements.input.getBoundingClientRect().height,
+	);
 	scheduleRender();
 }
 
@@ -3098,7 +3515,7 @@ function runAction(
 		| "addResources"
 		| "pasteImages",
 	fields: JsonRecord = {},
-): void {
+): string {
 	const actionId = crypto.randomUUID();
 	const action: PendingAction = { type };
 	if (typeof fields.stagedReferenceId === "string") {
@@ -3112,6 +3529,7 @@ function runAction(
 	pendingActions.set(actionId, action);
 	const { stagedReferenceId: _stagedReferenceId, ...outgoingFields } = fields;
 	post({ type, actionId, ...outgoingFields } as WebviewToHostMessage);
+	return actionId;
 }
 
 function post(message: WebviewToHostMessage): void {
@@ -3248,19 +3666,6 @@ function connectionLabel(): string {
 	if (ui.connection === "starting") return "Pi is starting";
 	if (ui.connection === "no-workspace") return "Workspace required";
 	return ui.connectionDetail || "Pi is disconnected";
-}
-
-function extractResultText(value: unknown): string {
-	const result = objectValue(value);
-	const content = result.content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const item of content) {
-		if (!item || typeof item !== "object") continue;
-		const text = stringValue((item as JsonRecord).text);
-		if (text) parts.push(text);
-	}
-	return parts.join("\n");
 }
 
 function hasEquivalentTail(

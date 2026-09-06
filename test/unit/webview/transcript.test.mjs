@@ -192,9 +192,67 @@ test("live successful tool diff replaces persisted tool output", async () => {
 		// aria-label because a label on a plain div has no role to attach to.
 		assert.match(html, /<span class="sr-only">Edit file: done<\/span>/u);
 		assert.match(html, /<span class="tool-path">src\/file\.ts<\/span>/u);
-		assert.match(html, /diff-remove/u);
-		assert.match(html, /diff-add/u);
-		assert.doesNotMatch(html, /persisted output|live output/u);
+		assert.match(html, /data-tool-body="lazy"/u);
+		assert.match(html, /<span class="tool-hint">output<\/span>/u);
+		assert.doesNotMatch(
+			html,
+			/diff-remove|diff-add|persisted output|live output/u,
+			"collapsed tool cards must not materialize hidden output",
+		);
+
+		const body = loaded.module.toolBodyHtml(
+			results.get("tool-1"),
+			liveTools.get("tool-1"),
+		);
+		assert.match(body, /diff-remove/u);
+		assert.match(body, /diff-add/u);
+		assert.doesNotMatch(body, /persisted output|live output/u);
+
+		const rawBody = loaded.module.toolBodyHtml(undefined, {
+			...liveTools.get("tool-1"),
+			output: undefined,
+			diff: undefined,
+			result: {
+				content: [{ type: "text", text: "raw output" }],
+				details: { diff: "-raw old\n+raw new" },
+			},
+		});
+		assert.match(rawBody, /raw old/u);
+		assert.match(rawBody, /raw new/u);
+		assert.doesNotMatch(rawBody, /raw output/u);
+
+		const unreadResult = {};
+		Object.defineProperties(unreadResult, {
+			content: {
+				get() {
+					throw new Error("collapsed rendering read tool content");
+				},
+			},
+			details: {
+				get() {
+					throw new Error("collapsed rendering read tool details");
+				},
+			},
+		});
+		assert.doesNotThrow(() =>
+			loaded.module.messageHtml(
+				toolCall,
+				new Map(),
+				new Map([
+					[
+						"tool-1",
+						{
+							...liveTools.get("tool-1"),
+							output: undefined,
+							diff: undefined,
+							result: unreadResult,
+						},
+					],
+				]),
+				true,
+				"message-1",
+			),
+		);
 	} finally {
 		await loaded.dispose();
 	}

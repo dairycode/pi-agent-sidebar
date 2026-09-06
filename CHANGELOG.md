@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.7
+
+- Keep assistant and reasoning output moving continuously through tool events and
+  long replies, while incrementally forming live Markdown without repeatedly
+  reparsing completed content or running code highlighting before settlement.
+- Preserve reader ownership during wheel, touch, scrollbar, and inertial
+  scrolling, then resume the existing smooth bottom follow only after native
+  scrolling settles. Existing Thinking spacing remains unchanged.
+- Keep explicit multi-line sends attached through the independent user-message
+  echo and composer resize phases, without pulling the viewport back after the
+  reader deliberately scrolls away.
+
 ## 0.7.6
 
 - Smoothly follow streaming transcript growth instead of jumping on every delta,

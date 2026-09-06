@@ -29,8 +29,7 @@ async function loadRenderer() {
 						{ filter: /^dompurify$/, namespace: "mock-dompurify" },
 						() => ({
 							loader: "js",
-							contents:
-								"export default { sanitize: (value) => String(value) };",
+							contents: "export default { sanitize: (value) => String(value) };",
 						}),
 					);
 				},
@@ -65,7 +64,7 @@ test("a settled assistant message highlights fenced code", async () => {
 	}
 });
 
-test("a streaming assistant message never runs the highlighter", async () => {
+test("a streaming assistant message renders Markdown without highlighting", async () => {
 	const loaded = await loadRenderer();
 	try {
 		const html = loaded.module.messageHtml(
@@ -75,13 +74,238 @@ test("a streaming assistant message never runs the highlighter", async () => {
 			true,
 			"key-1",
 		);
-		// Highlighting on the streaming path would re-highlight the whole block on
-		// every delta, so it must not produce token markup.
+		// Markdown structure appears while text is streaming, but expensive syntax
+		// highlighting waits for the settled authoritative message.
 		assert.doesNotMatch(html, /hljs-keyword/u);
-		// The language class is still emitted, so the block reports its language
-		// even while streaming.
-		assert.match(html, /class="hljs language-typescript"/u);
+		assert.match(html, /<pre><code class="hljs language-typescript">/u);
 		assert.match(html, /const x: number = 1;/u);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("streaming Markdown keeps only the final top-level token active", async () => {
+	const loaded = await loadRenderer();
+	try {
+		const first = loaded.module.streamingMarkdownParts(
+			"# Heading\n\nFirst paragraph",
+		);
+		assert.match(first.stableHtml, /<h1>Heading<\/h1>/u);
+		assert.match(first.activeHtml, /<p>First paragraph<\/p>/u);
+		assert.equal(first.reset, false);
+
+		const second = loaded.module.streamingMarkdownParts(
+			"# Heading\n\nFirst paragraph\n\n- one\n- two",
+			first.stableSourceLength,
+		);
+		assert.match(second.stableHtml, /<p>First paragraph<\/p>/u);
+		assert.match(second.activeHtml, /<ul>/u);
+		assert.match(second.activeHtml, /<li>one<\/li>/u);
+		assert.match(second.activeHtml, /<li>two<\/li>/u);
+		assert.equal(second.reset, false);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("an unfinished fenced block is live Markdown but remains unhighlighted", async () => {
+	const loaded = await loadRenderer();
+	try {
+		const parts = loaded.module.streamingMarkdownParts(
+			"```ts\nconst value = 1;\n",
+		);
+		assert.match(
+			parts.activeHtml,
+			/<pre><code class="hljs language-typescript">/u,
+		);
+		assert.doesNotMatch(parts.activeHtml, /hljs-keyword/u);
+		assert.equal(
+			parts.appendMode,
+			"none",
+			"a frame ending on a newline reparses once to preserve the code line break",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("streaming append modes preserve inline Markdown boundaries", async () => {
+	const loaded = await loadRenderer();
+	try {
+		assert.equal(
+			loaded.module.streamingMarkdownParts("plain text").appendMode,
+			"plain",
+		);
+		assert.equal(
+			loaded.module.streamingMarkdownParts("plain **bold**").appendMode,
+			"none",
+			"new text after strong markup must not be appended inside <strong>",
+		);
+		assert.equal(
+			loaded.module.streamingMarkdownParts("plain [link](https://example.com)")
+				.appendMode,
+			"none",
+			"new text after a link must not be appended inside <a>",
+		);
+		assert.equal(
+			loaded.module.streamingMarkdownParts("```ts\nconst value = 1;").appendMode,
+			"code",
+		);
+		assert.equal(
+			loaded.module.streamingMarkdownParts("```ts\nconst value = 1;\n```")
+				.appendMode,
+			"none",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("streaming Markdown does not expose delimiters that vanish on the next frame", async () => {
+	const loaded = await loadRenderer();
+	try {
+		const boldOpen = loaded.module.streamingMarkdownParts("Start **bold text");
+		assert.match(boldOpen.activeHtml, /<p>Start bold text<\/p>/u);
+		assert.doesNotMatch(boldOpen.activeHtml, /\*/u);
+
+		const boldAlmostClosed =
+			loaded.module.streamingMarkdownParts("Start **bold text*");
+		assert.match(boldAlmostClosed.activeHtml, /<p>Start bold text<\/p>/u);
+		assert.doesNotMatch(boldAlmostClosed.activeHtml, /\*/u);
+
+		const boldClosed = loaded.module.streamingMarkdownParts(
+			"Start **bold text**",
+		);
+		assert.match(boldClosed.activeHtml, /<strong>bold text<\/strong>/u);
+
+		const codeOpen = loaded.module.streamingMarkdownParts("and `inline code");
+		assert.match(codeOpen.activeHtml, /<p>and inline code<\/p>/u);
+		assert.doesNotMatch(codeOpen.activeHtml, /`/u);
+
+		const codeClosed = loaded.module.streamingMarkdownParts("and `inline code`");
+		assert.match(codeClosed.activeHtml, /<code>inline code<\/code>/u);
+
+		const strikeOpen = loaded.module.streamingMarkdownParts("Strike ~~removed~");
+		assert.match(strikeOpen.activeHtml, /<p>Strike removed<\/p>/u);
+		assert.doesNotMatch(strikeOpen.activeHtml, /~/u);
+		const strikeClosed =
+			loaded.module.streamingMarkdownParts("Strike ~~removed~~");
+		assert.match(strikeClosed.activeHtml, /<del>removed<\/del>/u);
+
+		const ordinaryOperator = loaded.module.streamingMarkdownParts("math 5 * 3.");
+		assert.match(ordinaryOperator.activeHtml, /math 5 \* 3\./u);
+
+		const escaped = loaded.module.streamingMarkdownParts("Escaped \\*literal\\*");
+		assert.match(escaped.activeHtml, /Escaped \*literal\*/u);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("streaming block markers become structure without leaking temporary text", async () => {
+	const loaded = await loadRenderer();
+	try {
+		const pendingList = loaded.module.streamingMarkdownParts("- ");
+		assert.equal(pendingList.activeHtml, "");
+		assert.equal(pendingList.appendMode, "none");
+
+		const list = loaded.module.streamingMarkdownParts("- first item");
+		assert.match(list.activeHtml, /<li>first item<\/li>/u);
+		assert.doesNotMatch(list.activeHtml, />- /u);
+
+		for (const pendingSetext of [
+			"Reasoning line\n-",
+			"Reasoning line\n--",
+			"Reasoning line\n=",
+		]) {
+			const parts = loaded.module.streamingMarkdownParts(pendingSetext);
+			assert.match(parts.activeHtml, /<p>Reasoning line<\/p>/u);
+			assert.doesNotMatch(parts.activeHtml, /<h[12]>|<hr>|<li>/u);
+			assert.equal(parts.appendMode, "none");
+		}
+		const listAfterReasoning = loaded.module.streamingMarkdownParts(
+			"Reasoning line\n- first item",
+		);
+		assert.match(listAfterReasoning.stableHtml, /<p>Reasoning line<\/p>/u);
+		assert.match(listAfterReasoning.activeHtml, /<li>first item<\/li>/u);
+
+		for (const pendingDivider of ["-", "--", "*", "**", "_"]) {
+			const parts = loaded.module.streamingMarkdownParts(pendingDivider);
+			assert.equal(parts.activeHtml, "");
+			assert.equal(parts.appendMode, "none");
+		}
+		const divider = loaded.module.streamingMarkdownParts("---");
+		assert.match(divider.activeHtml, /<hr>/u);
+
+		const pendingOrderedList = loaded.module.streamingMarkdownParts("1");
+		assert.equal(pendingOrderedList.activeHtml, "");
+		assert.equal(pendingOrderedList.appendMode, "none");
+		const orderedList = loaded.module.streamingMarkdownParts("1. first item");
+		assert.match(orderedList.activeHtml, /<ol>/u);
+		assert.match(orderedList.activeHtml, /<li>first item<\/li>/u);
+
+		const pendingLink = loaded.module.streamingMarkdownParts(
+			"Read [docs](https://example.com",
+		);
+		assert.match(pendingLink.activeHtml, /<p>Read docs<\/p>/u);
+		assert.doesNotMatch(pendingLink.activeHtml, /\[|\]|https:\/\//u);
+		assert.equal(pendingLink.appendMode, "none");
+		const link = loaded.module.streamingMarkdownParts(
+			"Read [docs](https://example.com)",
+		);
+		assert.match(link.activeHtml, /<a href="https:\/\/example\.com">docs<\/a>/u);
+
+		const heading = loaded.module.streamingMarkdownParts("# Heading **bold");
+		assert.match(heading.activeHtml, /<h1>Heading bold<\/h1>/u);
+		assert.doesNotMatch(heading.activeHtml, /#|\*/u);
+		const listInline = loaded.module.streamingMarkdownParts("- item **bold");
+		assert.match(listInline.activeHtml, /<li>item bold<\/li>/u);
+		assert.doesNotMatch(listInline.activeHtml, /\*/u);
+		const quoteInline = loaded.module.streamingMarkdownParts("> quote `code");
+		assert.match(quoteInline.activeHtml, /<p>quote code<\/p>/u);
+		assert.doesNotMatch(quoteInline.activeHtml, /`/u);
+
+		const language = loaded.module.streamingMarkdownParts("```ts");
+		assert.match(language.activeHtml, /language-typescript/u);
+		assert.doesNotMatch(language.activeHtml, />ts/u);
+		assert.equal(language.appendMode, "none");
+
+		for (const suffix of ["\n", "\n`", "\n``", "\n```"]) {
+			const fence = loaded.module.streamingMarkdownParts(
+				`\`\`\`ts\nvalue${suffix}`,
+			);
+			assert.match(fence.activeHtml, />value<\/code>/u);
+			assert.doesNotMatch(fence.activeHtml, /value\n|`/u);
+		}
+
+		const nextCodeLine =
+			loaded.module.streamingMarkdownParts("```ts\nvalue\nnext");
+		assert.match(nextCodeLine.activeHtml, />value\nnext<\/code>/u);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("reference definitions reset the streaming prefix cache", async () => {
+	const loaded = await loadRenderer();
+	try {
+		const definitionOnly = loaded.module.streamingMarkdownParts(
+			"[docs]: https://example.com",
+		);
+		assert.equal(definitionOnly.reset, true);
+		assert.equal(definitionOnly.stableSourceLength, 0);
+
+		const beforeDefinition = "# Heading\n\nRead [docs]";
+		const first = loaded.module.streamingMarkdownParts(beforeDefinition);
+		assert.ok(first.stableSourceLength > 0);
+
+		const parts = loaded.module.streamingMarkdownParts(
+			`${beforeDefinition}\n\n[docs]: https://example.com`,
+			first.stableSourceLength,
+		);
+		assert.equal(parts.reset, true);
+		assert.equal(parts.stableSourceLength, 0);
+		assert.match(parts.activeHtml, /href="https:\/\/example\.com"/u);
 	} finally {
 		await loaded.dispose();
 	}

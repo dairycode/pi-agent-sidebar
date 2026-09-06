@@ -52,7 +52,7 @@
 	/* Keep the pinned navigator denser than the source message so it occupies less
 	   reading space. Font, line height, and left inset still match the source; only
 	   the vertical frame tightens. The right inset is the edge gap plus the
-	   out-of-flow toggle's own width plus a 4px gutter, so text ellipsises before
+	   out-of-flow toggle's own width plus a 4px gutter, so text truncates before
 	   it reaches the control. */
 	padding: 7px 8px;
 	padding-right: calc(8px + var(--pi-control-size) + 4px);
@@ -271,6 +271,14 @@
 	padding: var(--pi-line-half) 11px 0;
 }
 
+/* Streaming text is real Markdown DOM. The active tail wrapper uses
+   `display: contents`; normal Markdown rules below control whitespace. */
+/* The active token wrapper exists only so streaming can replace one Markdown
+   tail without touching stable siblings. It must not create a layout box. */
+.streaming-markdown-active {
+	display: contents;
+}
+
 /* A tool box is a filled surface, so it needs real clearance from the prose
    above it: at the timeline's own tight gap the tint started immediately under
    the last text line and read as if it belonged to that paragraph. pi spends a
@@ -296,12 +304,16 @@
 }
 
 .assistant-text > :first-child,
-.thinking-text > :first-child {
+.thinking-text > :first-child,
+.assistant-text > .streaming-markdown-active:first-child > :first-child,
+.thinking-text > .streaming-markdown-active:first-child > :first-child {
 	margin-top: 0;
 }
 
 .assistant-text > :last-child,
-.thinking-text > :last-child {
+.thinking-text > :last-child,
+.assistant-text > .streaming-markdown-active:last-child > :last-child,
+.thinking-text > .streaming-markdown-active:last-child > :last-child {
 	margin-bottom: 0;
 }
 
@@ -625,7 +637,8 @@
 	margin: 0;
 }
 
-.thinking-text p + p {
+.thinking-text p + p,
+.thinking-text > p + .streaming-markdown-active > p:first-child {
 	margin-top: var(--pi-line-half);
 }
 

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
@@ -38,6 +39,15 @@ async function loadSections() {
 		],
 	});
 }
+
+test("streaming thinking paragraphs keep their settled spacing", async () => {
+	const css = await readFile("webview/styles/transcript.css", "utf8");
+	assert.match(
+		css,
+		/\.thinking-text p \+ p,\s*\.thinking-text > p \+ \.streaming-markdown-active > p:first-child\s*\{\s*margin-top: var\(--pi-line-half\);\s*\}/u,
+		"the active paragraph must receive its final margin before it becomes stable",
+	);
+});
 
 test("section keys are stable while a text block grows", async () => {
 	const loaded = await loadSections();
@@ -83,7 +93,7 @@ test("a settled message and its streaming twin keep the same keys", async () => 
 		const { assistantMessageSections } = loaded.module;
 		const results = new Map();
 		const liveTools = new Map();
-		const message = (streaming) => ({
+		const message = () => ({
 			role: "assistant",
 			content: [
 				{ type: "thinking", thinking: "Reasoning..." },
@@ -98,14 +108,14 @@ test("a settled message and its streaming twin keep the same keys", async () => 
 		});
 
 		const streamed = assistantMessageSections(
-			message(true),
+			message(),
 			results,
 			liveTools,
 			true,
 			"message-1",
 		);
 		const settled = assistantMessageSections(
-			message(false),
+			message(),
 			results,
 			liveTools,
 			false,
@@ -120,6 +130,87 @@ test("a settled message and its streaming twin keep the same keys", async () => 
 			settled.map((section) => section.key),
 			["activity-0", "content-0", "activity-1"],
 			"settling must not reshuffle section keys",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("streaming text renders Markdown before the settled highlight pass", async () => {
+	const loaded = await loadSections();
+	try {
+		const { assistantMessageSections } = loaded.module;
+		const results = new Map();
+		const liveTools = new Map();
+		const message = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "**reasoning** <unsafe>" },
+				{ type: "text", text: "**answer** <unsafe>" },
+			],
+		};
+
+		const streamed = assistantMessageSections(
+			message,
+			results,
+			liveTools,
+			true,
+			"message-1",
+		);
+		assert.match(streamed[0].html, /<p>\*\*reasoning\*\* <unsafe><\/p>/u);
+		assert.match(streamed[1].html, /<p>\*\*answer\*\* <unsafe><\/p>/u);
+		assert.equal(streamed[0].streamUpdate.text, "**reasoning** <unsafe>");
+		assert.equal(streamed[0].streamUpdate.format, "markdown");
+		assert.equal(streamed[1].streamUpdate.text, "**answer** <unsafe>");
+		assert.equal(streamed[1].streamUpdate.format, "markdown");
+
+		const settled = assistantMessageSections(
+			message,
+			results,
+			liveTools,
+			false,
+			"message-1",
+		);
+		assert.match(settled[0].html, /<p>\*\*reasoning\*\* <unsafe><\/p>/u);
+		assert.match(settled[1].html, /<p>\*\*answer\*\* <unsafe><\/p>/u);
+		assert.equal(settled[0].streamUpdate, undefined);
+		assert.equal(settled[1].streamUpdate, undefined);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("thinking remains visible when it shares an activity section with a tool", async () => {
+	const loaded = await loadSections();
+	try {
+		const { assistantMessageSections } = loaded.module;
+		const sections = assistantMessageSections(
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Inspect the result <carefully>" },
+					{
+						type: "toolCall",
+						id: "tool-1",
+						name: "read",
+						arguments: { path: "src/file.ts" },
+					},
+				],
+			},
+			new Map(),
+			new Map(),
+			true,
+			"message-1",
+			true,
+		);
+
+		assert.equal(sections.length, 1);
+		assert.match(sections[0].html, /<p>Inspect the result <carefully><\/p>/u);
+		assert.match(sections[0].html, /src\/file\.ts/u);
+		assert.equal(
+			sections[0].streamUpdate,
+			undefined,
+			"mixed activity must render as a complete static section",
 		);
 	} finally {
 		await loaded.dispose();

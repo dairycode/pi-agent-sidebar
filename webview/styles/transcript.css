@@ -271,6 +271,20 @@
 	padding: var(--pi-line-half) 11px 0;
 }
 
+/* pi sends a text block before tool calls even when the model produced only
+   whitespace there — the block renders as an empty `.assistant-text`, whose
+   top padding plus the full prose→tool line below it leaves a ~3× gap between
+   a thinking block and the tool box that follows. An empty section holds no
+   prose, so it must not push the timeline apart. `:empty` also covers the
+   streaming frame before the first text delta lands, where the section is
+   still blank; it fills in normally once `streamUpdate` writes the tail. */
+.assistant-text:empty {
+	padding-top: 0;
+}
+.assistant-text:empty + .activity-timeline {
+	margin-top: var(--pi-line-half);
+}
+
 /* Streaming text is real Markdown DOM. The active tail wrapper uses
    `display: contents`; normal Markdown rules below control whitespace. */
 /* The active token wrapper exists only so streaming can replace one Markdown

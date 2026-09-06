@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.8
+
+- Close the gap that appeared between a thinking block and the tool box that
+  follows it. pi sends a text block before tool calls even when the model
+  produced only whitespace there, so the placeholder rendered as an empty
+  `.assistant-text` whose top padding plus the full prose-to-tool line below it
+  pushed the timeline apart; empty sections now hold no vertical space (and the
+  blank frame before streaming settles is covered too).
+
 ## 0.7.7
 
 - Keep assistant and reasoning output moving continuously through tool events and

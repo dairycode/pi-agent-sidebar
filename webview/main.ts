@@ -357,7 +357,14 @@ const pinnedPrompt = new PinnedPromptController({
 const reducedMotionQuery = window.matchMedia(
 	"(prefers-reduced-motion: reduce)",
 );
-const streamingPlayback = new StreamingMessagePlayback();
+const expandedThinkingKeys = new Set<string>();
+let pendingThinkingToggleAnchor:
+	| { thinkingKey: string; viewportTop: number }
+	| undefined;
+const streamingPlayback = new StreamingMessagePlayback({
+	shouldAnimateThinking: (message, thinkingIndex) =>
+		expandedThinkingKeys.has(`${messageKey(message)}-thinking-${thinkingIndex}`),
+});
 const frameCoordinator = new FrameCoordinator({
 	requestFrame: (callback) => window.requestAnimationFrame(callback),
 	cancelFrame: (handle) => window.cancelAnimationFrame(handle),
@@ -1165,6 +1172,8 @@ function applySnapshot(
 		}
 	}
 	if (sessionChanged) {
+		expandedThinkingKeys.clear();
+		pendingThinkingToggleAnchor = undefined;
 		submitFollowCoordinator.cancelAll();
 		extensionStatuses.clear();
 		extensionWidgets.clear();
@@ -1560,6 +1569,7 @@ function render(): void {
 	elements.transcript.setAttribute("aria-busy", String(working));
 	renderConnectionBanner();
 	renderMessages();
+	restoreThinkingToggleAnchor();
 	renderAttachments();
 	renderComposerHighlights();
 	renderSelectors();
@@ -1748,6 +1758,7 @@ function renderMessages(): void {
 	const renderable = allMessages.filter(isRenderableMessage);
 	const visible = renderable.slice(-MAX_RENDERED_MESSAGES);
 	const omitted = renderable.length - visible.length;
+	pruneExpandedThinkingKeys(visible);
 
 	const entries: TranscriptEntry[] = [];
 	if (omitted > 0) {
@@ -1789,13 +1800,54 @@ function renderMessages(): void {
 				liveTools,
 				message === ui.streamingMessage,
 				messageSignaturePart,
-			)}|ts${epochMs ?? "-"}`,
+			)}|ts${epochMs ?? "-"}|tk${thinkingVisibilitySignature(message, key)}`,
 		});
 	}
 
 	pendingMessageRender = { byKey, omitted, resultMap, separatorLabels };
 	transcriptView.update(entries);
 	pendingMessageRender = undefined;
+}
+
+/**
+ * Folded into the render signature so toggling a thinking block rebuilds its
+ * message with the new form. With no expansions the suffix is a constant, so
+ * it adds nothing to the common no-op path.
+ */
+function thinkingVisibilitySignature(
+	message: PiMessage,
+	messageKey: string,
+): string {
+	const blocks = Array.isArray(message.content) ? message.content : [];
+	let state = "";
+	let thinkingIndex = 0;
+	for (const block of blocks) {
+		if (block.type !== "thinking") continue;
+		state += expandedThinkingKeys.has(`${messageKey}-thinking-${thinkingIndex}`)
+			? "1"
+			: "0";
+		thinkingIndex += 1;
+	}
+	return state || "-";
+}
+
+/** Drops disclosure state for messages no longer retained by the transcript. */
+function pruneExpandedThinkingKeys(messages: readonly PiMessage[]): void {
+	if (expandedThinkingKeys.size === 0) return;
+	const retained = new Set<string>();
+	for (const message of messages) {
+		const key = messageKey(message);
+		const blocks = Array.isArray(message.content) ? message.content : [];
+		let thinkingIndex = 0;
+		for (const block of blocks) {
+			if (block.type !== "thinking") continue;
+			retained.add(`${key}-thinking-${thinkingIndex}`);
+			thinkingIndex += 1;
+		}
+	}
+	for (const key of expandedThinkingKeys) {
+		if (!retained.has(key)) expandedThinkingKeys.delete(key);
+	}
 }
 
 /**
@@ -1840,6 +1892,7 @@ function patchStreamingMessage(
 		true,
 		messageKey,
 		true,
+		expandedThinkingKeys,
 	);
 	const host = slot.querySelector(":scope > .message");
 	if (!host || !host.classList.contains("assistant-message")) return undefined;
@@ -2148,7 +2201,10 @@ function createMessageNode(
 			context.resultMap,
 			entry.key,
 		);
-		if (patched) return patched;
+		if (patched) {
+			applyMessageBoundaryClasses(patched, message);
+			return patched;
+		}
 	}
 
 	// The same stable key feeds messageHtml's per-block keys. A positional index
@@ -2161,12 +2217,14 @@ function createMessageNode(
 		liveTools,
 		isStreaming,
 		entry.key,
+		expandedThinkingKeys,
 	);
 
 	// One wrapper per message keeps the container's child list aligned with the
 	// entry list, which is what lets reconciliation address nodes positionally.
 	const node = document.createElement("div");
 	node.className = "message-slot";
+	applyMessageBoundaryClasses(node, message);
 	node.replaceChildren(...sanitizedNodes(html));
 	restoreExpandableState(node, previous);
 	if (!isStreaming) {
@@ -2177,32 +2235,39 @@ function createMessageNode(
 	return node;
 }
 
+/** Marks message edges used for spacing across RPC rows and conversation turns. */
+function applyMessageBoundaryClasses(slot: Element, message: PiMessage): void {
+	const blocks = Array.isArray(message.content) ? message.content : [];
+	const visibleBlocks = blocks.filter(
+		(block) => block.type !== "text" || (block.text ?? "").trim().length > 0,
+	);
+	const firstBlock = visibleBlocks[0];
+	const lastBlock = visibleBlocks.at(-1);
+	slot.classList.toggle("user-turn", message.role === "user");
+	slot.classList.toggle(
+		"assistant-starts-text",
+		message.role === "assistant" && firstBlock?.type === "text",
+	);
+	slot.classList.toggle(
+		"assistant-ends-thinking",
+		message.role === "assistant" && lastBlock?.type === "thinking",
+	);
+}
+
 /**
- * Carries reader-toggled expansion across a rebuild.
+ * Carries DOM-owned disclosure state across a message rebuild.
  *
- * Expansion lives only in the DOM, so replacing a node would silently discard
- * it. Reasoning has to carry both directions because its default is expanded:
- * restoring only "was open" would re-expand every block the reader had just
- * collapsed. A tool box defaults to collapsed, so only the expanded ones need
- * recording; skill cards share that collapsed-by-default shape.
- *
- * Streaming reasoning is skipped: it has no collapse control while its content
- * is still arriving.
+ * Thinking is deliberately absent: `expandedThinkingKeys` is its single source
+ * of truth. Restoring the previous DOM class after a click would overwrite the
+ * newly requested state and make the block appear impossible to open. Tool and
+ * skill expansion still lives only in the DOM, so those states are preserved.
  */
 interface ExpandableSnapshot {
-	thinking: Map<string, boolean>;
 	tools: Set<string>;
 	skills: Set<string>;
 }
 
 function captureExpandableState(previous: Element): ExpandableSnapshot {
-	const thinking = new Map<string, boolean>();
-	for (const block of previous.querySelectorAll<HTMLElement>(
-		".thinking-block:not(.streaming)[data-thinking-key]",
-	)) {
-		const key = block.dataset.thinkingKey;
-		if (key) thinking.set(key, block.classList.contains("is-expanded"));
-	}
 	const tools = new Set<string>();
 	for (const tool of previous.querySelectorAll<HTMLElement>(
 		".tool-call.expandable.expanded[data-tool-key]",
@@ -2217,27 +2282,14 @@ function captureExpandableState(previous: Element): ExpandableSnapshot {
 		const key = skill.dataset.skillKey;
 		if (key && skill.classList.contains("expanded")) skills.add(key);
 	}
-	return { thinking, tools, skills };
+	return { tools, skills };
 }
 
 function applyExpandableState(
 	node: Element,
 	snapshot: ExpandableSnapshot,
 ): void {
-	if (
-		snapshot.thinking.size === 0 &&
-		snapshot.tools.size === 0 &&
-		snapshot.skills.size === 0
-	)
-		return;
-	for (const block of node.querySelectorAll<HTMLElement>(
-		".thinking-block:not(.streaming)[data-thinking-key]",
-	)) {
-		const key = block.dataset.thinkingKey;
-		const expanded = key ? snapshot.thinking.get(key) : undefined;
-		if (expanded === undefined) continue;
-		setExpandedState(block, expanded);
-	}
+	if (snapshot.tools.size === 0 && snapshot.skills.size === 0) return;
 	for (const tool of node.querySelectorAll<HTMLElement>(
 		".tool-call.expandable[data-tool-key]",
 	)) {
@@ -2299,14 +2351,51 @@ function toggleExpandable(element: HTMLElement): void {
 	// Detach before the height changes so the next streaming delta cannot pull the
 	// reader back to the bottom through the newly revealed block.
 	scrollAnchor.detach();
-	const expandedClass =
-		element.dataset.expandable === "thinking" ? "is-expanded" : "expanded";
+	const isThinking = element.dataset.expandable === "thinking";
+	const expandedClass = isThinking ? "is-expanded" : "expanded";
 	const isExpanding = !element.classList.contains(expandedClass);
-	if (isExpanding && element.dataset.expandable === "tool") {
-		ensureToolBodyMounted(element);
+	if (isThinking) {
+		const thinkingKey = element.dataset.thinkingKey;
+		if (thinkingKey) {
+			pendingThinkingToggleAnchor = {
+				thinkingKey,
+				viewportTop: element.getBoundingClientRect().top,
+			};
+		}
+		setThinkingVisibility(element, isExpanding);
+	} else {
+		if (isExpanding && element.dataset.expandable === "tool") {
+			ensureToolBodyMounted(element);
+		}
+		setExpandedState(element, isExpanding);
 	}
-	setExpandedState(element, isExpanding);
 	scheduleTranscriptMeasure();
+}
+
+/** Keeps the clicked thinking control at the same viewport position after reflow. */
+function restoreThinkingToggleAnchor(): void {
+	const pending = pendingThinkingToggleAnchor;
+	if (!pending) return;
+	pendingThinkingToggleAnchor = undefined;
+	const element = elements.messages.querySelector<HTMLElement>(
+		`.thinking-block[data-thinking-key="${CSS.escape(pending.thinkingKey)}"]`,
+	);
+	if (!element) return;
+	const offset = element.getBoundingClientRect().top - pending.viewportTop;
+	scrollAnchor.adjustBy(offset);
+}
+
+/**
+ * Records a thinking toggle so the next frame re-renders the block in its new
+ * form. The collapsed form omits the body and the streaming delta entirely, so
+ * a toggle must reach the renderer, not just swap a class.
+ */
+function setThinkingVisibility(element: HTMLElement, expanded: boolean): void {
+	const thinkingKey = element.dataset.thinkingKey;
+	if (!thinkingKey) return;
+	if (expanded) expandedThinkingKeys.add(thinkingKey);
+	else expandedThinkingKeys.delete(thinkingKey);
+	scheduleRender();
 }
 
 function ensureToolBodyMounted(element: HTMLElement): void {

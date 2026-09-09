@@ -8,6 +8,13 @@
 		background: var(--vscode-sideBar-background, var(--vscode-editor-background));
 		animation: none;
 	}
+
+	.is-active-thinking > .thinking-block .thinking-collapsed,
+	.is-active-thinking > .thinking-block .thinking-dot-one,
+	.is-active-thinking > .thinking-block .thinking-dot-two,
+	.is-active-thinking > .thinking-block .thinking-dot-three {
+		animation: none;
+	}
 }
 
 @media (max-width: 320px) {

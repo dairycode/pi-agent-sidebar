@@ -273,6 +273,27 @@ test("our own bottom-pinning scroll is not mistaken for the reader's", async () 
 	}
 });
 
+test("local disclosure reflow keeps its control at the same viewport position", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport({ scrollHeight: 1400, clientHeight: 400 });
+		viewport.scrollTop = 500;
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+		anchor.detach();
+
+		assert.equal(anchor.adjustBy(120), true);
+		assert.equal(viewport.scrollTop, 620);
+		assert.equal(anchor.isFollowing, false);
+		assert.equal(
+			anchor.noteScroll(),
+			false,
+			"the compensating assignment must not look like reader scrolling",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("follow() overrides a detached state for send and session switches", async () => {
 	const loaded = await loadScrollAnchor();
 	try {

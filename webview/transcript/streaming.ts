@@ -105,6 +105,11 @@ export interface StreamingPlaybackFrame {
 	completed: boolean;
 }
 
+export interface StreamingMessagePlaybackOptions {
+	/** Thinking blocks animate only while the reader has explicitly expanded them. */
+	shouldAnimateThinking?: (message: PiMessage, thinkingIndex: number) => boolean;
+}
+
 const DEFAULT_FRAME_DURATION_MS = 1000 / 60;
 const MAX_FRAME_DURATION_MS = 50;
 const TARGET_BUFFER_LATENCY_MS = 80;
@@ -123,6 +128,10 @@ export class StreamingMessagePlayback {
 	private displayedMessage: PiMessage | undefined;
 	private finalMessage: PiMessage | undefined;
 	private previousFrameTime: number | undefined;
+
+	public constructor(
+		private readonly options: StreamingMessagePlaybackOptions = {},
+	) {}
 
 	public get isActive(): boolean {
 		return this.targetMessage !== undefined;
@@ -221,7 +230,13 @@ export class StreamingMessagePlayback {
 			MAX_FRAME_DURATION_MS,
 		);
 		this.previousFrameTime = timestamp;
-		const bufferedCharacters = pendingCharacterCount(displayed, target);
+		const shouldAnimateThinking = (thinkingIndex: number): boolean =>
+			this.options.shouldAnimateThinking?.(displayed, thinkingIndex) ?? true;
+		const bufferedCharacters = pendingCharacterCount(
+			displayed,
+			target,
+			shouldAnimateThinking,
+		);
 		const characterBudget =
 			bufferedCharacters === 0
 				? 0
@@ -234,7 +249,12 @@ export class StreamingMessagePlayback {
 							),
 						),
 					);
-		const next = revealMessage(displayed, target, characterBudget);
+		const next = revealMessage(
+			displayed,
+			target,
+			characterBudget,
+			shouldAnimateThinking,
+		);
 		this.displayedMessage = next;
 
 		if (contentMatches(next, target)) {
@@ -280,9 +300,16 @@ function blockText(block: PiContentBlock): string | undefined {
 function pendingCharacterCount(
 	displayed: PiMessage,
 	target: PiMessage,
+	shouldAnimateThinking: (thinkingIndex: number) => boolean,
 ): number {
 	const displayedBlocks = contentBlocks(displayed);
+	let thinkingIndex = 0;
 	return contentBlocks(target).reduce((total, targetBlock, index) => {
+		if (targetBlock.type === "thinking") {
+			const shouldAnimate = shouldAnimateThinking(thinkingIndex);
+			thinkingIndex += 1;
+			if (!shouldAnimate) return total;
+		}
 		const targetText = blockText(targetBlock);
 		if (targetText === undefined) return total;
 		const displayedBlock = displayedBlocks[index];
@@ -318,10 +345,19 @@ function revealMessage(
 	displayed: PiMessage,
 	target: PiMessage,
 	characterBudget: number,
+	shouldAnimateThinking: (thinkingIndex: number) => boolean,
 ): PiMessage {
 	const displayedBlocks = contentBlocks(displayed);
 	let remainingBudget = characterBudget;
+	let thinkingIndex = 0;
 	const nextBlocks = contentBlocks(target).map((targetBlock, index) => {
+		if (targetBlock.type === "thinking") {
+			const shouldAnimate = shouldAnimateThinking(thinkingIndex);
+			thinkingIndex += 1;
+			// A collapsed block has no visible body. Keep its displayed model current
+			// in one step so hidden reasoning never delays the answer behind it.
+			if (!shouldAnimate) return targetBlock;
+		}
 		const targetText = blockText(targetBlock);
 		if (targetText === undefined) return targetBlock;
 		const displayedBlock = displayedBlocks[index];

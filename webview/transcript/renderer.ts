@@ -136,6 +136,7 @@ export function messageHtml(
 	liveTools: ReadonlyMap<string, TranscriptLiveTool>,
 	streaming: boolean,
 	messageKey: string,
+	expandedThinkingKeys?: ReadonlySet<string>,
 ): string {
 	if (message.role === "toolResult") return "";
 	if (message.role === "user") return userMessageHtml(message);
@@ -146,6 +147,7 @@ export function messageHtml(
 			liveTools,
 			streaming,
 			messageKey,
+			expandedThinkingKeys,
 		);
 	}
 	if (message.role === "bashExecution") {
@@ -346,6 +348,7 @@ function assistantMessageHtml(
 	liveTools: ReadonlyMap<string, TranscriptLiveTool>,
 	streaming: boolean,
 	messageKey: string,
+	expandedThinkingKeys?: ReadonlySet<string>,
 ): string {
 	return `<article class="message assistant-message">${assistantMessageSections(
 		message,
@@ -353,6 +356,8 @@ function assistantMessageHtml(
 		liveTools,
 		streaming,
 		messageKey,
+		false,
+		expandedThinkingKeys,
 	)
 		.map((section) => section.html)
 		.join("")}</article>`;
@@ -396,44 +401,40 @@ export function assistantMessageSections(
 	streaming: boolean,
 	messageKey: string,
 	deferStreamingTextHtml = false,
+	expandedThinkingKeys?: ReadonlySet<string>,
 ): AssistantMessageSection[] {
 	const blocks = Array.isArray(message.content) ? message.content : [];
 	const sections: AssistantMessageSection[] = [];
-	type ActivityEntry = {
-		signature: string;
-		render: (omitThinkingText: boolean) => string;
-		thinking?: PiContentBlock;
-	};
-	let activity: ActivityEntry[] = [];
 	let activityOrdinal = 0;
 	let contentOrdinal = 0;
 	let thinkingIndex = 0;
-	const flushActivity = (): void => {
-		if (activity.length === 0) return;
-		const firstActivity = activity[0];
-		const onlyThinking =
-			activity.length === 1 && firstActivity?.thinking
-				? firstActivity.thinking
-				: undefined;
-		const streamText =
-			streaming && onlyThinking ? (onlyThinking.thinking ?? "") : undefined;
-		const omitThinkingText = Boolean(deferStreamingTextHtml && onlyThinking);
+	const pushActivity = (
+		kind: "thinking" | "tool",
+		signature: string,
+		render: () => string,
+		streamText?: string,
+		isFollowedByText = false,
+		isActiveThinking = false,
+	): void => {
+		const key = `activity-${activityOrdinal}`;
+		const relationshipClass = isFollowedByText ? " thinking-before-text" : "";
+		const activeClass = isActiveThinking ? " is-active-thinking" : "";
+		const className = `activity-timeline ${kind}-activity${relationshipClass}${activeClass}`;
 		const cacheKey = `${messageKey}:${activityOrdinal}:${streaming ? 1 : 0}:${deferStreamingTextHtml ? 1 : 0}`;
-		const signature = `${activity.map((entry) => entry.signature).join("|")}|omit:${omitThinkingText ? 1 : 0}`;
+		const cacheSignature = `${className}:${signature}`;
 		let cached = activitySectionCache.get(cacheKey);
-		if (cached?.signature !== signature) {
-			const body = activity
-				.map((entry) => entry.render(omitThinkingText && Boolean(entry.thinking)))
-				.join("");
-			const html = `<div class="activity-timeline">${body}</div>`;
-			cached = { signature, body, hash: contentHash(html) };
+		if (cached?.signature !== cacheSignature) {
+			const body = render();
+			const html = `<div class="${className}">${body}</div>`;
+			cached = { signature: cacheSignature, body, hash: contentHash(html) };
 			setActivitySectionCache(cacheKey, cached);
 		}
 
-		const html = `<div class="activity-timeline">${cached.body}</div>`;
-		const key = `activity-${activityOrdinal}`;
+		const html = `<div class="${className}">${cached.body}</div>`;
 		const hash =
-			streamText === undefined ? cached.hash : streamingTextHash(streamText);
+			streamText === undefined
+				? cached.hash
+				: `${contentHash(className)}-${streamingTextHash(streamText)}`;
 		sections.push({
 			key,
 			hash,
@@ -448,21 +449,26 @@ export function assistantMessageSections(
 						},
 		});
 		activityOrdinal += 1;
-		activity = [];
 	};
 
-	for (const block of blocks) {
+	for (const [blockIndex, block] of blocks.entries()) {
 		if (block.type === "text") {
-			flushActivity();
-			const streamText = streaming ? (block.text ?? "") : undefined;
+			const rawText = block.text ?? "";
+			const key = `content-${contentOrdinal}`;
+			contentOrdinal += 1;
+			// pi may insert an empty text block between reasoning and visible prose.
+			// Rendering it creates no content, but its sibling margin still becomes a
+			// blank line. Omit it; if streaming later fills the same block, its ordinal
+			// key stays stable and the patcher inserts it in the correct position.
+			if (rawText.trim().length === 0) continue;
+			const streamText = streaming ? rawText : undefined;
 			const body =
 				streamText === undefined
-					? markdown(block.text ?? "", true)
+					? markdown(rawText, true)
 					: deferStreamingTextHtml
 						? ""
 						: markdown(streamText);
 			const html = `<div class="assistant-text">${body}</div>`;
-			const key = `content-${contentOrdinal}`;
 			const hash =
 				streamText === undefined
 					? contentHash(html)
@@ -476,29 +482,46 @@ export function assistantMessageSections(
 						? undefined
 						: { text: streamText, format: "markdown" },
 			});
-			contentOrdinal += 1;
 		}
 		if (block.type === "thinking") {
 			const thinkingKey = `${messageKey}-thinking-${thinkingIndex}`;
 			const streamingState = streaming ? " streaming" : "";
+			const expanded = Boolean(expandedThinkingKeys?.has(thinkingKey));
+			const streamText =
+				streaming && expanded ? (block.thinking ?? "") : undefined;
+			const omitThinkingText = Boolean(
+				deferStreamingTextHtml && streamText !== undefined,
+			);
+			const nextVisibleBlock = blocks
+				.slice(blockIndex + 1)
+				.find(
+					(candidate) =>
+						candidate.type !== "text" || (candidate.text ?? "").trim().length > 0,
+				);
+			const isActiveThinking = streaming && !expanded && !nextVisibleBlock;
 			thinkingIndex += 1;
-			activity.push({
-				signature: `thinking:${objectIdentity(block)}:${streamingState}`,
-				thinking: block,
-				render: (omitThinkingText) =>
+			pushActivity(
+				"thinking",
+				`thinking:${objectIdentity(block)}:${streamingState}:${expanded ? 1 : 0}:active:${isActiveThinking ? 1 : 0}:omit:${omitThinkingText ? 1 : 0}`,
+				() =>
 					thinkingBlockHtml(
 						thinkingKey,
 						streamingState,
 						omitThinkingText ? { ...block, thinking: "" } : block,
+						expanded,
 					),
-			});
+				streamText,
+				nextVisibleBlock?.type === "text",
+				isActiveThinking,
+			);
 		}
 		if (block.type === "toolCall" && block.id && block.name) {
 			const result = results.get(block.id);
 			const live = liveTools.get(block.id);
-			activity.push({
-				signature: `tool:${objectIdentity(block)}:${objectIdentity(result)}:${live?.status ?? "-"}:${live?.revision ?? -1}`,
-				render: () =>
+			pushActivity(
+				"tool",
+				`tool:${objectIdentity(block)}:${objectIdentity(result)}:${live?.status ?? "-"}:${live?.revision ?? -1}`,
+				() =>
 					toolCallHtml(
 						block.id ?? "",
 						block.name ?? "tool",
@@ -506,10 +529,9 @@ export function assistantMessageSections(
 						result,
 						live,
 					),
-			});
+			);
 		}
 	}
-	flushActivity();
 	if (message.errorMessage) {
 		const html = `<div class="message-error">${escapeHtml(message.errorMessage)}</div>`;
 		const hash = contentHash(html);
@@ -605,29 +627,25 @@ function contentHash(value: string): string {
  * Reasoning, rendered the way pi renders it: italic `thinkingText` with a
  * collapsed placeholder swapped in for it.
  *
- * Visible while it streams, collapsed once it settles. Reasoning is live
- * progress — it is the only thing to watch before the answer starts, and dead
- * weight above the answer afterwards. A streaming block therefore has no
- * collapse control (there is nothing stable to collapse to yet) and a settled
- * one starts collapsed; `restoreExpandableState` skips streaming keys, so the
- * settled block that replaces it inherits no state and takes that default,
- * which is what makes the collapse automatic.
- *
- * pi drives the same pair from one global header toggle. There is no such header
- * here, so the block is its own control and carries the ARIA button contract
- * that the `<summary>` it replaced used to provide for free.
+ * Collapsed unless the reader explicitly expands it — the visible state is
+ * reader-driven and survives settling, so it never collapses on its own. While
+ * streaming, the block is still its own control: expanding it shows the live
+ * reasoning (the stream patcher fills `.thinking-text`), collapsing it again
+ * stops that per-frame work entirely. A collapsed block carries no body, so a
+ * long settle costs nothing until the reader asks to see it.
  */
 function thinkingBlockHtml(
 	thinkingKey: string,
 	streamingState: string,
 	block: PiContentBlock,
+	expanded: boolean,
 ): string {
 	const rawText = block.thinking ?? "";
-	if (streamingState) {
-		return `<div class="activity-item thinking-block streaming is-expanded" data-thinking-key="${escapeHtml(thinkingKey)}"><div class="thinking-text">${markdown(rawText)}</div></div>`;
-	}
-	const body = markdown(rawText);
-	return `<div class="activity-item thinking-block" data-thinking-key="${escapeHtml(thinkingKey)}" data-expandable="thinking" role="button" tabindex="0" aria-expanded="false" aria-label="Reasoning, click to expand"><div class="thinking-text">${body}</div><div class="thinking-collapsed">Thinking …</div></div>`;
+	const expandedClass = expanded ? " is-expanded" : "";
+	const body = expanded
+		? `<div class="thinking-text">${markdown(rawText)}</div>`
+		: `<div class="thinking-text"></div>`;
+	return `<div class="activity-item thinking-block${streamingState}${expandedClass}" data-thinking-key="${escapeHtml(thinkingKey)}" data-expandable="thinking" role="button" tabindex="0" aria-expanded="${expanded ? "true" : "false"}" aria-label="Reasoning, click to ${expanded ? "collapse" : "expand"}">${body}<div class="thinking-collapsed"><span class="thinking-label">Thinking</span><span class="thinking-dots" aria-hidden="true"><span class="thinking-dot-one">.</span><span class="thinking-dot-two">.</span><span class="thinking-dot-three">.</span></span></div></div>`;
 }
 
 /**

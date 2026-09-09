@@ -11,11 +11,11 @@
 	overflow-anchor: auto;
 }
 
-/* One wrapper per message, so the container's child order matches the entry
-   order the reconciler tracks. `contents` keeps it out of layout entirely, so
-   `.messages`' flex gap still applies to the messages themselves. */
+/* One real layout box per message keeps reconciliation and flex spacing aligned:
+   `.messages`' gap applies to slots, while sections inside one assistant turn
+   keep their own independent rhythm. */
 .message-slot {
-	display: contents;
+	min-width: 0;
 }
 
 /* The sticky rail must never be picked as the scroll anchor: it does not move
@@ -231,6 +231,13 @@
 	gap: var(--pi-line-half);
 }
 
+/* A user message starts a new conversational turn. Add one more half-line on
+   top of the normal message gap so the prompt does not visually attach to the
+   assistant prose above it; assistant activity within a turn stays unchanged. */
+.message-slot:not(.user-turn) + .message-slot.user-turn {
+	margin-top: var(--pi-line-half);
+}
+
 /* `break-word` rather than `anywhere`: the latter breaks mid-identifier, which
    shredded names like handleExtensionUiRequest. Elements that really can
    overflow (path links, URLs, the composer) opt into `anywhere` themselves. */
@@ -302,19 +309,22 @@
 	margin-top: var(--pi-line);
 }
 
-/* Reasoning is not a filled surface — it is plain italic prose. The clearance a
-   tool box needs would stack on top of the padding both sides already carry,
-   pushing reasoning two full lines away from the answer it belongs to. pi keeps
-   the pair tight for the same reason (`.thinking-block + .assistant-text`).
-
-   Both selectors name the element that actually carries the margin above, so
-   `:has()` tests the neighbour rather than the subject: a timeline led by
-   reasoning cancels its own top margin, and prose after a timeline that ends in
-   reasoning cancels its. A timeline holding both kinds keeps the wide gap on
-   whichever end is a tool box. */
-.assistant-text + .activity-timeline:has(> .thinking-block:first-child),
-.activity-timeline:has(> .thinking-block:last-child) + .assistant-text {
+/* Reasoning binds tightly to the answer that follows it. Keep the direction
+   explicit: prose → thinking retains the normal full-line activity clearance,
+   while thinking → prose uses the balanced half-line padding from both blocks. */
+.thinking-before-text + .assistant-text {
 	margin-top: 0;
+}
+
+/* Both paths keep one full line between reasoning and the next visible block:
+   thinking → text gets half a line from each block's padding, while
+   thinking → tool gets thinking's bottom half plus the activity-section gap. */
+
+/* A tool round can split reasoning and its answer into adjacent assistant RPC
+   messages. Cancel only the extra message-level flex gap; keep both blocks'
+   half-line padding so this boundary matches thinking → tool visually. */
+.message-slot.assistant-ends-thinking + .message-slot.assistant-starts-text {
+	margin-top: calc(-1 * var(--pi-line-half));
 }
 
 .assistant-text > :first-child,
@@ -610,10 +620,14 @@
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	/* pi separates consecutive tool boxes by a full line
-	   (`.tool-execution + .tool-execution`). Tinted blocks need that much air:
-	   closer together their edges blur into one striped surface. */
+	/* Each activity now owns a stable section so streaming reasoning never
+	   rebuilds a neighbouring tool. Keep this gap for exported/static grouped
+	   markup, while the sibling rule below preserves the same rhythm in-app. */
 	gap: var(--pi-line-half);
+}
+
+.activity-timeline + .activity-timeline {
+	margin-top: var(--pi-line-half);
 }
 
 .activity-item {
@@ -631,10 +645,6 @@
 .thinking-block {
 	min-width: 0;
 	cursor: pointer;
-}
-
-.thinking-block.streaming {
-	cursor: default;
 }
 
 /* Horizontal padding matches `.assistant-text` so reasoning and prose share a
@@ -656,15 +666,89 @@
 	margin-top: var(--pi-line-half);
 }
 
-/* pi keeps both halves in the DOM and swaps them with `display`, so collapsing
-   costs no re-render. That matters more here than in a static export: the
-   reconciler rebuilds this node on every streaming frame. */
+/* Both halves stay in the DOM and swap with `display`, so collapsing costs no
+   re-render. A collapsed block's body is empty until the reader expands it
+   (see `thinkingBlockHtml`); `display` then decides which half shows. */
 .thinking-collapsed {
 	display: none;
 	padding: var(--pi-line-half) 11px;
 	color: var(--pi-theme-thinking-text);
 	font-family: var(--vscode-font-family);
 	font-style: italic;
+}
+
+/* Three independent spans reserve their final width in every frame. All three
+   toggle discretely, so even a proportional font produces exactly no dots →
+   `.` → `..` → `...` without movement. */
+.thinking-dots {
+	display: inline-block;
+	width: 1.5em;
+	margin-left: 0.2em;
+	vertical-align: bottom;
+	white-space: nowrap;
+}
+
+.is-active-thinking > .thinking-block:not(.is-expanded) .thinking-collapsed {
+	animation: thinking-breathe 2.4s ease-in-out infinite;
+}
+
+.is-active-thinking > .thinking-block:not(.is-expanded) .thinking-dot-one {
+	animation: thinking-dot-one 2s step-end infinite;
+}
+
+.is-active-thinking > .thinking-block:not(.is-expanded) .thinking-dot-two {
+	animation: thinking-dot-two 2s step-end infinite;
+}
+
+.is-active-thinking > .thinking-block:not(.is-expanded) .thinking-dot-three {
+	animation: thinking-dot-three 2s step-end infinite;
+}
+
+@keyframes thinking-dot-one {
+	0%,
+	24% {
+		visibility: hidden;
+	}
+
+	25%,
+	100% {
+		visibility: visible;
+	}
+}
+
+@keyframes thinking-dot-two {
+	0%,
+	49% {
+		visibility: hidden;
+	}
+
+	50%,
+	100% {
+		visibility: visible;
+	}
+}
+
+@keyframes thinking-dot-three {
+	0%,
+	74% {
+		visibility: hidden;
+	}
+
+	75%,
+	100% {
+		visibility: visible;
+	}
+}
+
+@keyframes thinking-breathe {
+	0%,
+	100% {
+		opacity: 0.68;
+	}
+
+	50% {
+		opacity: 1;
+	}
 }
 
 .thinking-block:not(.is-expanded) .thinking-text {

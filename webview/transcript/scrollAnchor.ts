@@ -219,6 +219,28 @@ export class ScrollAnchor {
 		this.cancelAnimation();
 	}
 
+	/**
+	 * Compensates a local disclosure reflow while remaining detached.
+	 *
+	 * The caller measures one stable element before and after the DOM change and
+	 * supplies its viewport delta. Recording the assignment as programmatic keeps
+	 * the resulting scroll event from being mistaken for reader input.
+	 */
+	public adjustBy(deltaY: number): boolean {
+		if (
+			!Number.isFinite(deltaY) ||
+			Math.abs(deltaY) <= PROGRAMMATIC_TOLERANCE_PX
+		) {
+			return false;
+		}
+		const { viewport } = this.options;
+		viewport.scrollTop += deltaY;
+		this.expectedScrollTop = viewport.scrollTop;
+		this.lastScrollTop = viewport.scrollTop;
+		this.lastDistanceFromBottom = this.distanceFromBottom();
+		return true;
+	}
+
 	/** Forces following again, for actions that imply "show me the latest". */
 	public follow(): void {
 		this.readerControlsViewport = false;

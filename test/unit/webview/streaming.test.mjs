@@ -158,6 +158,59 @@ test("large backlogs catch up without making one frame unbounded", async () => {
 	}
 });
 
+test("collapsed thinking does not consume the answer playback budget", async () => {
+	const loaded = await loadStreaming();
+	try {
+		const { StreamingMessagePlayback } = loaded.module;
+		const playback = new StreamingMessagePlayback({
+			shouldAnimateThinking: () => false,
+		});
+		playback.start({ role: "assistant", content: [] });
+		playback.updateTarget({
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "hidden".repeat(2000) },
+				{ type: "text", text: "visible answer" },
+			],
+		});
+
+		const first = playback.advance(0);
+		assert.equal(
+			first.message.content[0].thinking,
+			"hidden".repeat(2000),
+			"hidden reasoning should synchronize atomically",
+		);
+		assert.ok(
+			first.message.content[1].text.length > 0,
+			"the answer should start in the same frame",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("expanded thinking keeps its incremental playback", async () => {
+	const loaded = await loadStreaming();
+	try {
+		const { StreamingMessagePlayback } = loaded.module;
+		const playback = new StreamingMessagePlayback({
+			shouldAnimateThinking: () => true,
+		});
+		playback.start({ role: "assistant", content: [] });
+		playback.updateTarget({
+			role: "assistant",
+			content: [{ type: "thinking", thinking: "visible".repeat(2000) }],
+		});
+
+		const first = playback.advance(0);
+		assert.ok(first.message.content[0].thinking.length > 0);
+		assert.ok(first.message.content[0].thinking.length <= 512);
+		assert.equal(playback.needsFrame, true);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("later text frames never serialize completed tool arguments", async () => {
 	const loaded = await loadStreaming();
 	try {

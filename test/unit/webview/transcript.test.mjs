@@ -122,16 +122,42 @@ test("assistant transcript preserves activity ordering and stream state", async 
 		);
 
 		assert.match(html, /class="message assistant-message"/u);
-		// Reasoning is visible while it streams and has no collapse control yet:
-		// there is nothing stable to collapse to until the content settles.
+		// Reasoning starts collapsed and has a collapse control even while it
+		// streams; the reader opts in to seeing it, so the body stays out of the
+		// DOM until then (a settle would otherwise parse a long reasoning wall
+		// the reader never asked to see).
 		assert.match(
 			html,
-			/thinking-block streaming is-expanded" data-thinking-key="message-7-thinking-0"/u,
+			/thinking-block streaming" data-thinking-key="message-7-thinking-0" data-expandable="thinking"/u,
 		);
-		assert.doesNotMatch(html, /data-expandable="thinking"/u);
-		assert.ok(html.indexOf("checking") < html.indexOf("answer"));
+		assert.doesNotMatch(html, /is-expanded|checking/u);
 		assert.match(html, /partial failure/u);
 		assert.match(html, /Cancelled/u);
+
+		// An explicitly expanded streaming block renders its (sanitized) body and
+		// streams updates into it instead.
+		const expanded = loaded.module.messageHtml(
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "checking" },
+					{ type: "text", text: "answer" },
+				],
+				stopReason: "aborted",
+				errorMessage: "partial failure",
+			},
+			new Map(),
+			new Map(),
+			true,
+			"message-7",
+			new Set(["message-7-thinking-0"]),
+		);
+		assert.match(
+			expanded,
+			/thinking-block streaming is-expanded" data-thinking-key="message-7-thinking-0"/u,
+		);
+		assert.match(expanded, /aria-expanded="true"/u);
+		assert.ok(expanded.indexOf("checking") < expanded.indexOf("answer"));
 	} finally {
 		await loaded.dispose();
 	}

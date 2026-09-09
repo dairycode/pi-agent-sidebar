@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.9
+
+- Keep reasoning collapsed while it streams and after it settles, instead of
+  auto-expanding during the reply and auto-collapsing the moment it ends. The
+  thinking block is now its own control in both states: expanding it shows the
+  live reasoning (streamed incrementally) or the settled body, and collapsing it
+  again stops that per-frame work entirely. A collapsed block carries no body,
+  so a long reasoning wall no longer pays a full parse at the settle frame —
+  the stutter that appeared right as the thinking block shrank away.
+
 ## 0.7.8
 
 - Close the gap that appeared between a thinking block and the tool box that

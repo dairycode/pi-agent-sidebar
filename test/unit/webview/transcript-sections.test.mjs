@@ -49,6 +49,91 @@ test("streaming thinking paragraphs keep their settled spacing", async () => {
 	);
 });
 
+test("a new user turn gets a full-line boundary without moving the composer", async () => {
+	const [transcriptCss, composerCss, mainSource] = await Promise.all([
+		readFile("webview/styles/transcript.css", "utf8"),
+		readFile("webview/styles/composer.css", "utf8"),
+		readFile("webview/main.ts", "utf8"),
+	]);
+	assert.match(
+		transcriptCss,
+		/\.message-slot:not\(\.user-turn\) \+ \.message-slot\.user-turn\s*\{\s*margin-top: var\(--pi-line-half\);\s*\}/u,
+	);
+	assert.match(
+		mainSource,
+		/classList\.toggle\("user-turn", message\.role === "user"\)/u,
+	);
+	assert.match(composerCss, /\.composer-shell\s*\{[^}]*padding: 7px 7px 9px;/su);
+});
+
+test("only the active collapsed streaming thinking animates", async () => {
+	const loaded = await loadSections();
+	try {
+		const { assistantMessageSections } = loaded.module;
+		const render = (content, streaming = true, expandedKeys) =>
+			assistantMessageSections(
+				{ role: "assistant", content },
+				new Map(),
+				new Map(),
+				streaming,
+				"message-1",
+				false,
+				expandedKeys,
+			);
+		const thinking = { type: "thinking", thinking: "working" };
+
+		const active = render([thinking]);
+		assert.match(active[0].html, /thinking-activity is-active-thinking/u);
+		assert.match(
+			active[0].html,
+			/<span class="thinking-label">Thinking<\/span><span class="thinking-dots" aria-hidden="true"><span class="thinking-dot-one">\.<\/span><span class="thinking-dot-two">\.<\/span><span class="thinking-dot-three">\.<\/span><\/span>/u,
+		);
+
+		const beforeText = render([thinking, { type: "text", text: "answer" }]);
+		assert.doesNotMatch(beforeText[0].html, /is-active-thinking/u);
+		const beforeTool = render([
+			thinking,
+			{ type: "toolCall", id: "tool-1", name: "read", arguments: {} },
+		]);
+		assert.doesNotMatch(beforeTool[0].html, /is-active-thinking/u);
+
+		const expanded = render([thinking], true, new Set(["message-1-thinking-0"]));
+		assert.doesNotMatch(expanded[0].html, /is-active-thinking/u);
+		const settled = render([thinking], false);
+		assert.doesNotMatch(settled[0].html, /is-active-thinking/u);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("thinking animation preserves layout and respects reduced motion", async () => {
+	const [transcriptCss, responsiveCss] = await Promise.all([
+		readFile("webview/styles/transcript.css", "utf8"),
+		readFile("webview/styles/responsive.css", "utf8"),
+	]);
+	assert.match(transcriptCss, /\.thinking-dots\s*\{[^}]*width: 1\.5em;/su);
+	assert.match(
+		transcriptCss,
+		/\.thinking-collapsed\s*\{\s*animation: thinking-breathe 2\.4s/u,
+	);
+	assert.match(
+		transcriptCss,
+		/\.thinking-dot-one\s*\{\s*animation: thinking-dot-one 2s/u,
+	);
+	assert.match(
+		transcriptCss,
+		/\.thinking-dot-two\s*\{\s*animation: thinking-dot-two/u,
+	);
+	assert.match(
+		transcriptCss,
+		/\.thinking-dot-three\s*\{\s*animation: thinking-dot-three/u,
+	);
+	assert.match(
+		responsiveCss,
+		/prefers-reduced-motion: reduce[\s\S]*\.thinking-dot-one[\s\S]*\.thinking-dot-two[\s\S]*\.thinking-dot-three[\s\S]*animation: none;/u,
+	);
+});
+
 test("section keys are stable while a text block grows", async () => {
 	const loaded = await loadSections();
 	try {
@@ -156,6 +241,8 @@ test("streaming text renders Markdown before the settled highlight pass", async 
 			liveTools,
 			true,
 			"message-1",
+			false,
+			new Set(["message-1-thinking-0"]),
 		);
 		assert.match(streamed[0].html, /<p>\*\*reasoning\*\* <unsafe><\/p>/u);
 		assert.match(streamed[1].html, /<p>\*\*answer\*\* <unsafe><\/p>/u);
@@ -170,48 +257,71 @@ test("streaming text renders Markdown before the settled highlight pass", async 
 			liveTools,
 			false,
 			"message-1",
+			false,
+			new Set(["message-1-thinking-0"]),
 		);
 		assert.match(settled[0].html, /<p>\*\*reasoning\*\* <unsafe><\/p>/u);
 		assert.match(settled[1].html, /<p>\*\*answer\*\* <unsafe><\/p>/u);
 		assert.equal(settled[0].streamUpdate, undefined);
 		assert.equal(settled[1].streamUpdate, undefined);
+
+		// Without the key set, both forms stay collapsed: no body, no streaming
+		// update — the collapsed settle is the hot path a reader never pays for.
+		const collapsed = assistantMessageSections(
+			message,
+			results,
+			liveTools,
+			false,
+			"message-1",
+		);
+		assert.doesNotMatch(collapsed[0].html, /<p>|<\/p>/u);
+		assert.equal(collapsed[0].streamUpdate, undefined);
 	} finally {
 		await loaded.dispose();
 	}
 });
 
-test("thinking remains visible when it shares an activity section with a tool", async () => {
+test("streaming thinking updates independently from an adjacent tool", async () => {
 	const loaded = await loadSections();
 	try {
 		const { assistantMessageSections } = loaded.module;
-		const sections = assistantMessageSections(
-			{
-				role: "assistant",
-				content: [
-					{ type: "thinking", thinking: "Inspect the result <carefully>" },
-					{
-						type: "toolCall",
-						id: "tool-1",
-						name: "read",
-						arguments: { path: "src/file.ts" },
-					},
-				],
-			},
-			new Map(),
-			new Map(),
-			true,
-			"message-1",
-			true,
-		);
+		const toolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "read",
+			arguments: { path: "src/file.ts" },
+		};
+		const render = (thinking) =>
+			assistantMessageSections(
+				{
+					role: "assistant",
+					content: [{ type: "thinking", thinking }, toolCall],
+				},
+				new Map(),
+				new Map(),
+				true,
+				"message-1",
+				true,
+				new Set(["message-1-thinking-0"]),
+			);
 
-		assert.equal(sections.length, 1);
-		assert.match(sections[0].html, /<p>Inspect the result <carefully><\/p>/u);
-		assert.match(sections[0].html, /src\/file\.ts/u);
-		assert.equal(
-			sections[0].streamUpdate,
-			undefined,
-			"mixed activity must render as a complete static section",
+		const before = render("Inspect");
+		const after = render("Inspect the result <carefully>");
+
+		assert.deepEqual(
+			after.map((section) => section.key),
+			["activity-0", "activity-1"],
+			"thinking and tools need separate stable patch targets",
 		);
+		assert.equal(after[0].streamUpdate.text, "Inspect the result <carefully>");
+		assert.equal(after[0].streamUpdate.format, "markdown");
+		assert.notEqual(after[0].hash, before[0].hash);
+		assert.equal(
+			after[1].hash,
+			before[1].hash,
+			"growing thinking must not rebuild its neighbouring tool",
+		);
+		assert.match(after[1].html, /src\/file\.ts/u);
 	} finally {
 		await loaded.dispose();
 	}

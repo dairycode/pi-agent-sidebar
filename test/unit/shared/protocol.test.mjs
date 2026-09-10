@@ -263,6 +263,56 @@ test("workspace file mention queries require a bounded query and request id", as
 	}
 });
 
+test("media requests carry a bounded batch of sources and a request id", async () => {
+	const loaded = await loadProtocol();
+	try {
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "resolveMedia",
+				requestId: 2,
+				sources: ["/tmp/a.png", "docs/b.png"],
+			}),
+			{
+				type: "resolveMedia",
+				requestId: 2,
+				sources: ["/tmp/a.png", "docs/b.png"],
+			},
+		);
+		const ceiling = loaded.module.MAX_RESOLVE_MEDIA_SOURCES;
+		assert.deepEqual(
+			loaded.module.parseWebviewMessage({
+				type: "resolveMedia",
+				requestId: 0,
+				sources: Array.from({ length: ceiling }, (_, index) => `/tmp/${index}.png`),
+			})?.sources.length,
+			ceiling,
+		);
+		for (const invalid of [
+			{ sources: ["/tmp/a.png"] },
+			{ requestId: 2 },
+			{ requestId: 2, sources: [] },
+			{ requestId: 2, sources: "/tmp/a.png" },
+			{ requestId: 2, sources: [""] },
+			{ requestId: 2, sources: [42] },
+			{
+				requestId: 2,
+				sources: Array.from(
+					{ length: ceiling + 1 },
+					(_, index) => `/tmp/${index}.png`,
+				),
+			},
+			{ requestId: 2, sources: ["x".repeat(32 * 1024 + 1)] },
+		]) {
+			assert.equal(
+				loaded.module.parseWebviewMessage({ type: "resolveMedia", ...invalid }),
+				undefined,
+			);
+		}
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("webview protocol accepts argument-free requests", async () => {
 	const loaded = await loadProtocol();
 	try {

@@ -7,6 +7,11 @@ export interface TextPromptOptions {
 	maxLength?: number;
 }
 
+export interface ImagePreviewOptions {
+	src: string;
+	alt: string;
+}
+
 export interface ModalControllerOptions {
 	backdrop: HTMLElement;
 	inertRoots: readonly HTMLElement[];
@@ -69,6 +74,37 @@ export class ModalController {
 		input.select();
 	}
 
+	/**
+	 * Shows one picture at panel size over the modals' backdrop.
+	 *
+	 * The backdrop already owns every way out of an overlay — Escape, a click
+	 * outside, focus restore, and the inert background — so an enlarged picture
+	 * reuses them instead of growing a second overlay that would have to earn each
+	 * one again on its own.
+	 */
+	public openImage(options: ImagePreviewOptions): void {
+		// A path the host never resolved has no source to enlarge.
+		if (!options.src) return;
+		const dialog = this.createDialog(options.alt || "Image preview");
+		dialog.classList.add("modal-image");
+		const image = this.document.createElement("img");
+		image.className = "modal-image-picture";
+		image.src = options.src;
+		image.alt = options.alt;
+		const close = this.createButton("", "icon-button modal-image-close");
+		close.title = "Close preview";
+		close.setAttribute("aria-label", "Close preview");
+		const icon = this.document.createElement("i");
+		icon.className = "codicon codicon-close";
+		icon.setAttribute("aria-hidden", "true");
+		close.append(icon);
+		close.addEventListener("click", () => this.close());
+		dialog.append(image, close);
+		// Focus lands on the button rather than the picture: it is the one thing a
+		// keyboard reader can act on, and the dialog's label carries the alt text.
+		this.open(dialog, close);
+	}
+
 	public close(): void {
 		if (!this.isOpen) return;
 		this.options.backdrop.hidden = true;
@@ -87,9 +123,7 @@ export class ModalController {
 		}
 		if (event.key !== "Tab") return;
 		const focusable = [
-			...this.options.backdrop.querySelectorAll<HTMLElement>(
-				FOCUSABLE_SELECTOR,
-			),
+			...this.options.backdrop.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
 		].filter((item) => !item.hasAttribute("disabled"));
 		const first = focusable[0];
 		const last = focusable.at(-1);

@@ -30,7 +30,7 @@ async function loadTranscript() {
 						() => ({
 							loader: "js",
 							contents:
-								"export const marked = { setOptions() {}, use() {}, parse: (value) => `<p>${value}</p>` };",
+								"export const marked = { setOptions() {}, use(config) { globalThis.__transcriptMarkedRenderer = config.renderer; }, parse: (value) => `<p>${value}</p>` };",
 						}),
 					);
 				},
@@ -377,6 +377,71 @@ test("skill card escapes the payload and leaves plain user text alone", async ()
 		);
 		assert.doesNotMatch(partial, /skill-block/u);
 		assert.match(partial, /class="message user-message"/u);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+/**
+ * The image renderer registered with marked, captured by the mock in
+ * `loadTranscript` because the real marked never runs under Node.
+ */
+function imageRenderer() {
+	return globalThis.__transcriptMarkedRenderer.image;
+}
+
+test("an image path becomes a placeholder the host resolves", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const image = imageRenderer();
+
+		// No `src`: a path is not loadable from a webview, and a made-up `src` would
+		// render as a broken image before the host ever answers.
+		assert.equal(
+			image({ href: "/tmp/preview.png", title: null, text: "preview" }),
+			'<img class="message-media" data-media-source="/tmp/preview.png" alt="preview">',
+		);
+		assert.equal(
+			image({ href: "docs/chart.png", title: null, text: "" }),
+			'<img class="message-media" data-media-source="docs/chart.png" alt="">',
+		);
+		// The path is attacker-controlled text like any other: it lands in the DOM
+		// escaped, so a hostile destination cannot add a tag or an attribute.
+		assert.equal(
+			image({
+				href: 'x.png" onerror="alert(1)',
+				title: 'a "quoted" title',
+				text: "<shot>",
+			}),
+			'<img class="message-media" data-media-source="x.png&quot; onerror=&quot;alert(1)" alt="&lt;shot&gt;" title="a &quot;quoted&quot; title">',
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("an image the webview can load keeps its src", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const image = imageRenderer();
+
+		// Pasted and inline images rendered before this renderer existed, and still
+		// must: only sources the webview cannot fetch take the host round trip.
+		assert.equal(
+			image({
+				href: "data:image/png;base64,AAAA",
+				title: null,
+				text: "pasted",
+			}),
+			'<img class="message-media" src="data:image/png;base64,AAAA" alt="pasted">',
+		);
+		// A remote URL is not one of them: the CSP allows no third-party image host,
+		// so it goes to the resolver and comes back as its alt text rather than as a
+		// broken image box.
+		assert.equal(
+			image({ href: "https://example.com/a.png", title: null, text: "remote" }),
+			'<img class="message-media" data-media-source="https://example.com/a.png" alt="remote">',
+		);
 	} finally {
 		await loaded.dispose();
 	}

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.7.11
+
+- Show images a transcript names by path. A Markdown image pointing at a file
+  rendered as a broken picture, and nothing said why: only the host can turn a
+  path into a URI the webview is allowed to load (`asWebviewUri`), a relative
+  path in the webview resolves against the webview's own origin rather than the
+  file system, and a `file:` URL is stripped by the sanitizer on the way in —
+  silently, because what survives is still a valid `<img>` with no source. The
+  renderer now writes the path into `data-media-source`, the webview asks for
+  every path it has no answer for, in batches of up to 20, and the host replies
+  with a URI it built. Only images inside a workspace folder or the temp directory
+  are readable — a relative path is resolved against pi's working directory first,
+  and every path is canonicalized
+  before it is checked, so a symlink cannot walk out of those roots. Anything
+  refused — a path outside them, a non-image file, a picture over 24 MB, a remote
+  URL, which the webview CSP would block anyway — is replaced by its alt text
+  rather than left as a broken image or a silent gap.
+- Enlarge a transcript picture by clicking it. The cap that keeps one screenshot
+  from taking over the sidebar also shrinks a tall one past reading, so a click
+  now opens the picture over the transcript at panel size. That overlay reuses
+  the modals' backdrop, which already owns Escape, an outside click, and focus
+  restore, instead of growing a second one; the dialog itself paints no panel, so
+  the picture is what the reader sees. The pointer, a tooltip, and Enter on the
+  focused picture all name the same gesture, because a picture — unlike a button —
+  carries no affordance of its own, and a click that ends a drag-select is
+  ignored: that one is the reader copying text.
+- Declare the workspace folders and the temp directory in `localResourceRoots`.
+  `asWebviewUri` hands back a URI for any file, but the editor only serves files
+  under a declared root, so a transcript image would have failed to load even
+  once it resolved. The temp directory is in that list deliberately: tool output
+  and rendered previews land there, which is the trade this feature is built on.
+
 ## 0.7.10
 
 - Update the session usage chip and its panel while a reply is still streaming.

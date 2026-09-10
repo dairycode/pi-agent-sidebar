@@ -30,6 +30,17 @@ const highlighter: CodeHighlighter = new HighlightJsHighlighter();
 let highlightEnabled = false;
 
 /**
+ * Sources the webview loads without asking the host.
+ *
+ * Only `data:` images, which arrive inside the message itself. Remote URLs are
+ * deliberately not here: the webview CSP allows no third-party image hosts, so an
+ * `https://` picture is as unloadable as any path outside the workspace — and
+ * sending it through the resolver at least gets the reader its alt text instead
+ * of a broken image icon.
+ */
+const DIRECT_MEDIA_PATTERN = /^data:image\//iu;
+
+/**
  * Renders a fenced code block, highlighting only when it is safe and useful.
  *
  * Plain escaped text is emitted for streaming messages, unknown or absent
@@ -50,6 +61,23 @@ marked.use({
 				? ` class="hljs language-${escapeHtml(language)}"`
 				: ' class="hljs"';
 			return `<pre><code${classAttribute}>${highlighted ?? escapeHtml(text)}</code></pre>`;
+		},
+		/**
+		 * Renders an image as a placeholder the webview can finish later.
+		 *
+		 * A path in Markdown is unresolvable here: a relative one resolves against the
+		 * webview's own origin rather than the file system, and `file:` is stripped by
+		 * the sanitizer. The path travels as `data-media-source` so
+		 * `enhanceTranscriptImages` can ask the host for a loadable URI and fill in
+		 * `src` when the answer arrives.
+		 */
+		image({ href, title, text }): string {
+			const alt = ` alt="${escapeHtml(text ?? "")}"`;
+			const titleAttribute = title ? ` title="${escapeHtml(title)}"` : "";
+			const sourceAttribute = DIRECT_MEDIA_PATTERN.test(href)
+				? ` src="${escapeHtml(href)}"`
+				: ` data-media-source="${escapeHtml(href)}"`;
+			return `<img class="message-media"${sourceAttribute}${alt}${titleAttribute}>`;
 		},
 	},
 });

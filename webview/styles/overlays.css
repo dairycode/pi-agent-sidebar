@@ -67,6 +67,55 @@
 	color: var(--pi-muted);
 }
 
+/* Image preview. The backdrop already dims the page and owns Escape, an outside
+   click, and focus restore; the dialog itself drops the modal's panel chrome so
+   that the picture is the thing the reader sees. */
+.modal-image {
+	position: relative;
+	width: auto;
+	max-width: 100%;
+	padding: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+}
+
+.modal-image-picture {
+	display: block;
+	max-width: 100%;
+	/* The backdrop's padding is not a definite height to size a percentage
+	   against, so the picture is bounded by the panel instead of its container. */
+	max-height: calc(100vh - 28px);
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-content);
+	/* A transparent screenshot would otherwise read as a hole in the dimmed page. */
+	background: var(--pi-raised);
+}
+
+/* The button floats over picture content it cannot predict, so it cannot borrow
+   the surfaces the rest of the chrome uses: a `--pi-raised` chip is the same
+   colour as the white screenshots readers enlarge, and the shared
+   `.icon-button:hover` swaps whatever background it finds for a 12% wash of the
+   foreground, which lets the picture show through the button itself. A
+   translucent dark chip reads over a light or a dark picture in either theme, and
+   its hover state only deepens the same chip instead of dissolving it. */
+.modal-image-close {
+	position: absolute;
+	top: -12px;
+	right: -12px;
+	color: #fff;
+	background: rgba(0, 0, 0, 0.55);
+	/* The dark chip carries over a light picture; over a dark one the picture and the
+	   chip are cousins, so a faint light ring is what keeps the button visible. */
+	border-color: rgba(255, 255, 255, 0.28);
+	box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.35));
+}
+
+.modal-image-close:hover:not(:disabled) {
+	color: #fff;
+	background: rgba(0, 0, 0, 0.75);
+}
+
 .modal-input {
 	width: 100%;
 	box-sizing: border-box;

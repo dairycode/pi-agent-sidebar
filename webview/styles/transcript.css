@@ -598,7 +598,12 @@
 	margin-right: 5px;
 }
 
-.message-image {
+/* A picture in a message is a figure rather than a glyph: it takes its own line
+   instead of reflowing the sentence it was written in, which is what a pasted
+   attachment has always done. The not-loadable chip below stays inline, because a
+   path that cannot be read should not move the words around it. */
+.message-image,
+.message-media {
 	display: block;
 	width: auto;
 	max-width: 100%;
@@ -607,6 +612,38 @@
 	border: 1px solid var(--pi-theme-border-muted);
 	border-radius: var(--pi-radius-content);
 	object-fit: contain;
+}
+
+/* The pointer is the only affordance a picture has for the click that enlarges
+   it. A path the host has not answered yet has no `src`, and nothing to click. */
+.message-image[src],
+.message-media[src] {
+	cursor: zoom-in;
+}
+
+/* The keyboard reaches the same picture, but only when the pointer's focus style is
+   not what it uses: the transcript already rings its expandable blocks this way. */
+.message-image[src]:focus-visible,
+.message-media[src]:focus-visible {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: 2px;
+}
+
+/* An image whose path the sidebar may not load keeps its place in the sentence:
+   the alt text is shown where the picture would have been, so a path outside the
+   workspace reads as "this did not load" instead of as a hole in the message that
+   is indistinguishable from a message that never had an image. Styled like inline
+   code, because that is what the reader is looking at: a path, not a caption. */
+.message-media-fallback {
+	display: inline-block;
+	max-width: 100%;
+	padding: 1px 4px;
+	border-radius: 3px;
+	color: var(--pi-theme-md-code);
+	background: rgba(128, 128, 128, 0.2);
+	font-family: var(--pi-font-mono);
+	font-size: var(--pi-font-code);
+	overflow-wrap: anywhere;
 }
 
 /* Activity items are separated by a real gap rather than a connecting rail.

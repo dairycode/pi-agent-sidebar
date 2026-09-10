@@ -19,6 +19,10 @@ import {
 } from "./transcript/messageTime.js";
 import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
 import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
+import {
+	MediaSources,
+	type ResolvedMediaSource,
+} from "./transcript/mediaSources.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
 import { SubmitFollowCoordinator } from "./transcript/submitFollow.js";
 import {
@@ -388,6 +392,17 @@ const transcriptView = new TranscriptView<Element>({
 	container: elements.messages,
 	createNode: (entry, previous) => createMessageNode(entry, previous),
 });
+
+/**
+ * Answer cache for the image paths a transcript names.
+ *
+ * Module-scoped rather than per-render: the host answers a batch as a whole, and
+ * the reply usually arrives after the frame that asked for it. Clearing this with
+ * the transcript would re-ask for the same path on every streaming delta.
+ */
+const mediaSources = new MediaSources((requestId, sources) =>
+	post({ type: "resolveMedia", requestId, sources }),
+);
 
 /**
  * Stable per-message identity for transcript keys and render signatures.
@@ -984,6 +999,26 @@ elements.messages.addEventListener("click", (event) => {
 		}
 		return;
 	}
+	// Enlarged before the expandable and anchor branches below: a picture inside a
+	// collapsible card, or inside a link, is still the thing the reader aimed at.
+	const picture = target.closest<HTMLImageElement>(PREVIEWABLE_IMAGE_SELECTOR);
+	if (picture) {
+		// A picture inside a link consumes the click: the anchor branch below never
+		// runs for it, and VS Code's injected handler ignores `defaultPrevented`, so
+		// without this the click would open the link as well as the picture.
+		if (picture.closest("a[href]")) {
+			event.preventDefault();
+			event.stopPropagation();
+		}
+		// Skipped for a picture the host refused or has not answered yet, which has
+		// no source to enlarge, and for a click that ended a drag-select: that one is
+		// the reader copying text, not asking for a bigger picture.
+		const selection = window.getSelection();
+		if (picture.hasAttribute("src") && (!selection || selection.isCollapsed)) {
+			openImagePreview(picture);
+		}
+		return;
+	}
 	// Checked after the path link so a clickable path inside tool output still
 	// opens the file rather than collapsing the block around it.
 	const expandable = target.closest<HTMLElement>("[data-expandable]");
@@ -1011,6 +1046,17 @@ elements.messages.addEventListener("click", (event) => {
 // have to be wired up by hand to honour that role's contract.
 elements.messages.addEventListener("keydown", (event) => {
 	if (event.key !== "Enter" && event.key !== " ") return;
+	// A previewable picture carries the button role, so the gesture that opens it
+	// has to answer to the keyboard too: Enter or Space on the picture the reader
+	// reached with Tab. Space would otherwise scroll the transcript.
+	const picture = (event.target as HTMLElement).closest<HTMLImageElement>(
+		PREVIEWABLE_IMAGE_SELECTOR,
+	);
+	if (picture?.hasAttribute("src")) {
+		event.preventDefault();
+		openImagePreview(picture);
+		return;
+	}
 	const expandable = (event.target as HTMLElement).closest<HTMLElement>(
 		"[data-expandable]",
 	);
@@ -1081,6 +1127,10 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 				message.query,
 				message.entries,
 			);
+			break;
+		}
+		case "mediaResolved": {
+			applyResolvedMedia(message.requestId, message.resolved);
 			break;
 		}
 		case "attachments": {
@@ -1180,6 +1230,9 @@ function applySnapshot(
 		submitFollowCoordinator.cancelAll();
 		extensionStatuses.clear();
 		extensionWidgets.clear();
+		// A path refused while the old session was open may name a file that exists by
+		// now, and this is the moment the transcript is rebuilt from scratch.
+		mediaSources.clearRefusals();
 		// Nothing in a different session's transcript can be reused, and the reader
 		// expects a fresh session to start at its newest message.
 		transcriptView.clear();
@@ -1680,6 +1733,8 @@ function reflowComposerTools(): void {
 	tools.classList.add("is-minimal");
 }
 
+const PREVIEWABLE_IMAGE_SELECTOR = ".message-image, .message-media";
+
 /**
  * Re-pins the bottom once an image finishes loading.
  *
@@ -1689,19 +1744,148 @@ function reflowComposerTools(): void {
  */
 function bindImageReflow(root: ParentNode): void {
 	for (const image of root.querySelectorAll<HTMLImageElement>(
-		".message-image",
+		PREVIEWABLE_IMAGE_SELECTOR,
 	)) {
-		if (image.complete || image.dataset.scrollBound === "true") continue;
-		image.dataset.scrollBound = "true";
-		image.addEventListener(
-			"load",
-			() => {
-				scrollAnchor.stickToBottomIfFollowing();
-				scheduleTranscriptMeasure();
-			},
-			{ once: true },
-		);
+		// Only a picture with a source can be clicked: one whose path the host has
+		// not answered yet has nothing to enlarge.
+		if (image.hasAttribute("src")) markPreviewableImage(image);
+		bindImageLoadReflow(image);
 	}
+}
+
+/**
+ * Names the gesture that enlarges a picture.
+ *
+ * A picture, unlike a button, carries no affordance of its own: the click has to
+ * be advertised. `cursor: zoom-in` in the stylesheet covers the mouse; the
+ * tooltip also reaches the reader who has not tried it. Markdown that titled the
+ * image keeps its own text.
+ */
+function markPreviewableImage(image: HTMLImageElement): void {
+	// A picture is not focusable and carries no role, so the gesture has to be
+	// advertised and reachable. The tooltip and `cursor: zoom-in` cover the mouse;
+	// the button role and a tab stop are what make it available from the keyboard,
+	// which the transcript's keydown handler honours.
+	image.tabIndex = 0;
+	image.setAttribute("role", "button");
+	// The alt text already names the picture; only a silent one needs a label.
+	if (!image.alt) image.setAttribute("aria-label", "Enlarge image");
+	if (image.title) return;
+	image.title = "Click to enlarge";
+}
+
+/** Opens the enlarged view for one transcript picture. */
+function openImagePreview(picture: HTMLImageElement): void {
+	modalController.openImage({
+		src: picture.currentSrc || picture.src,
+		alt: picture.alt,
+	});
+}
+
+/**
+ * Re-anchors the transcript once one image has changed the page height.
+ *
+ * Called for images that are already laid out as well as for ones whose `src` is
+ * about to be set: an `<img>` without a source counts as `complete` in the DOM,
+ * so the media resolver has to bind the listener itself or the picture would land
+ * under the reader's viewport without the transcript following it.
+ */
+function bindImageLoadReflow(image: HTMLImageElement): void {
+	if (image.complete || image.dataset.scrollBound === "true") return;
+	image.dataset.scrollBound = "true";
+	image.addEventListener(
+		"load",
+		() => {
+			scrollAnchor.stickToBottomIfFollowing();
+			scheduleTranscriptMeasure();
+		},
+		{ once: true },
+	);
+}
+
+const MEDIA_IMAGE_SELECTOR = "img[data-media-source]";
+
+/**
+ * Fills in the `src` of the image paths the host has already resolved.
+ *
+ * The renderer writes a path into `data-media-source` rather than `src`, because
+ * a webview cannot turn a file path into something it is allowed to load: a
+ * relative one resolves against the webview's own origin. Paths with no answer
+ * yet are collected into one batch, and `applyResolvedMedia` finishes the images
+ * that are already in the DOM when the reply arrives.
+ */
+function enhanceTranscriptImages(root: ParentNode): void {
+	const unanswered = new Set<string>();
+	for (const image of root.querySelectorAll<HTMLImageElement>(
+		MEDIA_IMAGE_SELECTOR,
+	)) {
+		if (!applyKnownMedia(image)) continue;
+		const source = image.dataset.mediaSource;
+		if (source) unanswered.add(source);
+	}
+	if (unanswered.size === 0) return;
+	if (mediaSources.request([...unanswered]).length === 0) return;
+	// A source the resolver refused without asking — one too long to survive the
+	// parser — still has to become its alt text, or it stays an invisible gap until
+	// the next pass rebuilds this node.
+	for (const image of root.querySelectorAll<HTMLImageElement>(
+		MEDIA_IMAGE_SELECTOR,
+	)) {
+		applyKnownMedia(image);
+	}
+}
+
+function applyResolvedMedia(
+	requestId: number,
+	resolved: ResolvedMediaSource[],
+): void {
+	if (mediaSources.applyResolved(requestId, resolved).length === 0) return;
+	// Every image in the document, not just one message: a batch can cover images
+	// from several sections, and by now their nodes may have been rebuilt.
+	for (const image of document.querySelectorAll<HTMLImageElement>(
+		MEDIA_IMAGE_SELECTOR,
+	)) {
+		applyKnownMedia(image);
+	}
+}
+
+/**
+ * Applies what the host already knows about one image.
+ *
+ * Returns true while the source is still unanswered, so the caller can collect it
+ * into a batch instead of asking per image.
+ */
+function applyKnownMedia(image: HTMLImageElement): boolean {
+	const source = image.dataset.mediaSource;
+	if (!source || image.dataset.mediaState === "resolved") return false;
+	const uri = mediaSources.uriFor(source);
+	if (uri) {
+		image.dataset.mediaState = "resolved";
+		image.src = uri;
+		markPreviewableImage(image);
+		bindImageLoadReflow(image);
+		return false;
+	}
+	if (mediaSources.isRefused(source)) {
+		applyMediaFallback(image, source);
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Replaces an image the sidebar may not load with its alt text.
+ *
+ * Refusing silently would be worse than a broken image: a transcript naming a
+ * path outside the allowed roots should say so, rather than leave a gap the
+ * reader cannot tell apart from an image that is still loading.
+ */
+function applyMediaFallback(image: HTMLImageElement, source: string): void {
+	const fallback = document.createElement("span");
+	fallback.className = "message-media-fallback";
+	fallback.textContent = image.alt || source;
+	fallback.title = `Not an image this workspace can load: ${source}`;
+	image.replaceWith(fallback);
 }
 
 /**
@@ -1992,9 +2176,7 @@ function patchStreamingMessage(
 
 	// New nodes need the passes renderers get once; reused nodes keep theirs.
 	for (const node of freshNodes) {
-		enhanceCodeBlocks(node);
-		linkifyWorkspacePaths(node);
-		bindImageReflow(node);
+		enhanceRenderedNodes(node);
 	}
 	applyExpandableState(host, snapshot);
 
@@ -2183,9 +2365,7 @@ function streamingAppendRoot(root: Element): Element {
 function enhanceStableStreamingNodes(nodes: Node[]): void {
 	for (const node of nodes) {
 		if (!(node instanceof Element)) continue;
-		enhanceCodeBlocks(node);
-		linkifyWorkspacePaths(node);
-		bindImageReflow(node);
+		enhanceRenderedNodes(node);
 	}
 }
 
@@ -2255,9 +2435,7 @@ function createMessageNode(
 	node.replaceChildren(...sanitizedNodes(html));
 	restoreExpandableState(node, previous);
 	if (!isStreaming) {
-		enhanceCodeBlocks(node);
-		linkifyWorkspacePaths(node);
-		bindImageReflow(node);
+		enhanceRenderedNodes(node);
 	}
 	return node;
 }
@@ -2433,6 +2611,13 @@ function ensureToolBodyMounted(element: HTMLElement): void {
 	if (!html) return;
 	element.append(...sanitizedNodes(html));
 	element.dataset.toolBody = "mounted";
+}
+
+function enhanceRenderedNodes(root: Element): void {
+	enhanceCodeBlocks(root);
+	linkifyWorkspacePaths(root);
+	bindImageReflow(root);
+	enhanceTranscriptImages(root);
 }
 
 function enhanceCodeBlocks(root: ParentNode): void {

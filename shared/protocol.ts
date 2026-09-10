@@ -241,6 +241,11 @@ export type HostToWebviewMessage =
 			query: string;
 			entries: WorkspaceEntrySuggestion[];
 	  }
+	| {
+			type: "mediaResolved";
+			requestId: number;
+			resolved: Array<{ source: string; uri: string }>;
+	  }
 	| { type: "attachments"; attachments: AttachmentRef[] }
 	| {
 			type: "composerReferences";
@@ -307,6 +312,16 @@ export type WebviewToHostMessage =
 	| { type: "listSessions" }
 	| { type: "listCommands" }
 	| { type: "listWorkspaceFiles"; requestId: number; query: string }
+	/**
+	 * Asks the host to turn local image paths from the transcript into URIs the
+	 * webview may load.
+	 *
+	 * Only the host can call `asWebviewUri`, and a webview relative path resolves
+	 * against its own origin rather than the file system, so a Markdown image
+	 * cannot be rendered without this round trip. Batched because one rendered
+	 * message can hold several images and each request costs a message.
+	 */
+	| { type: "resolveMedia"; requestId: number; sources: string[] }
 	| { type: "pickAttachments" }
 	| { type: "addResources"; actionId: string; resources: string[] }
 	| { type: "pasteImages"; actionId: string; images: PastedImage[] }
@@ -321,13 +336,22 @@ export type WebviewToHostMessage =
 const MAX_ACTION_ID_LENGTH = 128;
 /** Mirrors the host-side entry-id ceiling in `rpcValidation`. */
 const MAX_ENTRY_ID_LENGTH = 512;
-const MAX_PATH_LENGTH = 32 * 1024;
+/**
+ * Ceiling for one path-shaped string in a message.
+ *
+ * Exported because the webview has to apply it before it sends: the parser rejects
+ * a whole message when a single entry is over the limit, so one oversized entry
+ * would take every innocent path in its batch down with it.
+ */
+export const MAX_PATH_LENGTH = 32 * 1024;
 const MAX_SESSION_NAME_LENGTH = 200;
 const MAX_MESSAGE_LENGTH = 1_000_000;
 const MAX_MENTION_QUERY_LENGTH = 512;
 export const MAX_WORKSPACE_ENTRY_SUGGESTIONS = 200;
 const MAX_PASTED_IMAGE_DATA_LENGTH = 16 * 1024 * 1024 + 16;
 export const MAX_IMAGE_ATTACHMENT_COUNT = 4;
+/** Per-request ceiling for one transcript image batch; the webview chunks past it. */
+export const MAX_RESOLVE_MEDIA_SOURCES = 20;
 export const MAX_ATTACHMENT_COUNT = 20;
 export const MAX_COMPOSER_REFERENCE_COUNT = 10;
 /**
@@ -367,6 +391,17 @@ export function parseWebviewMessage(
 		return requestId === undefined || query === undefined
 			? undefined
 			: { type, requestId, query };
+	}
+	if (type === "resolveMedia") {
+		const requestId = nonNegativeInteger(message.requestId);
+		const sources = boundedStringArray(
+			message.sources,
+			MAX_RESOLVE_MEDIA_SOURCES,
+			MAX_PATH_LENGTH,
+		);
+		return requestId === undefined || !sources || sources.length === 0
+			? undefined
+			: { type, requestId, sources };
 	}
 	if (
 		[

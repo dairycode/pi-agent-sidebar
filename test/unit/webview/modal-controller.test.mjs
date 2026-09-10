@@ -10,6 +10,26 @@ async function loadModalController() {
 	});
 }
 
+class FakeClassList {
+	constructor(element) {
+		this.element = element;
+	}
+
+	add(...names) {
+		this.element.className = [...new Set([...names, ...this.names()])]
+			.filter(Boolean)
+			.join(" ");
+	}
+
+	contains(name) {
+		return this.names().includes(name);
+	}
+
+	names() {
+		return this.element.className.split(/\s+/u).filter(Boolean);
+	}
+}
+
 class FakeElement {
 	constructor(tagName, document) {
 		this.tagName = tagName.toUpperCase();
@@ -21,7 +41,9 @@ class FakeElement {
 		this.inert = false;
 		this.disabled = false;
 		this.className = "";
+		this.classList = new FakeClassList(this);
 		this.textContent = "";
+		this.title = "";
 		this.type = "";
 		this.value = "";
 		this.maxLength = -1;
@@ -112,6 +134,10 @@ function descendants(root) {
 
 function byText(root, text) {
 	return descendants(root).find((element) => element.textContent === text);
+}
+
+function byClass(root, name) {
+	return descendants(root).find((element) => element.classList.contains(name));
 }
 
 function keyboardEvent(key, shiftKey = false) {
@@ -241,6 +267,52 @@ test("Escape and backdrop clicks close while inner clicks do not", async () => {
 			onSubmit() {},
 		});
 		state.backdrop.dispatch("click", { target: state.backdrop });
+		assert.equal(state.controller.isOpen, false);
+	} finally {
+		delete globalThis.HTMLElement;
+		await loaded.dispose();
+	}
+});
+
+test("image preview shows the picture over the inert page and closes on demand", async () => {
+	const loaded = await loadModalController();
+	try {
+		const state = createHarness(loaded.module.ModalController);
+		state.controller.openImage({
+			src: "vscode-webview://webview/logo.png",
+			alt: "pi logo",
+		});
+
+		assert.equal(state.controller.isOpen, true);
+		assert.ok(state.inertRoots.every((root) => root.inert));
+		const dialog = state.backdrop.children[0];
+		assert.equal(dialog.classList.contains("modal-image"), true);
+		// The alt text labels the dialog, so a screen reader announces the picture
+		// even though focus sits on the close button.
+		assert.equal(dialog.attributes.get("aria-label"), "pi logo");
+		const picture = byClass(state.backdrop, "modal-image-picture");
+		assert.equal(picture.src, "vscode-webview://webview/logo.png");
+		assert.equal(picture.alt, "pi logo");
+		const close = byClass(state.backdrop, "modal-image-close");
+		assert.equal(state.document.activeElement, close);
+
+		close.dispatch("click");
+
+		assert.equal(state.controller.isOpen, false);
+		assert.equal(state.backdrop.children.length, 0);
+		assert.equal(state.document.activeElement, state.returnFocus);
+		assert.ok(state.inertRoots.every((root) => !root.inert));
+	} finally {
+		delete globalThis.HTMLElement;
+		await loaded.dispose();
+	}
+});
+
+test("image preview ignores a picture the host never resolved", async () => {
+	const loaded = await loadModalController();
+	try {
+		const state = createHarness(loaded.module.ModalController);
+		state.controller.openImage({ src: "", alt: "refused path" });
 		assert.equal(state.controller.isOpen, false);
 	} finally {
 		delete globalThis.HTMLElement;

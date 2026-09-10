@@ -55,6 +55,7 @@ import {
 	WorkspaceResources,
 } from "../services/workspaceResources.js";
 import { WorkspaceFileSearch } from "../services/workspaceFileSearch.js";
+import { TranscriptMedia } from "../services/transcriptMedia.js";
 import { notificationDestination } from "./notificationPolicy.js";
 import {
 	assertSessionMutationAllowed,
@@ -137,6 +138,17 @@ export class PiViewProvider
 	 * and expanding an idle session leaves the retained view untouched.
 	 */
 	private missedPostWhileHidden = false;
+	/**
+	 * Image answers the view refused because it was hidden.
+	 *
+	 * The webview cannot tell a dropped reply from one still in flight, and it never
+	 * asks twice for the same path, so without this the picture would stay blank for
+	 * the rest of the session. Replayed on reveal, like the snapshot above.
+	 */
+	private missedMediaReplies: Array<{
+		requestId: number;
+		resolved: Array<{ source: string; uri: string }>;
+	}> = [];
 	private shutdownPromise: Promise<void> | undefined;
 	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
@@ -146,6 +158,11 @@ export class PiViewProvider
 	private readonly workspaceResources: WorkspaceResources;
 	private readonly composerReferenceStore: ComposerReferenceStore;
 	private readonly workspaceFileSearch = new WorkspaceFileSearch();
+	private readonly transcriptMedia = new TranscriptMedia(
+		() =>
+			(vscode.workspace.workspaceFolders ?? []).map((entry) => entry.uri.fsPath),
+		() => this.workspaceFolder?.uri.fsPath,
+	);
 
 	public constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -168,6 +185,10 @@ export class PiViewProvider
 			enableScripts: true,
 			localResourceRoots: [
 				vscode.Uri.joinPath(this.context.extensionUri, "dist", "webview"),
+				// Transcript images live outside the extension bundle. `asWebviewUri`
+				// returns a URI for anything, but the editor only serves files under a
+				// root, so without these the picture 404s and the sidebar looks broken.
+				...this.transcriptMedia.roots().map((root) => vscode.Uri.file(root)),
 			],
 		};
 		view.webview.html = this.getHtml(view.webview);
@@ -225,8 +246,27 @@ export class PiViewProvider
 		try {
 			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
+			await this.flushMissedMediaReplies();
 		} catch (error) {
 			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
+		}
+	}
+
+	/**
+	 * Re-sends the image answers a hidden view refused.
+	 *
+	 * The snapshot above cannot stand in for this: a re-sync only enhances the nodes
+	 * it rebuilds, so an image already in the retained DOM never asks again and would
+	 * stay blank without the answer that was dropped.
+	 */
+	private async flushMissedMediaReplies(): Promise<void> {
+		if (this.missedMediaReplies.length === 0) return;
+		const missed = this.missedMediaReplies;
+		this.missedMediaReplies = [];
+		for (const reply of missed) {
+			const delivered = await this.post({ type: "mediaResolved", ...reply });
+			// Hidden again mid-flush: the next reveal picks it up from here.
+			if (!delivered) this.missedMediaReplies.push(reply);
 		}
 	}
 
@@ -638,6 +678,10 @@ export class PiViewProvider
 				}
 				case "listWorkspaceFiles": {
 					await this.sendWorkspaceFileList(message.requestId, message.query);
+					break;
+				}
+				case "resolveMedia": {
+					await this.sendResolvedMedia(message.requestId, message.sources);
 					break;
 				}
 				case "pickAttachments": {
@@ -1596,6 +1640,43 @@ export class PiViewProvider
 			this.output.appendLine(`[mentions] ${toErrorMessage(error)}`);
 		}
 		await this.post({ type: "workspaceFileList", requestId, query, entries });
+	}
+
+	/**
+	 * Answers one batch of transcript image paths.
+	 *
+	 * A path outside the allowed roots is left out of the reply instead of being
+	 * reported as an error: a transcript can name anything, and a refused path is a
+	 * normal outcome the webview renders as its alt text.
+	 */
+	private async sendResolvedMedia(
+		requestId: number,
+		sources: readonly string[],
+	): Promise<void> {
+		if (!this.webviewReady || !this.view) return;
+		const webview = this.view.webview;
+		const resolved: Array<{ source: string; uri: string }> = [];
+		for (const source of sources) {
+			try {
+				const uri = await this.transcriptMedia.resolve(source);
+				// Only the host can bridge to the file system: `asWebviewUri` maps a path
+				// onto the origin the webview is allowed to load from.
+				if (uri) {
+					resolved.push({ source, uri: webview.asWebviewUri(uri).toString() });
+				}
+			} catch (error) {
+				this.output.appendLine(`[media] ${source}: ${toErrorMessage(error)}`);
+			}
+		}
+		// A hidden view refuses delivery, and the webview reads that as an answer it is
+		// still waiting for — so the reply is kept for the next reveal instead of
+		// being dropped with the image's source.
+		const delivered = await this.post({
+			type: "mediaResolved",
+			requestId,
+			resolved,
+		});
+		if (!delivered) this.missedMediaReplies.push({ requestId, resolved });
 	}
 
 	private async syncComposerReferences(): Promise<void> {

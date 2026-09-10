@@ -28,25 +28,11 @@ await mkdir(path.join(webviewOutDir, "codicons"), { recursive: true });
 
 await Promise.all([
 	copyFile(
-		path.join(
-			root,
-			"node_modules",
-			"@vscode",
-			"codicons",
-			"dist",
-			"codicon.css",
-		),
+		path.join(root, "node_modules", "@vscode", "codicons", "dist", "codicon.css"),
 		path.join(webviewOutDir, "codicons", "codicon.css"),
 	),
 	copyFile(
-		path.join(
-			root,
-			"node_modules",
-			"@vscode",
-			"codicons",
-			"dist",
-			"codicon.ttf",
-		),
+		path.join(root, "node_modules", "@vscode", "codicons", "dist", "codicon.ttf"),
 		path.join(webviewOutDir, "codicons", "codicon.ttf"),
 	),
 ]);
@@ -77,6 +63,17 @@ const webviewOptions = {
 	target: ["chrome120"],
 };
 
+// Separate entry, not a split chunk of the main bundle: it is only fetched when a
+// diagram appears, and an iife chunk cannot be loaded on demand.
+const mermaidOptions = {
+	...shared,
+	entryPoints: [path.join(root, "webview", "mermaidBundle.ts")],
+	outfile: path.join(webviewOutDir, "mermaid.js"),
+	platform: "browser",
+	format: "iife",
+	target: ["chrome120"],
+};
+
 const webviewStyleOptions = {
 	...shared,
 	entryPoints: [path.join(root, "webview", "main.css")],
@@ -84,14 +81,19 @@ const webviewStyleOptions = {
 	target: ["chrome120"],
 };
 
-const buildOptions = [extensionOptions, webviewOptions, webviewStyleOptions];
+const buildOptions = [
+	extensionOptions,
+	webviewOptions,
+	mermaidOptions,
+	webviewStyleOptions,
+];
 
 if (watch) {
 	const contexts = await Promise.all(
 		buildOptions.map((options) => esbuild.context(options)),
 	);
 	await Promise.all(contexts.map((context) => context.watch()));
-	console.log("Watching extension, Webview bundle, and stylesheet...");
+	console.log("Watching extension, Webview bundle, mermaid, and stylesheet...");
 } else {
 	await Promise.all(buildOptions.map((options) => esbuild.build(options)));
 }

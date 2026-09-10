@@ -1,6 +1,7 @@
 @import "./styles/pi-theme.css";
 @import "./styles/base.css";
 @import "./styles/transcript.css";
+@import "./styles/mermaid.css";
 @import "./styles/sessions.css";
 @import "./styles/commands.css";
 @import "./styles/composer.css";

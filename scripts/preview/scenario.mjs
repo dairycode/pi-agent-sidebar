@@ -101,7 +101,32 @@ const SAMPLE_MESSAGES = [
 			},
 		],
 	},
+	// Every preview run renders one diagram: the mermaid bundle is a separate
+	// script behind a CSP nonce, so a change that breaks the injection, the
+	// sanitizer, or the diagram's own styling has to fail here rather than only in
+	// a real sidebar.
+	{
+		role: "assistant",
+		timestamp: 1_756_000_034_000,
+		content: [
+			{
+				type: "text",
+				text:
+					"## Diagram\n\nA mermaid fence renders as a diagram, with the source kept one click away:\n\n```mermaid\nflowchart LR\n  prompt[Ask a question with a label long enough to wrap] --> runtime{pi}\n  runtime -->|edits| files[(files)]\n  runtime -->|answers| transcript[first line<br/>second line]\n```\n\nA diagram keeps its natural width and the frame scrolls, because a 900px flowchart scaled into a 300px column is unreadable at any zoom.",
+			},
+		],
+	},
 ];
+
+// Every preview run carries one diagram, so this sample is the preview's only
+// coverage of the feature. A fence that goes missing here would leave the
+// browser-side check with nothing to check, and the browser side cannot report
+// that: it may run before the transcript renders at all.
+if (!JSON.stringify(SAMPLE_MESSAGES).includes("```mermaid")) {
+	throw new Error(
+		"The preview sample lost its mermaid fence, so no preview run renders a diagram.",
+	);
+}
 
 const SAMPLE_TOOL_RESULTS = [
 	{
@@ -323,6 +348,30 @@ setTimeout(() => setTimeout(() => {
 		}
 	}
 	window.__validatePreviewTheme();
+	// A diagram is deliberately not asserted here. It needs a frame (the render
+	// starts when the block is near the viewport) and then a fetch of the mermaid
+	// bundle, and a virtual-time run produces neither — the screenshot would show
+	// source whether or not the feature works. What is synchronous, and what this
+	// harness can hold to, is that the fence was recognised: a fence left in the
+	// transcript outside a diagram block is a rendering bug the screenshot alone
+	// would not distinguish from "the diagram is still loading".
+	const mermaidFences = document.querySelectorAll("code.language-mermaid").length;
+	// Counted and conditional. The transcript is rendered through
+	// requestAnimationFrame, which a virtual-time run does not reliably advance, so
+	// this callback can find no messages at all — and a check that demands a fence
+	// would then fail for a reason that has nothing to do with diagrams. What is
+	// true either way: a fence that did reach the DOM belongs inside a diagram
+	// block. That the sample still has a fence is asserted in Node, where the sample
+	// is data rather than a race.
+	const unwrapped = Array.from(
+		document.querySelectorAll("code.language-mermaid"),
+	).filter((fence) => !fence.closest(".mermaid-block")).length;
+	if (unwrapped > 0) {
+		document.documentElement.dataset.previewError =
+			"A mermaid fence stayed in the transcript (" + unwrapped + " of " + mermaidFences + ")";
+	} else if (document.querySelector(".mermaid-diagram svg")) {
+		document.documentElement.dataset.previewMermaid = "rendered";
+	}
 	document.documentElement.dataset.previewReady = "true";
 }, 0), 0);
 `;

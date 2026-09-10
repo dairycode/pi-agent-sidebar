@@ -38,9 +38,11 @@ test("highlighting emits class-based markup with no inline styles", async () => 
 		const html = highlighter.highlight("const x = 1;", "ts");
 		assert.ok(html, "expected TypeScript to be highlighted");
 		assert.match(html, /class="hljs-/u);
-		// The CSP forbids inline styles (`style-src` without `unsafe-inline`, which
-		// `style-src-attr` falls back to). Inline styles here would be blocked, so
-		// the output must be class-only.
+		// Highlighting must stay class-only: those classes are what the theme
+		// stylesheets light up, and a colour frozen into the markup would survive a
+		// theme switch that the CSS around it follows. (`style-src` has since gained
+		// `unsafe-inline` for mermaid's SVGs, so this is now about theming rather than
+		// about what the CSP would block.)
 		assert.doesNotMatch(html, /style=/u);
 		// The highlighter escapes source that would otherwise be markup.
 		const dangerous = highlighter.highlight(
@@ -100,9 +102,7 @@ test("a single very long line is refused because its cost is quadratic", async (
 		// Measured on this highlighter: a 64 KiB block costs ~22ms as 80-column
 		// lines but ~9.6s as one line, and highlighting is synchronous. The line
 		// ceiling is what keeps a minified paste from freezing the webview.
-		assert.ok(
-			highlighter.highlight("a".repeat(MAX_HIGHLIGHT_LINE_BYTES), "ts"),
-		);
+		assert.ok(highlighter.highlight("a".repeat(MAX_HIGHLIGHT_LINE_BYTES), "ts"));
 		assert.equal(
 			highlighter.highlight("a".repeat(MAX_HIGHLIGHT_LINE_BYTES + 1), "ts"),
 			undefined,

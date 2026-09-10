@@ -12,6 +12,7 @@ import type {
 import { objectValue, stringValue } from "../../shared/jsonValues.js";
 import {
 	HighlightJsHighlighter,
+	isMermaidFence,
 	resolveLanguage,
 	type CodeHighlighter,
 } from "./highlight.js";
@@ -46,21 +47,34 @@ const DIRECT_MEDIA_PATTERN = /^data:image\//iu;
  * Plain escaped text is emitted for streaming messages, unknown or absent
  * language tags, and oversized blocks. The `<pre>` wrapper is preserved because
  * `enhanceCodeBlocks` finds it to attach the copy button.
+ *
+ * A mermaid fence keeps that same code block and only gains a wrapper: the
+ * diagram is produced from it after the message is sanitized and mounted (see
+ * `enhanceMermaidBlocks`), so until then — and permanently, if the library never
+ * loads or the diagram is invalid — the reader has the source.
  */
 marked.use({
 	renderer: {
 		code({ text, lang }): string {
 			const language = resolveLanguage(lang ?? "");
+			const isMermaid = isMermaidFence(lang ?? "");
 			const highlighted =
 				highlightEnabled && language
 					? highlighter.highlight(text, lang ?? "")
 					: undefined;
 			// The language class is emitted even without highlighting so the block
 			// still reports its language to the DOM and to assistive technology.
-			const classAttribute = language
-				? ` class="hljs language-${escapeHtml(language)}"`
+			// Mermaid is the one tag with no highlight grammar to resolve to, and it
+			// is also the one the diagram pass looks for: the name is emitted here
+			// rather than resolved, so both readers find the same block.
+			const languageClass = language ?? (isMermaid ? "mermaid" : undefined);
+			const classAttribute = languageClass
+				? ` class="hljs language-${escapeHtml(languageClass)}"`
 				: ' class="hljs"';
-			return `<pre><code${classAttribute}>${highlighted ?? escapeHtml(text)}</code></pre>`;
+			const block = `<pre><code${classAttribute}>${highlighted ?? escapeHtml(text)}</code></pre>`;
+			return isMermaid
+				? `<div class="mermaid-block" data-mermaid-state="pending">${block}</div>`
+				: block;
 		},
 		/**
 		 * Renders an image as a placeholder the webview can finish later.

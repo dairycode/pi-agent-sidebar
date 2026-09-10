@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.7.12
+
+- Draw `mermaid` code fences as diagrams. A fence stayed a code block, so a
+  conversation that explains a flow in mermaid had to be read as arrows and
+  `<br/>` tags. The picture now replaces the source once it is ready, and the
+  source stays one click away in a disclosure underneath it: a diagram is drawn
+  at its own scale, so the text is still the accessible, searchable, and copyable
+  form of the same content, and the copy button the block already carried keeps
+  working. Diagrams keep the width their author drew them at and the frame
+  scrolls, because scaling a 900px flowchart into the sidebar's column renders its
+  labels unreadably small.
+- Load mermaid only when a diagram appears. The library is 3.3MB of JavaScript,
+  and a diagram is rare in a coding conversation, so it ships as a second webview
+  bundle that the first diagram pulls in; a session that never shows one never
+  fetches or parses it. Nothing about the cost is paid up front — the main webview
+  bundle grew by 6KB, which is this change's own code.
+- Theme diagrams from the editor palette, and leave a diagram that cannot be drawn
+  as source with an explanation. Colours are read from the theme's variables and
+  handed to mermaid's `base` theme, and a value mermaid's colour library cannot
+  parse — a computed `color-mix()`, or a variable the theme does not define —
+  falls back instead of failing the whole diagram. A fence mermaid rejects keeps
+  its text and gains a one-line reason above it, so the reader still has what they
+  need to fix it.
+- Give the diagram types that draw categories the theme's chart colours. mermaid
+  derives its series palette from the same two colours it fills nodes with, and
+  those are surfaces — picked to sit next to the transcript, not against it — so a
+  pie slice or a timeline band could come out the colour of the background it was
+  drawn on. `charts.blue` and its five siblings are what VS Code publishes for
+  this, and the labels that go on a slice or a band are now picked against that
+  colour rather than against the transcript: light on the blue, dark on the
+  yellow, whichever reads better on each.
+- Render a diagram when it is about to be looked at, not when its message mounts.
+  Long conversations hold several diagrams and each one costs a layout pass, so
+  the render waits until the block is near the viewport and diagrams are drawn one
+  at a time. `style-src` in the webview CSP now allows inline styles, which is
+  what a mermaid SVG brings with it (its own `<style>` element and inline style
+  attributes); `script-src` is unchanged, and the SVG is inserted with everything
+  executable removed from it.
+
 ## 0.7.11
 
 - Show images a transcript names by path. A Markdown image pointing at a file

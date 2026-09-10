@@ -1,0 +1,53 @@
+/* Mermaid diagrams.
+ *
+ * The SVG is built by the library and carries its own colours, so nothing here
+ * styles the diagram itself — this is the frame around it. The width is the one
+ * decision: a diagram keeps the size its author drew it at and the frame scrolls,
+ * because scaling a 900px flowchart down to a 300px sidebar column renders its
+ * labels unreadably small. */
+.mermaid-block {
+	margin-block: var(--pi-line);
+}
+
+/* The code block moves into the source disclosure once a diagram replaces it, so
+   it no longer needs the transcript's own block rhythm. */
+.mermaid-block .code-block {
+	margin-block: 0;
+}
+
+.mermaid-diagram {
+	overflow-x: auto;
+	padding-block: var(--pi-line-half);
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.mermaid-diagram svg {
+	display: block;
+	/* `none`, not `100%`: see the width note above. */
+	max-width: none;
+	height: auto;
+}
+
+/* Failures keep the fence visible and say why, so a typo in a diagram reads as a
+   diagram problem rather than as the feature not working. */
+.mermaid-error {
+	margin: 0 0 calc(var(--pi-line) / 2);
+	padding-left: 7px;
+	border-left: 2px solid var(--pi-theme-error);
+	color: var(--pi-theme-dim);
+	font-size: var(--pi-font-chrome);
+	overflow-wrap: anywhere;
+}
+
+.mermaid-source > summary {
+	cursor: pointer;
+	color: var(--pi-theme-dim);
+	font-size: var(--pi-font-chrome);
+}
+
+/* The disclosure is the only control a diagram adds, so it carries the same focus
+   ring as the transcript's other clickable blocks rather than the browser's. */
+.mermaid-source > summary:focus-visible {
+	outline: 1px solid var(--pi-focus-ring);
+	outline-offset: 2px;
+}

@@ -24,6 +24,7 @@ import {
 	type ResolvedMediaSource,
 } from "./transcript/mediaSources.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
+import { enhanceMermaidBlocks } from "./transcript/mermaid.js";
 import { SubmitFollowCoordinator } from "./transcript/submitFollow.js";
 import {
 	TranscriptView,
@@ -2615,6 +2616,7 @@ function ensureToolBodyMounted(element: HTMLElement): void {
 
 function enhanceRenderedNodes(root: Element): void {
 	enhanceCodeBlocks(root);
+	enhanceMermaidBlocks(root);
 	linkifyWorkspacePaths(root);
 	bindImageReflow(root);
 	enhanceTranscriptImages(root);

@@ -35,6 +35,16 @@ const THEMES = {
 		"editorWarning-foreground": "#cca700",
 		"notifications-foreground": "#cccccc",
 		"testing-iconPassed": "#73c991",
+		// VS Code's own default chart palette: `charts.blue` is
+		// editorInfo.foreground, `charts.red` editorError.foreground, `charts.yellow`
+		// editorWarning.foreground, and `charts.orange` the find-match highlight.
+		// Diagrams read them for the colours that tell categories apart.
+		"charts-blue": "#59a4f9",
+		"charts-green": "#89d185",
+		"charts-yellow": "#cca700",
+		"charts-orange": "#ea5c0055",
+		"charts-red": "#f14c4c",
+		"charts-purple": "#b180d7",
 	},
 	"one-dark-pro-darker": {
 		"font-family": "-apple-system, BlinkMacSystemFont, sans-serif",
@@ -68,6 +78,15 @@ const THEMES = {
 		"editorWarning-foreground": "#d19a66",
 		"notifications-foreground": "#abb2bf",
 		"testing-iconPassed": "#98c379",
+		// One Dark Pro is not installed beside this repository, so its chart
+		// colours cannot be read from the theme. These are VS Code's defaults —
+		// what the variables resolve to when the active theme leaves them unset.
+		"charts-blue": "#59a4f9",
+		"charts-green": "#89d185",
+		"charts-yellow": "#cca700",
+		"charts-orange": "#ea5c0055",
+		"charts-red": "#f14c4c",
+		"charts-purple": "#b180d7",
 	},
 	light: {
 		"font-family": "-apple-system, BlinkMacSystemFont, sans-serif",
@@ -100,6 +119,15 @@ const THEMES = {
 		"editorWarning-foreground": "#bf8803",
 		"notifications-foreground": "#3b3b3b",
 		"testing-iconPassed": "#098658",
+		// The light halves of VS Code's default chart palette. They are darker than
+		// the dark ones, which is the point: a series colour has to read against the
+		// transcript it is drawn on, and this one sits on white.
+		"charts-blue": "#0063d3",
+		"charts-green": "#388a34",
+		"charts-yellow": "#bf8803",
+		"charts-orange": "#ea5c0055",
+		"charts-red": "#e51400",
+		"charts-purple": "#652d90",
 	},
 };
 
@@ -110,10 +138,7 @@ async function configuredColorTheme() {
 	const candidates =
 		process.platform === "darwin"
 			? [
-					path.join(
-						home,
-						"Library/Application Support/Code/User/settings.json",
-					),
+					path.join(home, "Library/Application Support/Code/User/settings.json"),
 					path.join(
 						home,
 						"Library/Application Support/Code - Insiders/User/settings.json",
@@ -126,9 +151,7 @@ async function configuredColorTheme() {
 	for (const candidate of candidates) {
 		try {
 			const settings = await readFile(candidate, "utf8");
-			const match = /^\s*"workbench\.colorTheme"\s*:\s*"([^"]+)"/mu.exec(
-				settings,
-			);
+			const match = /^\s*"workbench\.colorTheme"\s*:\s*"([^"]+)"/mu.exec(settings);
 			if (match) return match[1];
 		} catch {
 			// Try the next VS Code installation.

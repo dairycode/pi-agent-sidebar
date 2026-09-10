@@ -184,6 +184,17 @@ export function resolveLanguage(language: string): string | undefined {
 }
 
 /**
+ * True for a fence the transcript turns into a diagram rather than code.
+ *
+ * Separate from `resolveLanguage` because mermaid has no highlight.js grammar:
+ * the block must be recognizable as mermaid *and* stay unhighlighted, since it is
+ * about to be replaced by the picture it describes.
+ */
+export function isMermaidFence(language: string): boolean {
+	return language.trim().toLowerCase() === "mermaid";
+}
+
+/**
  * Highlighter with a bounded LRU memo.
  *
  * The memo matters because a snapshot rebuilds every visible message: without

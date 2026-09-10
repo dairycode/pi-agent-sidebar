@@ -16,18 +16,24 @@ export function createWebviewDocument(
 	const codiconUri = webview.asWebviewUri(
 		vscode.Uri.joinPath(webviewRoot, "codicons", "codicon.css"),
 	);
+	// Mermaid is a few megabytes, so it is not part of the main bundle: the
+	// webview injects this one with the nonce below when the first diagram
+	// appears. Only the URL travels in the markup; nothing loads it up front.
+	const mermaidUri = webview.asWebviewUri(
+		vscode.Uri.joinPath(webviewRoot, "mermaid.js"),
+	);
 
 	return `<!doctype html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource}; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; script-src 'nonce-${nonce}';">
 	<link rel="stylesheet" href="${codiconUri}">
 	<link rel="stylesheet" href="${styleUri}">
 	<title>Pi Agent</title>
 </head>
-<body>
+<body data-csp-nonce="${nonce}" data-mermaid-script="${mermaidUri}">
 	<div id="resource-drop-overlay" class="resource-drop-overlay" aria-hidden="true" hidden>
 		<div class="resource-drop-prompt">
 			<span>Drop to add context</span>

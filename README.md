@@ -44,6 +44,10 @@ insert the same inline `@path` reference Explorer and drag-and-drop produce
 - **Tool timeline** — tool calls run inline with file-edit diffs rendered as
 added, removed, and context lines; `path/file.ts:42` references in responses
 open the file at that line
+- **Diagrams** — `mermaid` code fences in pi's messages are drawn as diagrams in
+  the transcript, tinted by the current theme, with the source kept one click
+  away; the library loads only when a diagram appears. A fence in your own message
+  stays as source
 - **Commands** — rename the current session, export a session to HTML, start a
 new session, restart the runtime, and inspect logs from the command palette
 - **Status bar** — shows the runtime phase and the active model
@@ -105,3 +109,10 @@ established workspace trust.
 
 Session files are managed by pi under `~/.pi/agent/sessions`. They can contain
 source code, tool output, and other sensitive conversation data.
+
+Markdown in a transcript is sanitized before it reaches the DOM, and the webview
+runs under a CSP that permits scripts only with the document's nonce. Mermaid
+diagrams are the one addition the CSP makes room for: an inserted SVG carries its
+own styles, so `style-src` also allows inline styles, and the SVG is inserted
+with its scripts, event handler attributes, and executable `href` values removed.
+The library is only fetched when a transcript actually contains a diagram.

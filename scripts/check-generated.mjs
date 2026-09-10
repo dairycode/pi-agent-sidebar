@@ -9,6 +9,7 @@ const generated = [
 	path.join("dist", "extension.js"),
 	path.join("dist", "webview", "main.js"),
 	path.join("dist", "webview", "main.css"),
+	path.join("dist", "webview", "mermaid.js"),
 	path.join("dist", "webview", "codicons", "codicon.css"),
 	path.join("dist", "webview", "codicons", "codicon.ttf"),
 ].sort();
@@ -16,6 +17,7 @@ const generated = [
 const requiredCssRules = new Map([
 	["base", "#app{"],
 	["transcript", ".transcript{"],
+	["mermaid", ".mermaid-block{"],
 	["sessions", ".history-panel{"],
 	["commands", ".command-panel{"],
 	["composer", ".composer-shell{"],
@@ -96,9 +98,7 @@ try {
 
 	const errors = [
 		...manifestIssues,
-		...(drift.length > 0
-			? [`Non-reproducible files: ${drift.join(", ")}`]
-			: []),
+		...(drift.length > 0 ? [`Non-reproducible files: ${drift.join(", ")}`] : []),
 		...(missingCssComponents.length > 0
 			? [
 					`Webview CSS is missing component rules: ${missingCssComponents.join(", ")}`,

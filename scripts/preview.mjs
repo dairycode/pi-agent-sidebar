@@ -66,12 +66,12 @@ async function main() {
 			{ fsPath: root },
 		);
 
-		// The theme has to arrive as a linked stylesheet, not a `<style>` block: the
-		// document's CSP sets `style-src` to the webview source with no `unsafe-inline`,
-		// so an inline block is silently dropped and every `--vscode-*` variable ends up
-		// empty. That is not cosmetic — `body` reads `--vscode-font-size` with no
-		// fallback, so text renders at the browser's 16px default, labels measure wider
-		// than they ever would in VS Code, and every reflow threshold shifts.
+		// The theme arrives as a linked stylesheet; since `style-src` gained
+		// `unsafe-inline` for mermaid's SVGs an inline block would work too, and either
+		// form has to be in place before layout. That is not cosmetic — `body` reads
+		// `--vscode-font-size` with no fallback, so text renders at the browser's 16px
+		// default, labels measure wider than they ever would in VS Code, and every
+		// reflow threshold shifts.
 		const themeFile = path.join(workDir, "theme.css");
 		await writeFile(themeFile, previewStyle(resolvedTheme.key, options.width));
 
@@ -86,25 +86,37 @@ async function main() {
 		const bodyClass =
 			resolvedTheme.key === "light" ? "vscode-light" : "vscode-dark";
 
-		const prepared = html
-			.replace(
-				"</head>",
-				`  <link rel="stylesheet" href="${pathToFileURL(themeFile).href}">\n</head>`,
-			)
-			.replace(
-				"<body>",
-				`<body class="${bodyClass}">\n  <script nonce="${nonce}">
+		let prepared = html;
+		prepared = replaceOnce(
+			prepared,
+			"</head>",
+			`  <link rel="stylesheet" href="${pathToFileURL(themeFile).href}">\n</head>`,
+			"the theme stylesheet",
+		);
+		// Tolerant of attributes on `<body>` — the document template carries the CSP
+		// nonce and the mermaid bundle URL there, and a literal match would drop the
+		// theme class and the host stub the preview depends on.
+		prepared = replaceOnce(
+			prepared,
+			/<body([^>]*)>/u,
+			(
+				_match,
+				attributes,
+			) => `<body class="${bodyClass}"${attributes}>\n  <script nonce="${nonce}">
 window.acquireVsCodeApi = () => ({
 	postMessage: (message) => console.log("[webview->host]", JSON.stringify(message)),
 	getState: () => undefined,
 	setState: () => {},
 });
 </script>`,
-			)
-			.replace(
-				"</body>",
-				`  <script nonce="${nonce}">${themeAssertScript()}${bootstrapScript(options.state)}</script>\n</body>`,
-			);
+			"the theme class and host stub",
+		);
+		prepared = replaceOnce(
+			prepared,
+			"</body>",
+			`  <script nonce="${nonce}">${themeAssertScript()}${bootstrapScript(options.state)}</script>\n</body>`,
+			"the bootstrap script",
+		);
 
 		const page = path.join(workDir, "preview.html");
 		await writeFile(page, prepared);
@@ -139,6 +151,22 @@ window.acquireVsCodeApi = () => ({
 	} finally {
 		await rm(workDir, { recursive: true, force: true });
 	}
+}
+
+/**
+ * Replaces one occurrence of `pattern`, and refuses to go on without one.
+ *
+ * The preview rewrites the extension's own document template. A template that
+ * changes shape would otherwise leave the page without its theme variables or its
+ * host stub, which reads as "the webview is broken" rather than as "the preview
+ * is out of date".
+ */
+function replaceOnce(source, pattern, replacement, what) {
+	const patched = source.replace(pattern, replacement);
+	if (patched === source) {
+		throw new Error(`Could not patch ${what} into the webview document.`);
+	}
+	return patched;
 }
 
 await main();

@@ -5,6 +5,7 @@ import type { ManagedComposerReference } from "./composer/model.js";
 import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { MentionController } from "./composer/mentions.js";
+import { StreamingUsageTracker } from "./streamUsage.js";
 import { StreamingMessagePlayback } from "./transcript/streaming.js";
 import {
 	formatAbsoluteTime,
@@ -1140,6 +1141,8 @@ function applySnapshot(
 	ui.state = message.state;
 	ui.messages = message.messages;
 	ui.stats = message.stats;
+	// snapshot 是全量权威统计，流式实时增量以此为零点重新累计。
+	streamingUsage.reset();
 	ui.models = message.models;
 	ui.thinkingLevels = message.thinkingLevels;
 	ui.commands = message.commands;
@@ -1319,12 +1322,20 @@ function handleActionResult(
 	scheduleRender();
 }
 
+/**
+ * 流式实时用量：pi 的 message_update 带当次调用的实时 usage，而 snapshot 只在
+ * 回复结束后刷新；两者的合成与重置规则见 StreamingUsageTracker。
+ */
+const streamingUsage = new StreamingUsageTracker();
+
 function reduceRpcEvent(event: JsonRecord): void {
 	let needsImmediateRender = true;
 	switch (event.type) {
 		case "agent_start":
 			ui.busy = true;
 			announce("Pi started working");
+			// 新一轮 agent 运行：实时用量从最近一次 snapshot 之上重新累计。
+			streamingUsage.startAgentRun();
 			break;
 		case "agent_settled":
 			ui.busy = false;
@@ -1337,6 +1348,8 @@ function reduceRpcEvent(event: JsonRecord): void {
 				const overlappingMessage = streamingPlayback.completeImmediately();
 				if (overlappingMessage) settleStreamingMessage(overlappingMessage);
 				ui.streamingMessage = streamingPlayback.start(message);
+				// 新一轮回复从零累计，上一轮的用量已在 message_end 提交。
+				streamingUsage.beginCall();
 				frameCoordinator.scheduleAdvance();
 				needsImmediateRender = false;
 			} else if (message.role === "user") {
@@ -1352,6 +1365,9 @@ function reduceRpcEvent(event: JsonRecord): void {
 		}
 		case "message_update": {
 			needsImmediateRender = false;
+			// 只刷 footer 而非全量 render：这里每个流式 delta 都会触发，
+			// 全量 reconciliation 会重扫 150 条历史消息的签名。
+			if (streamingUsage.applyUpdate(event.usage)) renderRuntimeMeta();
 			if (
 				event.assistantMessageEvent !== undefined &&
 				streamingPlayback.isActive
@@ -1378,11 +1394,22 @@ function reduceRpcEvent(event: JsonRecord): void {
 			if (!message) break;
 			if (message.role === "assistant") {
 				streamingPlayback.finish(message);
+				// 本回复完成：最终用量并入累计，下一条回复从零开始。
+				if (
+					streamingUsage.commitCall(
+						objectValue(event.message).usage,
+						stringValue(objectValue(event.message).stopReason),
+					)
+				)
+					renderRuntimeMeta();
 				frameCoordinator.scheduleAdvance();
 				needsImmediateRender = false;
 			} else if (message.role === "toolResult" && message.toolCallId) {
 				if (!toolResults.has(message.toolCallId)) ui.messages.push(message);
 				toolResults.set(message.toolCallId, message);
+				// 工具结果消息也携带 usage（如 bash 消耗的 token），并入累计。
+				if (streamingUsage.addToolUsage(objectValue(event.message).usage))
+					renderRuntimeMeta();
 				frameCoordinator.scheduleTranscriptRender();
 				needsImmediateRender = false;
 			} else if (
@@ -2647,12 +2674,13 @@ function renderWidgets(): void {
 function renderRuntimeMeta(): void {
 	const locale = ui.timeContext.locale || undefined;
 	const parts: string[] = [];
-	const context = ui.stats?.contextUsage?.percent;
+	const stats = streamingUsage.displayStats(ui.stats);
+	const context = stats?.contextUsage?.percent;
 	if (typeof context === "number") parts.push(`${Math.round(context)}% context`);
-	if (typeof ui.stats?.cost === "number" && ui.stats.cost > 0)
-		parts.push(formatCost(ui.stats.cost, locale));
+	if (typeof stats?.cost === "number" && stats.cost > 0)
+		parts.push(formatCost(stats.cost, locale));
 	const text = parts.join(" \u00b7 ");
-	elements.runtimeMeta.hidden = !ui.stats;
+	elements.runtimeMeta.hidden = !stats;
 	elements.runtimeMeta.textContent = text || "Usage";
 	elements.runtimeMeta.title = "Session usage details";
 	if (elements.runtimeMeta.hidden) dismissUsagePanel();
@@ -2660,15 +2688,17 @@ function renderRuntimeMeta(): void {
 }
 
 /**
- * Session usage detail, taken straight from pi's `get_session_stats`.
+ * Session usage detail, based on pi's `get_session_stats` snapshot plus the
+ * live `message_update` usage deltas while a response is streaming.
  *
- * Nothing here is computed locally. A `null` context reading is shown as
- * unavailable rather than 0%: pi reports null right after compaction until a
- * fresh assistant response supplies real usage.
+ * Nothing here is computed locally beyond summing pi-reported numbers. A
+ * `null` context reading is shown as unavailable rather than 0%: pi reports
+ * null right after compaction until a fresh assistant response supplies real
+ * usage.
  */
 function renderUsagePanel(): void {
 	const locale = ui.timeContext.locale || undefined;
-	const stats = ui.stats;
+	const stats = streamingUsage.displayStats(ui.stats);
 	const rows: Array<[string, string]> = [];
 	if (stats) {
 		const usage = stats.contextUsage;

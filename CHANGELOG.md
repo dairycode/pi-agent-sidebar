@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.10
+
+- Update the session usage chip and its panel while a reply is still streaming.
+  pi's `message_update` events carry the running usage of the call in flight, so
+  the footer's context percentage (and, in the panel, the token breakdown and
+  cost) now move during the reply instead of waiting for `agent_settled` and the
+  next `get_session_stats` snapshot. Finished calls accumulate onto the last
+  authoritative snapshot, and that snapshot still wins the moment it lands, so
+  the running numbers never drift from pi's own accounting. Context reads the
+  most recent call rather than the running total, calls pi would skip (aborted or
+  errored) are skipped here too, and the post-compaction "unavailable until the
+  next response" reading now fills in as soon as the next stream reports usage.
+  Providers that only report usage once a response completes still update at the
+  end of each call rather than only after the whole run settles.
+
 ## 0.7.9
 
 - Keep reasoning collapsed while it streams and after it settles, instead of

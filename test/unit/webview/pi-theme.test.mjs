@@ -90,32 +90,53 @@ test("pi theme resolves every referenced token to a declaration", async () => {
 	assert.deepEqual(dangling, [], "var() references with no declaration");
 });
 
-test("pi theme keeps the three tool state backgrounds independently tunable", async () => {
+test("pi theme keeps the three tool states independently tunable", async () => {
 	const { blocks } = await loadTheme();
 	const declared = unionTokens(blocks);
 	for (const state of ["pending", "success", "error"]) {
-		assert.ok(
-			declared.has(`--pi-theme-tool-${state}-bg`),
-			`expected --pi-theme-tool-${state}-bg to be declared`,
-		);
+		for (const surface of ["bg", "border"]) {
+			assert.ok(
+				declared.has(`--pi-theme-tool-${state}-${surface}`),
+				`expected --pi-theme-tool-${state}-${surface} to be declared`,
+			);
+		}
 	}
 });
 
-test("pi theme surfaces stay translucent so they composite over the sidebar", async () => {
+test("pi theme surfaces stay mixes so each palette can set its strength", async () => {
 	const { css } = await loadTheme();
-	// Opaque surfaces would defeat the whole reason these are mixes: a nested
-	// tool box inside a hovered row has to read as both.
-	for (const state of ["pending", "success", "error"]) {
-		const declaration = new RegExp(
-			`--pi-theme-tool-${state}-bg:\\s*color-mix\\([^;]*transparent`,
-			"u",
-		);
-		assert.match(
-			css,
-			declaration,
-			`expected --pi-theme-tool-${state}-bg to mix toward transparent`,
-		);
+	// These have to be `color-mix()` values rather than hex literals: the
+	// per-palette strength is what acts on them, and at anything under 100% a
+	// nested tool box inside a hovered row reads as both — which is also why
+	// `background-clip: padding-box` exists in transcript.css. The dark palette
+	// spends 100% of its hue, a fixed frame, so only the shape of the value is
+	// asserted here.
+	for (const surface of ["bg", "border"]) {
+		for (const state of ["pending", "success", "error"]) {
+			const declaration = new RegExp(
+				`--pi-theme-tool-${state}-${surface}:\\s*color-mix\\([^;]*transparent`,
+				"u",
+			);
+			assert.match(
+				css,
+				declaration,
+				`expected --pi-theme-tool-${state}-${surface} to mix toward transparent`,
+			);
+		}
 	}
+});
+
+test("pi theme borders the custom-message family with its own muted hue", async () => {
+	const { css } = await loadTheme();
+	// The two cards wearing this surface — a skill invocation and an extension
+	// message — both draw their edge from it, so it must stay a mix of the
+	// family's muted border hue rather than a hex literal: that is what lets each
+	// palette set its own strength.
+	assert.match(
+		css,
+		/--pi-theme-custom-message-border:\s*color-mix\([^;]*--pi-theme-custom-message-border-hue[^;]*transparent/u,
+		"expected --pi-theme-custom-message-border to mix its muted hue toward transparent",
+	);
 });
 
 test("pi theme is wired into the stylesheet entry ahead of base", async () => {

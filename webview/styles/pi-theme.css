@@ -25,14 +25,13 @@
  *    states all land as the same pale grey box) and the 17% chroma accent
  *    reads grey where it fills a button instead of teal. Hue directions and
  *    value grades stay pi's — see the notes in the light block.
- * 4. The dark palette's tool surfaces are light tints, not pi's dark slabs.
- *    pi's near-black fills sit ~2 L* under the sidebar backdrop; a chroma boost
- *    helped (1.06 → ~1.3:1) but dark-on-dark still washes out first under
- *    bright ambient light, and every step louder turned success into a wall of
- *    green. Flipping the value relationship escapes that bind: lighter-than-
- *    backdrop overlays mixed at 20% measure ~1.4:1 against the sidebar and
- *    survive the same glare that drowns dark-on-dark, while keeping pi's hue
- *    directions and the light palette untouched.
+ * 4. The dark palette's tool surfaces are lighter than their backdrop, not pi's
+ *    dark slabs. pi's near-black fills sit ~2 L* under the sidebar; a chroma
+ *    boost helped (1.06 → ~1.2–1.3:1) but dark-on-dark still washes out first
+ *    under bright ambient light, and every step louder turned success into a
+ *    wall of green. Lighter-than-backdrop overlays escape that bind — they
+ *    survive the same glare — while keeping pi's hue directions and the light
+ *    palette untouched. How strong that overlay is belongs to departure 6.
  * 5. The dark palette's message hues get the same glare treatment: at the old
  *    30% mix the user message box measured 1.08:1 against the sidebar backdrop
  *    and a custom message 1.04:1 — both effectively invisible in bright light.
@@ -41,6 +40,23 @@
  *    and search matches firm up from 1.10:1 to ~1.17:1 — still quieter than VS
  *    Code's own list hover (1.22:1 in One Dark Pro Darker). selectedBg's hue
  *    itself stays pi's neutral: a hover must not out-shout what it highlights.
+ * 6. Tool boxes and custom-message cards carry a 1px border in a mid-tone of
+ *    their own hue — and it is the *same* mid-tone in both palettes: what
+ *    differs is only how much of the backdrop is let through (55% over the light
+ *    page, the full colour over the dark one). A translucent fill alone says
+ *    "something is here" but not where it stops: at 85% a light-theme box was
+ *    effectively an opaque slab whose edge was the only thing marking it, and a
+ *    box nested in a hovered row had no edge at all. So the border carries the
+ *    state, and each palette's fill is set to its own backdrop's idea of a quiet
+ *    wash — light 55% of a pastel (~1.07:1 against the page), dark 13% of pi's
+ *    hues (~1.2:1) — which is why the fills keep pi's saturated hues while the
+ *    borders do not: chroma is what survives dilution. Diluting the border over a
+ *    dark backdrop is the one thing that does not survive it — half a mid-tone
+ *    there measures ~2.4:1, a line adrift in the colour it was mixed from — so
+ *    that palette spends the whole colour instead (5–6:1, depending on how dark
+ *    the theme's sidebar is). A mid-tone is what both can afford: a hairline in
+ *    emerald or brick red beside prose that is grey is louder than the block it
+ *    delimits, however thin it gets.
  *
  * Omitted from pi's 51: the seven `thinking*` editor-border tokens and
  * `bashMode`. Those colour the TUI's own input frame, which this extension does
@@ -78,19 +94,31 @@
 	--pi-theme-selected-bg-hue: #3a3a4a;
 	--pi-theme-user-message-bg-hue: #333b55;
 	--pi-theme-custom-message-label: #9575cd;
+	/* The family's border is that label colour muted (departure 6): the label is
+	   tuned to carry text, and as a hairline it lands heavier than a card edge
+	   should. The same value as the light palette's, as the tool borders are. */
+	--pi-theme-custom-message-border-hue: #9d86bc;
 	--pi-theme-tool-output: #808080;
 
 	/* pi gives the three tool states their own background tokens rather than
 	   deriving them from the matching foreground colour, and the difference is
 	   visible: `success` is #b5bd68, a yellow-olive at hue 66°, while
-	   `toolSuccessBg` is hue 120°. The hues below keep those directions but are
-	   light tints, not pi's dark slabs — a dark fill washes out under glare
-	   while a lighter-than-backdrop overlay holds (departure 4 in the header).
+	   `toolSuccessBg` is hue 120°. The hues below keep those directions and feed
+	   the fill only, so they stay pi's saturated values: chroma is what survives
+	   dilution to 13%, and the boundary is the border's job (departure 6).
 	   pi's own warning still applies: tinting from the foreground hues would
 	   turn success muddy yellow-olive. */
 	--pi-theme-tool-pending-bg-hue: #6e93f5;
 	--pi-theme-tool-success-bg-hue: #4fc47a;
 	--pi-theme-tool-error-bg-hue: #f27777;
+
+	/* The same three values as the light palette's borders, deliberately: the
+	   frame colour is one decision, and these mid-tones are it. Only the strength
+	   below is per-palette. Spelled out rather than shared, because a palette
+	   block is where hex literals live in this file. */
+	--pi-theme-tool-pending-border-hue: #7b93bd;
+	--pi-theme-tool-success-border-hue: #6f9b71;
+	--pi-theme-tool-error-border-hue: #c08a8a;
 
 	/* Markdown */
 	--pi-theme-md-heading: #f0c674;
@@ -122,12 +150,20 @@
 
 	/* How strongly a tool surface tints its backdrop; full opacity would stop
 	   adapting to the user's editor background, which is the whole point of
-	   mixing. The light palette's hues sit near pi's literal light values, so
-	   its 85% mix lands close to pi. The dark palette's tints are light overlays
-	   pi never shipped, and 20% keeps them from out-shouting the prose they
-	   hold. Light themes need a firmer mix: the same alpha over a near-white
-	   background reads as noise rather than state. */
-	--pi-theme-tool-bg-strength: 20%;
+	   mixing. 13% of the hues above measures ~1.2:1 against the sidebar — just
+	   enough to say "this block is not the page", which is all a fill owes once
+	   the border carries the state (departure 6). */
+	--pi-theme-tool-bg-strength: 13%;
+	/* No dilution over a dark backdrop: the mid-tones above are the border as-is,
+	   the same values the light palette starts from before it thins them into its
+	   page. Half a mid-tone here would be a line adrift in the colour it was
+	   mixed from (departure 6) — and at 100% the border is simply that colour, so
+	   it no longer picks up what is behind it: a box inside a hovered row keeps
+	   its own line. That fixed frame is the point, and only the light palette's
+	   edges are translucent. */
+	--pi-theme-tool-border-strength: 100%;
+	/* 100% for the same reason. */
+	--pi-theme-custom-message-border-strength: 100%;
 	/* Message surfaces mix at a lower register than tool states — they hold
 	   prose, so the tint must stay quieter — but 30% left the user box at 1.08:1
 	   in glare. 45% keeps hover and search (selectedBg shares this knob) under
@@ -170,11 +206,25 @@ body.vscode-high-contrast-light {
 	--pi-theme-selected-bg-hue: #d0d0e0;
 	--pi-theme-user-message-bg-hue: #e6eaf3;
 	--pi-theme-custom-message-label: #7e57c2;
+	/* The label colour muted (departure 6): the label is tuned to carry text, and
+	   lands heavy as a hairline. Now the same value as the dark palette's, so the
+	   family's frame colour is one decision — only the strength below differs. */
+	--pi-theme-custom-message-border-hue: #9d86bc;
 	--pi-theme-tool-output: #6c6c6c;
 
 	--pi-theme-tool-pending-bg-hue: #e3e8f3;
 	--pi-theme-tool-success-bg-hue: #ddf0dd;
 	--pi-theme-tool-error-bg-hue: #f4e2e2;
+
+	/* Deeper than the fills, and the same mid-tones the dark palette uses
+	   (departure 6): the frame colour is one decision, and only the strength
+	   below is per-palette. The hues have to be genuinely deeper here — a pastel
+	   line over a near-white backdrop is invisible at any density. Graded to land
+	   together at that strength, so the red of a lone error box does not shout
+	   louder than the green of a normal turn. */
+	--pi-theme-tool-pending-border-hue: #7b93bd;
+	--pi-theme-tool-success-border-hue: #6f9b71;
+	--pi-theme-tool-error-border-hue: #c08a8a;
 
 	/* Markdown */
 	--pi-theme-md-heading: #9a7326;
@@ -206,7 +256,17 @@ body.vscode-high-contrast-light {
 	--pi-theme-syntax-operator: #000000;
 	--pi-theme-syntax-punctuation: #000000;
 
-	--pi-theme-tool-bg-strength: 85%;
+	/* Pulled down from pi's near-literal 85%: the border identifies the block
+	   now, so the fill only has to keep the surface from reading as bare page
+	   background — 55% of these pastels lands at ~1.07:1 against the page, the
+	   same weight the dark palette gets from 13% of its hues. */
+	--pi-theme-tool-bg-strength: 55%;
+	/* The mid-tones above carry the edge at ~1.7:1, against ~1.1:1 for the
+	   fills. Diluted, unlike the dark palette's: a mid-tone at full strength over
+	   a light page is a 5:1 hairline, and this palette's edges must not out-shout
+	   the page they sit on (departure 6). */
+	--pi-theme-tool-border-strength: 55%;
+	--pi-theme-custom-message-border-strength: 55%;
 	--pi-theme-message-bg-strength: 60%;
 }
 
@@ -253,6 +313,25 @@ body {
 		transparent
 	);
 
+	/* The same three states, one step denser (departure 6). Declared per state
+	   for the same reason the fills are: how loud "success" should be is a
+	   judgement call, and this is the single place to retune it. */
+	--pi-theme-tool-pending-border: color-mix(
+		in srgb,
+		var(--pi-theme-tool-pending-border-hue) var(--pi-theme-tool-border-strength),
+		transparent
+	);
+	--pi-theme-tool-success-border: color-mix(
+		in srgb,
+		var(--pi-theme-tool-success-border-hue) var(--pi-theme-tool-border-strength),
+		transparent
+	);
+	--pi-theme-tool-error-border: color-mix(
+		in srgb,
+		var(--pi-theme-tool-error-border-hue) var(--pi-theme-tool-border-strength),
+		transparent
+	);
+
 	--pi-theme-selected-bg: color-mix(
 		in srgb,
 		var(--pi-theme-selected-bg-hue) var(--pi-theme-message-bg-strength),
@@ -270,6 +349,19 @@ body {
 	   fix (commit 1112d40) already solved. Both consumers render dense content
 	   on the surface, so they inherit that fix wholesale. */
 	--pi-theme-custom-message-bg: var(--pi-theme-tool-pending-bg);
+
+	/* ...and one border, in that same family colour. pi's `customMessage*` group
+	   is what marks "something other than the model said this" — its TUI wears
+	   that label on compaction, branch summaries and extension messages alike,
+	   not on skills alone — so the family keeps one hue for both. Muted and mixed
+	   like the tool borders, so the two families read at one weight: one hue, and
+	   the same per-palette strength. */
+	--pi-theme-custom-message-border: color-mix(
+		in srgb,
+		var(--pi-theme-custom-message-border-hue)
+			var(--pi-theme-custom-message-border-strength),
+		transparent
+	);
 
 	/* pi lets these fall back to `selectedBg` / `text`; mirroring that here
 	   means a future explicit value only has to be set in one place. */

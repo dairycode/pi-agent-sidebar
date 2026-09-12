@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.8.0
+
+- Outline tool boxes and custom-message cards with a 1px border in a mid-tone of
+  their own colour — the same mid-tone in both palettes, mixed at 55% over the
+  light page and used at full strength over the dark one. A translucent fill says
+  "something is here" but not where it stops, and at 85% a light-theme box was
+  near-opaque anyway, so the border now carries the state: 5–6:1 against the dark
+  sidebar, 1.7:1 against the light page, where the fills sit at ~1.2:1 and
+  ~1.07:1. The dark palette does not thin its edges the way the light one does:
+  half a mid-tone over a dark backdrop measures ~2.4:1, a line adrift in the
+  colour it was mixed from. Each palette's fill keeps its own idea of a quiet
+  wash, which is why the fills stay on pi's saturated hues while the borders do
+  not — chroma is what survives dilution, and a hairline in emerald or brick red
+  beside grey prose is louder than the box it delimits, however thin it gets. The
+  inset drops by the border's 1px so a box's text stays on the same column as the
+  prose around it, and the three tool states keep one border width so nothing
+  shifts when a call settles.
+- Border skill invocations and extension messages in the custom-message family's
+  own colour, at the same per-palette strength, so the two cards read as one kind
+  of thing — neither the model's prose nor a tool's output — with the `[skill]`
+  label left to say which of the two it is. They keep an edge in forced-colours
+  mode too, where the translucent colour is what gets dropped first.
+
 ## 0.7.12
 
 - Draw `mermaid` code fences as diagrams. A fence stayed a code block, so a

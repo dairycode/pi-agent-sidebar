@@ -50,8 +50,9 @@ const SAMPLE_COMMANDS = [
  * The `--state=idle` default posts an empty message list, which is right for
  * inspecting the composer but shows none of the transcript: reviewing spacing,
  * fonts, or tool colours against it is impossible. This sample carries a user
- * turn, prose with headings and lists, inline and fenced code, reasoning, and
- * all three tool states, so one screenshot covers the whole surface.
+ * turn, prose with headings and lists, inline and fenced code, reasoning, all
+ * three tool states, a skill card and an extension custom message, so one
+ * screenshot covers the whole surface.
  *
  * Timestamps are fixed rather than derived from `Date.now()` so repeated runs
  * produce comparable images.
@@ -64,6 +65,32 @@ const SAMPLE_MESSAGES = [
 			{
 				type: "text",
 				text: "Line up the composer toolbar controls and tell me what changed.",
+			},
+		],
+	},
+	// The `<skill>` payload pi inlines for a `/skill:name` invocation, plus the
+	// arguments typed after it. Both cards in the customMessage family (this and
+	// the extension message below) are border-carrying surfaces, so the preview
+	// only covers the transcript's full shape if it renders one of each.
+	{
+		role: "user",
+		timestamp: 1_756_000_010_000,
+		content: [
+			{
+				type: "text",
+				text: [
+					'<skill name="brave-search" location="~/.pi/skills/brave-search/SKILL.md">',
+					"# brave-search",
+					"",
+					"Search the web through the Brave Search API.",
+					"",
+					"## Usage",
+					"",
+					'Run `node scripts/search.mjs "<query>"` and cite the URLs it returns.',
+					"</skill>",
+					"",
+					"What landed in pi-lens this week?",
+				].join("\n"),
 			},
 		],
 	},
@@ -94,6 +121,15 @@ const SAMPLE_MESSAGES = [
 				name: "bash",
 				arguments: { command: "npm run typecheck" },
 			},
+			// Deliberately without a matching result below: a call that has not
+			// settled is the third state the tool borders distinguish, and it is the
+			// base `.tool-call` rule rather than a modifier class.
+			{
+				type: "toolCall",
+				id: "call-grep",
+				name: "grep",
+				arguments: { pattern: "inputPadding", path: "webview/styles" },
+			},
 			{
 				type: "text",
 				text:
@@ -113,6 +149,19 @@ const SAMPLE_MESSAGES = [
 				type: "text",
 				text:
 					"## Diagram\n\nA mermaid fence renders as a diagram, with the source kept one click away:\n\n```mermaid\nflowchart LR\n  prompt[Ask a question with a label long enough to wrap] --> runtime{pi}\n  runtime -->|edits| files[(files)]\n  runtime -->|answers| transcript[first line<br/>second line]\n```\n\nA diagram keeps its natural width and the frame scrolls, because a 900px flowchart scaled into a 300px column is unreadable at any zoom.",
+			},
+		],
+	},
+	// A `role: "custom"` entry, which is what an extension's own output reaches
+	// the transcript as. Shares the skill card's surface and border.
+	{
+		role: "custom",
+		timestamp: 1_756_000_040_000,
+		content: [
+			{
+				type: "text",
+				text:
+					"**pi-lens** re-indexed 214 files in 0.8s.\n\n3 rules skipped: `no-floating-promises` is not configured for this workspace.",
 			},
 		],
 	},

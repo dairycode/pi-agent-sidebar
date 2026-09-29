@@ -88,9 +88,9 @@
 	   surfaces further down; these raw values are the hue source, not the
 	   surface. userMessage starts from pi's value raised in chroma for glare
 	   legibility (departure 5); selectedBg stays pi's neutral. customMessage
-	   has no hue of its own any more — its surface resolves to the tool-box
-	   tint (see the mix below), which is what fixed the glare legibility the
-	   old dark slab lacked. */
+	   has no hue of its own any more — its surface resolves to the tool family's
+	   `pending` tint (see the mix below), which is what fixed the glare
+	   legibility the old dark slab lacked. */
 	--pi-theme-selected-bg-hue: #3a3a4a;
 	--pi-theme-user-message-bg-hue: #333b55;
 	--pi-theme-custom-message-label: #9575cd;
@@ -315,7 +315,11 @@ body {
 
 	/* The same three states, one step denser (departure 6). Declared per state
 	   for the same reason the fills are: how loud "success" should be is a
-	   judgement call, and this is the single place to retune it. */
+	   judgement call, and this is the single place to retune it. `pending` is the
+	   one knob left without a consumer — a tool box wears `success` in every
+	   state, and the custom-message surface took the pending fill — and it stays
+	   so all three states keep both knobs, which is what `pi-theme.test.mjs`
+	   holds to. */
 	--pi-theme-tool-pending-border: color-mix(
 		in srgb,
 		var(--pi-theme-tool-pending-border-hue) var(--pi-theme-tool-border-strength),
@@ -342,12 +346,14 @@ body {
 		var(--pi-theme-user-message-bg-hue) var(--pi-theme-message-bg-strength),
 		transparent
 	);
-	/* Extension custom messages and skill cards share one surface, and it is
-	   the tool-box tint rather than a mix of their own hue: the dark palette's
-	   old customMessage slab (#342e5c at 45%) measured ~1:1 against the
-	   sidebar — invisible under glare, the exact failure the light-tint tool
-	   fix (commit 1112d40) already solved. Both consumers render dense content
-	   on the surface, so they inherit that fix wholesale. */
+	/* Extension custom messages and skill cards share one surface, and it is the
+	   tool family's `pending` tint rather than a mix of their own hue — the tool
+	   boxes stopped spending that token when they went green for the whole call,
+	   which leaves these two cards its only consumers: the dark palette's old
+	   customMessage slab (#342e5c at 45%) measured ~1:1 against the sidebar —
+	   invisible under glare, the exact failure the light-tint tool fix
+	   (commit 1112d40) already solved. Both consumers render dense content on the
+	   surface, so they inherit that fix wholesale. */
 	--pi-theme-custom-message-bg: var(--pi-theme-tool-pending-bg);
 
 	/* ...and one border, in that same family colour. pi's `customMessage*` group

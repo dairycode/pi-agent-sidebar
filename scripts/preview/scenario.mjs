@@ -50,9 +50,9 @@ const SAMPLE_COMMANDS = [
  * The `--state=idle` default posts an empty message list, which is right for
  * inspecting the composer but shows none of the transcript: reviewing spacing,
  * fonts, or tool colours against it is impossible. This sample carries a user
- * turn, prose with headings and lists, inline and fenced code, reasoning, all
- * three tool states, a skill card and an extension custom message, so one
- * screenshot covers the whole surface.
+ * turn, prose with headings and lists, inline and fenced code, reasoning, two
+ * tool states plus an unsettled call, a skill card and an extension custom
+ * message, so one screenshot covers the whole surface.
  *
  * Timestamps are fixed rather than derived from `Date.now()` so repeated runs
  * produce comparable images.
@@ -122,8 +122,9 @@ const SAMPLE_MESSAGES = [
 				arguments: { command: "npm run typecheck" },
 			},
 			// Deliberately without a matching result below: a call that has not
-			// settled is the third state the tool borders distinguish, and it is the
-			// base `.tool-call` rule rather than a modifier class.
+			// settled wears the same green as a settled one — the spinner is what
+			// says it is still running — and it is the base `.tool-call` rule
+			// rather than a modifier class.
 			{
 				type: "toolCall",
 				id: "call-grep",
@@ -282,6 +283,14 @@ const post = (message) => window.postMessage(message, "*");
 post(snapshot);
 post({ type: "connection", phase: "ready" });
 
+// A throwing check aborts the deferred body before it can mark the document
+// ready, which on its own tells the caller only that nothing rendered. The
+// harness reads data-preview-error before the ready flag, so recording the
+// message here is what turns a failed check into a readable one.
+window.addEventListener("error", (event) => {
+	document.documentElement.dataset.previewError = String(event.message);
+});
+
 // Rendering is queued through requestAnimationFrame, so interactions wait
 // for it. dump-dom with virtual-time-budget does not reliably advance rAF
 // frames (virtual time only moves while tasks are pending, so the second
@@ -331,6 +340,121 @@ setTimeout(() => setTimeout(() => {
 		);
 	}
 	if (state === "palette") document.querySelector("#command-button").click();
+	if (state === "menu") {
+		const trigger = document.querySelector("#session-menu-button");
+		const menu = document.querySelector("#session-menu");
+		const items = () => Array.from(menu.querySelectorAll(".menu-item"));
+		const press = (target, key) =>
+			target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+
+		trigger.click();
+		if (menu.hidden) throw new Error("The session menu did not open");
+		if (trigger.getAttribute("aria-expanded") !== "true") {
+			throw new Error("The session menu trigger did not report its state");
+		}
+		if (items().length !== 2) {
+			throw new Error(
+				"Expected the session menu to hold 2 items, got " + items().length,
+			);
+		}
+		if (document.activeElement !== items()[0]) {
+			throw new Error("Opening the session menu did not focus its first item");
+		}
+		// Arrow keys walk the items: the pattern a role="menu" promises.
+		press(items()[0], "ArrowDown");
+		if (document.activeElement !== items()[1]) {
+			throw new Error("ArrowDown did not move to the second item");
+		}
+		press(items()[1], "ArrowUp");
+		if (document.activeElement !== items()[0]) {
+			throw new Error("ArrowUp did not move back to the first item");
+		}
+		// Home and End jump rather than step: the other half of what the role="menu"
+		// pattern promises, and what the composer's pickers already answer.
+		press(items()[0], "End");
+		if (document.activeElement !== items().at(-1)) {
+			throw new Error("End did not jump to the last session menu item");
+		}
+		press(items().at(-1), "Home");
+		if (document.activeElement !== items()[0]) {
+			throw new Error("Home did not jump back to the first session menu item");
+		}
+		// Escape closes the menu and hands focus back to the trigger, because an item
+		// lives inside a popup that is about to disappear.
+		press(items()[0], "Escape");
+		if (!menu.hidden || document.activeElement !== trigger) {
+			throw new Error("Escape did not close the session menu onto its trigger");
+		}
+		// The picker the fork item opens outlives the menu, and its own Escape has to
+		// land somewhere real: the item it came from is hidden by then.
+		trigger.click();
+		items()[1].click();
+		const panel = document.querySelector("#fork-panel");
+		if (panel.hidden) throw new Error("The fork item did not open the picker");
+		if (menu.hidden === false) {
+			throw new Error("The session menu stayed open under the fork picker");
+		}
+		press(document.querySelector("#fork-search"), "Escape");
+		if (!panel.hidden || document.activeElement !== trigger) {
+			throw new Error(
+				"Closing the fork picker did not return focus to the menu trigger",
+			);
+		}
+		// Committing to a row is the picker's other exit, and it owes the same
+		// handover: the picker is gone by the time the fork is sent, and the item it
+		// was opened from went with the menu.
+		trigger.click();
+		items()[1].click();
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: {
+					type: "forkCandidates",
+					candidates: [
+						{
+							entryId: "entry-toolbar",
+							text: "Line up the composer toolbar controls",
+							timestamp: 1767880800000,
+						},
+					],
+				},
+			}),
+		);
+		const forkRow = document.querySelector("#fork-list .fork-row");
+		if (!forkRow) {
+			throw new Error("The fork picker did not render the candidates it was sent");
+		}
+		forkRow.click();
+		if (!panel.hidden) throw new Error("Picking a fork entry left the picker open");
+		if (document.activeElement !== trigger) {
+			throw new Error("Submitting a fork did not return focus to the menu trigger");
+		}
+		// Reopened, which is the state this screenshot is for.
+		trigger.click();
+		// The one popup anchored near the top of the sidebar, so it is the one that
+		// has to open downwards and stay on screen: an above-placement would clamp to
+		// the space over the header and hang the menu off the top edge.
+		const triggerBox = trigger.getBoundingClientRect();
+		const menuBox = menu.getBoundingClientRect();
+		if (
+			menuBox.top < triggerBox.bottom ||
+			menuBox.bottom > window.innerHeight ||
+			menuBox.right > window.innerWidth
+		) {
+			throw new Error("The session menu did not open below its trigger");
+		}
+	}
+	if (state === "select") {
+		// The picker the header menu now shares its surface with: if the shared
+		// popup-surface class stopped reaching it, the panel would lose its
+		// placement and its frame at once, and every composer turn would show it.
+		document.querySelector("#model-select").click();
+		const popup = document.querySelector("#select-popup");
+		if (popup.hidden) throw new Error("The model picker did not open");
+		const style = getComputedStyle(popup);
+		if (style.position !== "absolute" || style.backgroundColor === "rgba(0, 0, 0, 0)") {
+			throw new Error("The model picker lost its popup surface");
+		}
+	}
 	if (state === "typing") {
 		const input = document.querySelector("#prompt-input");
 		input.value = "Refactor the composer toolbar so the controls line up";

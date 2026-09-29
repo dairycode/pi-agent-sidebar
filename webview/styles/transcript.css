@@ -826,21 +826,27 @@
    The border carries the state now, not the tint: it is the loud thing in this
    block — ~1.7:1 against a light page, 5–6:1 against a dark one — while the
    fill underneath is a quiet wash (see departure 6 in `pi-theme.css`). The
-   three state variables are defined there and are deliberately independent,
-   because how loud "success" should be is a judgement call: success is the
-   overwhelmingly common state, so a box that works for a lone error can turn a
-   normal turn into a wall of green.
+   state variables are defined there and are deliberately independent, because
+   how loud "success" should be is a judgement call: it is the overwhelmingly
+   common state — every box wears it, and only a failure recolours one — so a
+   tint that works for a lone error would turn a normal turn into a wall of
+   green.
 
-   `.running` maps to pi's `toolPendingBg`: pi names that token for the state
-   before a result exists, which is exactly this class. */
+   Running and settled calls share that surface, and `.success` has no rule of
+   its own: a call that arrives wearing pi's `toolPendingBg` and turns green the
+   moment it settles flickers, and a round of calls settling in sequence reads
+   as a glitch rather than as progress. "In progress" is the spinner's job and
+   the `.sr-only` note's — the two channels colour could never carry alone.
+   `toolPendingBg` stays in the palette; the custom-message surface is where it
+   went (see `pi-theme.css`). */
 .tool-call {
 	min-width: 0;
 	/* 10px, not the 11px `.assistant-text` uses: the border takes the other 1px,
 	   and the box's text has to stay on the column of the prose above it. */
 	padding: var(--pi-line-half) 10px;
-	border: 1px solid var(--pi-theme-tool-pending-border);
+	border: 1px solid var(--pi-theme-tool-success-border);
 	border-radius: var(--pi-radius-content);
-	background: var(--pi-theme-tool-pending-bg);
+	background: var(--pi-theme-tool-success-bg);
 	/* A translucent border over a translucent fill: at the default `border-box`
 	   the border composites over the box's own background and reads as a duller
 	   version of it, which is the opposite of what an edge is for. Clipping the
@@ -851,13 +857,9 @@
 	font-size: var(--pi-font-chrome);
 	line-height: var(--pi-line-ratio);
 }
-.tool-call.success {
-	background: var(--pi-theme-tool-success-bg);
-	/* `border-color`, never the shorthand: a state that reset the width would
-	   shift the box's text 1px the moment a call settles. */
-	border-color: var(--pi-theme-tool-success-border);
-}
-
+/* The one state that recolours a box. `border-color`, never the shorthand: a
+   state that reset the width would shift the box's text 1px the moment a call
+   fails. */
 .tool-call.error {
 	background: var(--pi-theme-tool-error-bg);
 	border-color: var(--pi-theme-tool-error-border);
@@ -967,11 +969,11 @@
    opening one costs no re-render. The reader's own arguments, if any, stay a
    user bubble below.
 
-   The background is the custom-message surface token, which now resolves to
-   the tool-box tint everywhere (see pi-theme.css): the dark palette's old
-   customMessage slab (#342e5c at 45%) measured ~1:1 against the sidebar and
-   washed out under glare — the exact failure the light-tint tool fix
-   (commit 1112d40) solved. The `[skill]` label keeps the custom-message
+   The background is the custom-message surface token, which resolves to the
+   tool family's `pending` tint everywhere (see pi-theme.css): the dark
+   palette's old customMessage slab (#342e5c at 45%) measured ~1:1 against the
+   sidebar and washed out under glare — the exact failure the light-tint tool
+   fix (commit 1112d40) solved. The `[skill]` label keeps the custom-message
    accent so the card still reads as "not the model, not a tool" — and the 1px
    border is that same accent muted, so the family colour frames the card
    instead of only highlighting three words inside it. */

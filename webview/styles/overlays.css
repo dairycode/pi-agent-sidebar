@@ -168,6 +168,73 @@
 	border: 0;
 }
 
+/* The surface the script-positioned popups that scroll share: the composer's two
+   pickers and the header's session menu. `.command-panel` and `.usage-panel` are
+   the same frame with their own padding and clipping and have not moved onto it.
+   Positioned from script against `#app`, the nearest non-clipping positioned
+   ancestor, so an instance only sizes itself here. `[hidden]` is spelled out
+   because `display: flex` would otherwise beat the user agent's rule. */
+.popup-surface {
+	position: absolute;
+	z-index: 9;
+	display: flex;
+	flex-direction: column;
+	max-width: calc(100% - 16px);
+	padding: 4px;
+	overflow-y: auto;
+	border: 1px solid var(--pi-border-subtle);
+	border-radius: var(--pi-radius-panel);
+	background: var(--pi-raised);
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+.popup-surface[hidden] {
+	display: none;
+}
+
+/* The header's overflow menu: the two actions that derive another session from
+   this one. A wider floor than the pickers' 160px — its items are phrases, and
+   at that floor every one of them would be ellipsised in a narrow sidebar. */
+.session-menu {
+	min-width: min(190px, calc(100% - 16px));
+}
+
+/* Rows, not surfaces. The hover and focus treatment is the pickers' so the two
+   popups read as one family, which is also why the outline gives way to that
+   background the way `.select-option` does. */
+.menu-item {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	flex: 0 0 auto;
+	min-height: 26px;
+	padding: 0 6px;
+	border-radius: 4px;
+	background: none;
+	gap: 6px;
+	font-size: var(--pi-font-chrome);
+	text-align: left;
+}
+
+.menu-item:hover:not(:disabled),
+.menu-item:focus-visible {
+	outline: 0;
+	background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+}
+
+.menu-item .codicon {
+	font-size: 13px;
+	color: var(--pi-muted);
+}
+
+.menu-item-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* Session usage detail. Positioned from script against `#app` for the same
    reason as the command palette: the composer clips overflow. */
 .usage-panel {

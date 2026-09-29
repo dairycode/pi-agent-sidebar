@@ -56,7 +56,7 @@ import {
 } from "./resourceDrop.js";
 import { TRANSCRIPT_SANITIZE_OPTIONS } from "./sanitizerPolicy.js";
 import { ModalController } from "./ui/modalController.js";
-import { positionPopupAbove } from "./ui/popupPosition.js";
+import { positionPopupAbove, positionPopupBelow } from "./ui/popupPosition.js";
 import { SelectController } from "./ui/selectController.js";
 import { FrameCoordinator } from "./ui/frameCoordinator.js";
 import { LiveStatusAnnouncer } from "./ui/liveStatus.js";
@@ -260,6 +260,8 @@ const elements = {
 	pinnedPromptToggle: element<HTMLButtonElement>("pinned-prompt-toggle"),
 	sessionTitle: element<HTMLElement>("session-title"),
 	renameSessionButton: element<HTMLButtonElement>("rename-session-button"),
+	sessionMenuButton: element<HTMLButtonElement>("session-menu-button"),
+	sessionMenu: element<HTMLElement>("session-menu"),
 	cloneSessionButton: element<HTMLButtonElement>("clone-session-button"),
 	forkSessionButton: element<HTMLButtonElement>("fork-session-button"),
 	historyButton: element<HTMLButtonElement>("history-button"),
@@ -356,6 +358,7 @@ const selectorController = new SelectController({
 	},
 	beforeOpen: () => {
 		dismissHistory();
+		dismissSessionMenu();
 		dismissCommandPalette();
 		mentionController.dismiss();
 	},
@@ -573,6 +576,10 @@ window.addEventListener("keydown", (event) => {
 		selectorController.close(true);
 		return;
 	}
+	if (!elements.sessionMenu.hidden) {
+		closeSessionMenu();
+		return;
+	}
 	if (mentionController.isOpen) {
 		mentionController.dismiss();
 		return;
@@ -622,6 +629,15 @@ window.addEventListener("pointerdown", (event) => {
 	) {
 		mentionController.dismiss();
 	}
+	// The menu's own items are excluded: hiding the popup on pointerdown would
+	// pull the item out from under the click that is still on its way.
+	if (
+		!elements.sessionMenu.hidden &&
+		!elements.sessionMenu.contains(event.target) &&
+		!elements.sessionMenuButton.contains(event.target)
+	) {
+		dismissSessionMenu();
+	}
 	// Checked before the history panel, whose branch returns early.
 	if (
 		!elements.forkPanel.hidden &&
@@ -649,6 +665,7 @@ window.addEventListener("blur", () => {
 	mentionController.dismiss();
 	if (!elements.historyPanel.hidden) dismissHistory();
 	dismissForkPicker();
+	dismissSessionMenu();
 	if (!elements.usagePanel.hidden) dismissUsagePanel();
 });
 
@@ -944,6 +961,24 @@ elements.commandSearch.addEventListener("keydown", (event) => {
 	insertSlashCommand(activeCommandName);
 });
 elements.historyButton.addEventListener("click", toggleHistory);
+elements.sessionMenuButton.addEventListener("click", toggleSessionMenu);
+// The keys `role="menu"` promises: the arrows walk the items and wrap, Home and
+// End jump to the ends — the same four the composer's pickers answer. Tab leaves
+// the way every other exit does — focus goes back to the trigger first, and the
+// browser tabs on from there rather than from a popup that is about to hide.
+elements.sessionMenu.addEventListener("keydown", (event) => {
+	if (
+		event.key === "ArrowDown" ||
+		event.key === "ArrowUp" ||
+		event.key === "Home" ||
+		event.key === "End"
+	) {
+		event.preventDefault();
+		focusSessionMenuItem(event.key);
+		return;
+	}
+	if (event.key === "Tab") closeSessionMenu();
+});
 elements.sessionSearch.addEventListener("input", renderSessions);
 elements.sessionSearch.addEventListener("keydown", (event) => {
 	if (event.key !== "ArrowDown") return;
@@ -981,8 +1016,10 @@ elements.renameSessionButton.addEventListener("click", () =>
 );
 // Cloning replaces the active session, so it must wait for pi to go idle. The
 // button stays clickable while busy; the refusal is a toast, matching the other
-// header actions.
+// header actions. Closing the menu first keeps focus somewhere real either way:
+// an activated item is inside a popup that is about to hide.
 elements.cloneSessionButton.addEventListener("click", () => {
+	closeSessionMenu();
 	if (ui.busy) {
 		showToast("Wait for pi to finish before duplicating this session", "error");
 		return;
@@ -995,6 +1032,7 @@ elements.cloneSessionButton.addEventListener("click", () => {
 elements.forkSessionButton.addEventListener("click", () => {
 	if (ui.busy) {
 		showToast("Wait for pi to finish before forking this session", "error");
+		closeSessionMenu();
 		return;
 	}
 	if (elements.forkPanel.hidden) openForkPicker();
@@ -1833,6 +1871,14 @@ function render(): void {
 	elements.forkSessionButton.hidden =
 		!ui.capabilities.fork || !ui.capabilities.forkMessages;
 	elements.forkSessionButton.disabled = !enabled;
+	// The menu exists only for the items it holds: a trigger that opens onto
+	// nothing is worse than no trigger. An open menu also closes when the
+	// connection those items act on goes away.
+	const hasSessionMenuItems =
+		!elements.cloneSessionButton.hidden || !elements.forkSessionButton.hidden;
+	elements.sessionMenuButton.hidden = !hasSessionMenuItems;
+	elements.sessionMenuButton.disabled = !enabled;
+	if (!hasSessionMenuItems || !enabled) dismissSessionMenu();
 	// An open picker outlives neither a disconnect nor a turn starting: its entry
 	// ids belong to the session as it was when the list was fetched.
 	if (elements.forkSessionButton.hidden || !enabled || ui.busy) {
@@ -3294,9 +3340,101 @@ function renderSessions(): void {
 	elements.sessionList.replaceChildren(...rows);
 }
 
+/**
+ * The menu behind the header's one overflow trigger: the actions that derive a
+ * new session from this one.
+ *
+ * Duplicating and forking are both conditional — `clone` and `fork` are
+ * capabilities a pi build may not have — and both are low-frequency, which is
+ * what makes them worth folding away rather than spending two header slots on:
+ * every pixel the header keeps goes to the title, which is the one thing in it
+ * the reader actually reads. The trigger leaves when its last item does.
+ */
+function sessionMenuItems(): HTMLButtonElement[] {
+	return [
+		...elements.sessionMenu.querySelectorAll<HTMLButtonElement>(".menu-item"),
+	].filter((item) => !item.hidden && !item.disabled);
+}
+
+function toggleSessionMenu(): void {
+	if (elements.sessionMenu.hidden) openSessionMenu();
+	else closeSessionMenu();
+}
+
+/**
+ * Opens the menu under its trigger, with focus on the first item.
+ *
+ * Focus moves into the menu on open — the pattern `role="menu"` promises, and
+ * what makes the arrow keys usable without reaching for the mouse first. Unlike
+ * the composer's pickers this one opens downwards: it hangs off the header, so
+ * below is the side with room in it.
+ */
+function openSessionMenu(): void {
+	dismissHistory();
+	dismissForkPicker();
+	selectorController.close(false);
+	dismissCommandPalette();
+	mentionController.dismiss();
+	elements.sessionMenu.hidden = false;
+	elements.sessionMenuButton.setAttribute("aria-expanded", "true");
+	positionPopupBelow({
+		container: elements.app,
+		popup: elements.sessionMenu,
+		anchor: elements.sessionMenuButton,
+	});
+	sessionMenuItems()[0]?.focus();
+}
+
+/**
+ * Hides the menu and leaves focus alone.
+ *
+ * Separate from `closeSessionMenu` because most dismissals hand focus to
+ * something else that is opening at the same time — the fork picker's search
+ * field, an outside click, the window going away.
+ */
+function dismissSessionMenu(): void {
+	if (elements.sessionMenu.hidden) return;
+	elements.sessionMenu.hidden = true;
+	elements.sessionMenuButton.setAttribute("aria-expanded", "false");
+}
+
+/** Hides the menu and hands focus back to its trigger. */
+function closeSessionMenu(): void {
+	const wasOpen = !elements.sessionMenu.hidden;
+	dismissSessionMenu();
+	if (wasOpen) elements.sessionMenuButton.focus();
+}
+
+/**
+ * Moves focus to the item one navigation key names: the arrows step and wrap,
+ * Home and End jump.
+ *
+ * An empty menu and an unfocused one are handled here rather than in the
+ * listener: both resolve to an index, and an index is what this function is
+ * about.
+ */
+function focusSessionMenuItem(key: string): void {
+	const items = sessionMenuItems();
+	if (items.length === 0) return;
+	if (key === "Home") {
+		items[0]?.focus();
+		return;
+	}
+	if (key === "End") {
+		items.at(-1)?.focus();
+		return;
+	}
+	const active = document.activeElement;
+	const index = active instanceof HTMLButtonElement ? items.indexOf(active) : -1;
+	const delta = key === "ArrowDown" ? 1 : -1;
+	const next = index < 0 ? 0 : (index + delta + items.length) % items.length;
+	items[next]?.focus();
+}
+
 function toggleHistory(): void {
 	if (elements.historyPanel.hidden) {
 		dismissForkPicker();
+		dismissSessionMenu();
 		elements.historyPanel.hidden = false;
 		elements.historyButton.setAttribute("aria-expanded", "true");
 		elements.sessionSearch.value = "";
@@ -3332,6 +3470,7 @@ function openForkPicker(): void {
 	if (ui.connection !== "ready" || ui.busy) return;
 	if (!ui.capabilities.fork || !ui.capabilities.forkMessages) return;
 	dismissHistory();
+	dismissSessionMenu();
 	selectorController.close(false);
 	dismissCommandPalette();
 	mentionController.dismiss();
@@ -3365,7 +3504,9 @@ function dismissForkPicker(): void {
 function closeForkPicker(): void {
 	const wasOpen = !elements.forkPanel.hidden;
 	dismissForkPicker();
-	if (wasOpen) elements.forkSessionButton.focus();
+	// Focus goes to the trigger, not to the item that opened this picker: that
+	// item lives in the menu, which closed on the way in.
+	if (wasOpen) elements.sessionMenuButton.focus();
 }
 
 /** True when forking would discard something the reader typed or attached. */
@@ -3504,7 +3645,9 @@ function moveActiveFork(delta: number): void {
 function submitFork(entryId: string): void {
 	if (ui.connection !== "ready" || ui.busy) return;
 	dismissForkPicker();
-	elements.forkSessionButton.focus();
+	// Same reasoning as `closeForkPicker`: the item that opened this picker lives
+	// in the menu, which is hidden by now, so focus goes to the trigger.
+	elements.sessionMenuButton.focus();
 	runAction("forkSession", { entryId });
 }
 

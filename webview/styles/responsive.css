@@ -70,12 +70,12 @@
 
 @media (forced-colors: active) {
 	/* Forced colours drop every background, so these blocks lose the fill that
-	   distinguished pending, success and error from one another. The border left
-	   carrying the edge is an author `color-mix()` value, which is exactly the
-	   kind of colour forced colours exists to override — pinning it to
-	   `CanvasText` keeps the outline guaranteed rather than engine-derived. The
-	   state itself stays available to assistive tech through the box's
-	   `aria-label`, and to sighted readers through the running spinner. */
+	   told a failed call from a healthy one. The border left carrying the edge
+	   is an author `color-mix()` value, which is exactly the kind of colour
+	   forced colours exists to override — pinning it to `CanvasText` keeps the
+	   outline guaranteed rather than engine-derived. The state itself stays
+	   available to assistive tech through the box's `aria-label`, and to sighted
+	   readers through the running spinner. */
 	.tool-call,
 	.skill-block,
 	.system-message.custom-message {

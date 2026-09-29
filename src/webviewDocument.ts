@@ -50,8 +50,7 @@ export function createWebviewDocument(
 				<button id="rename-session-button" class="icon-button" type="button" title="Rename session" aria-label="Rename session"><i class="codicon codicon-edit"></i></button>
 				<button id="history-button" class="icon-button" type="button" title="Session history" aria-label="Session history" aria-controls="history-panel" aria-expanded="false"><i class="codicon codicon-history"></i></button>
 				<button id="new-session-button" class="icon-button" type="button" title="New session" aria-label="New session"><i class="codicon codicon-add"></i></button>
-				<button id="clone-session-button" class="icon-button" type="button" title="Duplicate this session" aria-label="Duplicate this session"><i class="codicon codicon-files"></i></button>
-				<button id="fork-session-button" class="icon-button" type="button" title="Fork from an earlier prompt" aria-label="Fork from an earlier prompt" aria-haspopup="listbox" aria-controls="fork-panel" aria-expanded="false"><i class="codicon codicon-git-branch"></i></button>
+				<button id="session-menu-button" class="icon-button" type="button" title="Duplicate or fork this session" aria-label="Duplicate or fork this session" aria-haspopup="menu" aria-controls="session-menu" aria-expanded="false"><i class="codicon codicon-ellipsis" aria-hidden="true"></i></button>
 			</div>
 		</header>
 
@@ -133,7 +132,11 @@ export function createWebviewDocument(
 		<div id="send-hint" class="send-hint" aria-hidden="true" hidden></div>
 		<div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
 		<div id="live-status" class="sr-only" role="status" aria-live="polite"></div>
-		<div id="select-popup" class="select-popup" role="listbox" hidden></div>
+		<div id="select-popup" class="popup-surface select-popup" role="listbox" hidden></div>
+		<div id="session-menu" class="popup-surface session-menu" role="menu" aria-label="Session actions" hidden>
+			<button id="clone-session-button" class="menu-item" type="button" role="menuitem" title="Duplicate this session"><i class="codicon codicon-files" aria-hidden="true"></i><span class="menu-item-label">Duplicate this session</span></button>
+			<button id="fork-session-button" class="menu-item" type="button" role="menuitem" title="Fork from an earlier prompt" aria-haspopup="listbox" aria-controls="fork-panel" aria-expanded="false"><i class="codicon codicon-git-branch" aria-hidden="true"></i><span class="menu-item-label">Fork from an earlier prompt</span></button>
+		</div>
 		<div id="command-panel" class="command-panel" role="region" aria-label="Slash commands" hidden>
 			<div id="command-list" class="command-list" role="listbox" aria-label="Slash commands"></div>
 			<div class="command-search" role="search">

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.8.2
+
+- Fold "Duplicate this session" and "Fork from an earlier prompt" into one
+  overflow menu behind an ellipsis trigger in the header. Both derive a new
+  session from this one and neither is a frequent move, so neither earns a
+  permanent slot in a header whose pixels belong to the session title; when the
+  pi build offers neither action, the trigger removes itself rather than opening
+  onto nothing. The menu opens downwards — the side with room, given an anchor at
+  the top of the sidebar — and it takes focus on open, so the arrow keys and
+  Home/End work without reaching for the mouse first. Escape closes it onto the
+  trigger, and the fork picker an item opens hands focus back the same way: not
+  to the item that opened it, which by then went with the menu.
+- Give a tool box one surface whatever its state. A running call and a settled one
+  are the same green, and only a failure recolours the box: a call that arrived in
+  one tint and turned green the moment it settled flickered, and a round of calls
+  settling in sequence read as a glitch rather than as progress. "Still running"
+  was always the spinner's and the visually-hidden status text's to carry, which
+  is why the state stays available to assistive tech without colour. The
+  custom-message and skill cards keep the pending tint, now its only consumer.
+
 ## 0.8.1
 
 - Stop sending a long session's whole history in every snapshot. `get_messages`

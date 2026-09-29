@@ -18,6 +18,8 @@
  *   node scripts/preview.mjs                       # default 380px wide
  *   node scripts/preview.mjs --width=200           # narrow sidebar
  *   node scripts/preview.mjs --state=palette       # slash-command panel open
+ *   node scripts/preview.mjs --state=menu          # header session menu open
+ *   node scripts/preview.mjs --state=select        # model picker open
  *   node scripts/preview.mjs --state=reference     # inline file reference
  *   node scripts/preview.mjs --state=drop          # resource drop overlay
  *   node scripts/preview.mjs --theme=light

@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
-
 async function loadPopupPosition() {
 	return loadBundledModule({
 		entry: "webview/ui/popupPosition.ts",
@@ -92,6 +91,45 @@ test("popup placement accepts explicit spacing constraints", async () => {
 			left: "12px",
 			maxHeight: "150px",
 		});
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("below placement hangs off the anchor's lower edge", async () => {
+	const loaded = await loadPopupPosition();
+	try {
+		// The header menu's case: an anchor at the top of the sidebar, so the room
+		// below it is nearly the whole viewport.
+		const target = popup(120);
+		loaded.module.positionPopupBelow({
+			container: element({ top: 0, bottom: 600, left: 0, width: 380 }),
+			anchor: element({ top: 0, bottom: 38, left: 300 }),
+			popup: target,
+		});
+		assert.equal(target.style.top, "42px");
+		assert.equal(target.style.maxHeight, "550px");
+		assert.equal(target.style.left, "252px");
+		assert.equal(target.leftWhenMeasured, "0px");
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("below placement keeps the minimum height and both horizontal edges", async () => {
+	const loaded = await loadPopupPosition();
+	try {
+		// An anchor near the container's bottom leaves less room than `minHeight`:
+		// the popup keeps its floor and scrolls rather than collapsing into the gap.
+		const target = popup(80);
+		loaded.module.positionPopupBelow({
+			container: element({ top: 0, bottom: 300, left: 30, width: 200 }),
+			anchor: element({ bottom: 280, left: 220 }),
+			popup: target,
+		});
+		assert.equal(target.style.maxHeight, "120px");
+		// Flush against the container's right edge, never past it.
+		assert.equal(target.style.left, "112px");
 	} finally {
 		await loaded.dispose();
 	}

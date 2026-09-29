@@ -403,28 +403,13 @@
 }
 
 /* Custom listbox: a native <select> renders its list through the OS, so it
-   cannot pick up the VS Code theme. Positioned from script against `#app`,
-   which is the nearest non-clipping positioned ancestor. `min-width` stays
-   small enough to fit a narrow sidebar — a fixed 160px floor collided with
-   `max-width` once the trigger collapsed to an icon, skewing the panel. */
+   cannot pick up the VS Code theme. The surface itself is `.popup-surface`,
+   shared with the header's menu popup; only the width floor is this one's own —
+   it has to stay small enough to fit a narrow sidebar, because a fixed 160px
+   floor collided with `max-width` once the trigger collapsed to an icon,
+   skewing the panel. */
 .select-popup {
-	position: absolute;
-	z-index: 9;
-	display: flex;
-	flex-direction: column;
 	min-width: min(160px, calc(100% - 16px));
-	max-width: calc(100% - 16px);
-	padding: 4px;
-	overflow-y: auto;
-	border: 1px solid var(--pi-border-subtle);
-	border-radius: var(--pi-radius-panel);
-	background: var(--pi-raised);
-	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.22));
-	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
-}
-
-.select-popup[hidden] {
-	display: none;
 }
 
 .select-option {

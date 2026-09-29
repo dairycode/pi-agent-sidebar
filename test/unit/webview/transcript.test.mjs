@@ -446,3 +446,53 @@ test("an image the webview can load keeps its src", async () => {
 		await loaded.dispose();
 	}
 });
+
+test("a message image escapes its payload, not only its mime type", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const { messageHtml } = loaded.module;
+		const withImage = (image) =>
+			messageHtml(
+				{ role: "user", content: [image], timestamp: 1 },
+				new Map(),
+				new Map(),
+				false,
+				"key-1",
+			);
+
+		// Real base64 must survive untouched: the escaping is for the markup's sake,
+		// not a filter on the payload.
+		const plain = withImage({
+			type: "image",
+			mimeType: "image/png",
+			data: "AA+/=",
+		});
+		assert.match(plain, /src="data:image\/png;base64,AA\+\/="/u);
+
+		// The data rides inside a double-quoted attribute, so a quote in it would end
+		// the attribute early and let whatever follows become markup of its own. Every
+		// character that can do that has to be escaped, mime type and payload alike.
+		for (const hostile of [
+			{ type: "image", mimeType: "image/png", data: 'AA" onerror="alert(1)' },
+			{
+				type: "image",
+				mimeType: 'image/png" onerror="alert(1)',
+				data: "AA+/=",
+			},
+		]) {
+			const html = withImage(hostile);
+			assert.ok(
+				!html.includes('" onerror="'),
+				`unescaped attribute break in ${html}`,
+			);
+			assert.ok(html.includes("&quot; onerror=&quot;"), html);
+			// The src attribute ends where it should: the tag's own attributes still
+			// follow, and the injected text stayed inside the value.
+			const tag = /<img[^>]*>/u.exec(html)?.[0];
+			assert.ok(tag, `no image element in ${html}`);
+			assert.ok(tag.endsWith('alt="Attached image">'), tag);
+		}
+	} finally {
+		await loaded.dispose();
+	}
+});

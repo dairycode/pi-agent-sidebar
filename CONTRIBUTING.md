@@ -86,7 +86,8 @@ Run `npm run verify` before submitting a pull request.
 - `shared/` — platform-neutral protocol types and composer reference helpers used
   by both the Extension Host and Webview.
 - `assets/` — source-controlled extension icons.
-- `scripts/` — tests, build scripts, preview tooling, and RPC fixtures.
+- `scripts/` — build, preview, and RPC smoke tooling.
+- `test/` — the test suites, shared loading helpers, and process fixtures.
 - `dist/extension.js` and `dist/webview/` — generated build outputs; do not edit
   or commit them manually.
 
@@ -114,8 +115,9 @@ See `AGENTS.md` for the project's design principles and scope.
 
 ## Tests
 
-Tests use Node's built-in test runner and live under `scripts/` as
-`*.test.mjs`. Keep tests focused on observable behavior. Pure functions are
+Tests use Node's built-in test runner and live under `test/` as
+`*.test.mjs`, with shared loading helpers under `test/helpers/` and process
+fixtures under `test/fixtures/`. Keep tests focused on observable behavior. Pure functions are
 preferred for URI resolution, validation, state reconciliation, and payload
 construction because they can be tested without a running VS Code instance.
 

@@ -80,9 +80,7 @@ function installVscodeState(module) {
 			size: 0,
 		}),
 		getWorkspaceFolder: (uri) =>
-			uri.fsPath.startsWith("/workspace")
-				? state.workspaceFolders[0]
-				: undefined,
+			uri.fsPath.startsWith("/workspace") ? state.workspaceFolders[0] : undefined,
 		openTextDocument: async (uri) => {
 			calls.opened.push(uri.fsPath);
 			return { uri, lineCount: 1 };
@@ -179,6 +177,71 @@ test("opening a directory reveals it while files still open as text", async () =
 
 		assert.deepEqual(calls.revealed, [["revealInExplorer", "/workspace/src"]]);
 		assert.deepEqual(calls.opened, ["/workspace/main.ts"]);
+	} finally {
+		delete globalThis.__workspaceResourcesVscodeMock;
+		await loaded.dispose();
+	}
+});
+
+/**
+ * A leading dot used to be stripped along with `./`, so `.vscode/settings.json`
+ * became `vscode/settings.json` — a path that either does not exist or names a
+ * different file. The same character class also removed the leading `../`
+ * before the traversal check could see it, so the check has its own cases here.
+ */
+test("workspace path normalization keeps dotfiles and rejects traversal", async () => {
+	const loaded = await loadWorkspaceResources();
+	try {
+		const { normalizeWorkspacePath } = loaded.module;
+		const cases = [
+			// Dotfiles and dot directories survive.
+			[".vscode/settings.json", ".vscode/settings.json"],
+			[".github/workflows/ci.yml", ".github/workflows/ci.yml"],
+			[".pi/agent/config.json", ".pi/agent/config.json"],
+			// `..` inside a segment is part of the file name, not a traversal.
+			["src/a..b.ts", "src/a..b.ts"],
+			// Only an explicit `./` prefix is separator noise.
+			["./src/app.ts", "src/app.ts"],
+			["././src/app.ts", "src/app.ts"],
+			["src/./app.ts", "src/app.ts"],
+			["src\\nested\\app.ts", "src/nested/app.ts"],
+			["src/", "src/"],
+			// Traversal is rejected wherever it hides.
+			["../../etc/passwd", undefined],
+			["src/../../../etc/passwd", undefined],
+			["..\\..\\etc\\passwd", undefined],
+			// Nothing to open.
+			["", undefined],
+			[".", undefined],
+			["./", undefined],
+		];
+		for (const [input, expected] of cases) {
+			assert.equal(
+				normalizeWorkspacePath(input),
+				expected,
+				`normalizeWorkspacePath(${JSON.stringify(input)})`,
+			);
+		}
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("opening a dotfile path reaches the file and refuses traversal", async () => {
+	const loaded = await loadWorkspaceResources();
+	try {
+		const { state, calls } = installVscodeState(loaded.module);
+		const resources = new loaded.module.WorkspaceResources(
+			async () => state.workspaceFolders[0],
+		);
+
+		await resources.openWorkspacePath(".vscode/settings.json");
+		assert.deepEqual(calls.opened, ["/workspace/.vscode/settings.json"]);
+
+		calls.opened.length = 0;
+		await resources.openWorkspacePath("../../etc/passwd");
+		assert.deepEqual(calls.opened, []);
+		assert.deepEqual(state.warnings, []);
 	} finally {
 		delete globalThis.__workspaceResourcesVscodeMock;
 		await loaded.dispose();

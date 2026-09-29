@@ -215,6 +215,24 @@ export type HostToWebviewMessage =
 			type: "snapshot";
 			state: PiState;
 			messages: PiMessage[];
+			/**
+			 * How many older messages the host left out of `messages`.
+			 *
+			 * A snapshot carries only the newest messages; the webview reports this
+			 * number together with the messages it drops past its own render cap, so the
+			 * reader still learns how much history is hidden.
+			 */
+			omittedMessageCount?: number;
+			/**
+			 * Text of the session's first user message, when `messages` no longer carries
+			 * it.
+			 *
+			 * The session title is derived from that prompt and a windowed snapshot has
+			 * dropped it, so the host reads it from the full list it still holds. Left out
+			 * when the window reaches the head, where the webview reads it from `messages`
+			 * itself. Never a transcript entry — it exists for the title.
+			 */
+			titleSeed?: string;
 			stats?: PiStats;
 			models: PiModel[];
 			thinkingLevels: string[];
@@ -257,6 +275,16 @@ export type HostToWebviewMessage =
 			phase: "starting" | "ready" | "disconnected" | "error";
 			detail?: string;
 	  }
+	/**
+	 * A command failed, but the session is fine.
+	 *
+	 * Distinct from `connection: error`, which is the banner's fatal state: it marks
+	 * the in-flight reply aborted, disables sending, and leaves Restart as the only
+	 * button. A refused `mailto:` link, a path outside the workspace, or a missing
+	 * workspace folder all used to travel on that channel and took the whole
+	 * sidebar down with them.
+	 */
+	| { type: "notice"; kind: "info" | "error"; detail: string }
 	| { type: "setComposerText"; text: string };
 
 /**
@@ -332,6 +360,78 @@ export type WebviewToHostMessage =
 	| { type: "openResource"; uri: string; line?: number }
 	| { type: "openWorkspacePath"; path: string; line?: number }
 	| { type: "showLogs" };
+
+/**
+ * Every `WebviewToHostMessage` type, as a runtime list.
+ *
+ * The parser below and the host's dispatch switch are both keyed on strings, so
+ * TypeScript cannot check that they stay in step with the union. This list is
+ * the single source both sides are measured against:
+ *
+ * - the assertions below make an entry missing from this list a compile error;
+ * - `test/unit/shared/protocol.test.mjs` walks this list and proves the parser
+ *   accepts a valid message of every one of them.
+ *
+ * Order is the order of the union above, which is the order a reader checks
+ * against it.
+ */
+export const WEBVIEW_REQUEST_TYPES = [
+	"ready",
+	"composerFocused",
+	"submit",
+	"abort",
+	"newSession",
+	"cloneSession",
+	"listForkCandidates",
+	"forkSession",
+	"switchSession",
+	"deleteSession",
+	"renameSession",
+	"setModel",
+	"setThinking",
+	"compact",
+	"restart",
+	"listSessions",
+	"listCommands",
+	"listWorkspaceFiles",
+	"resolveMedia",
+	"pickAttachments",
+	"addResources",
+	"pasteImages",
+	"removeAttachment",
+	"removeComposerReference",
+	"openComposerReference",
+	"openExternal",
+	"openResource",
+	"openWorkspacePath",
+	"showLogs",
+] as const satisfies readonly WebviewToHostMessage["type"][];
+
+type WebviewRequestType = (typeof WEBVIEW_REQUEST_TYPES)[number];
+
+/**
+ * Variants of `WebviewToHostMessage` the list above does not name. `never` when
+ * the two agree.
+ */
+type UnlistedRequestType = Exclude<
+	WebviewToHostMessage["type"],
+	WebviewRequestType
+>;
+
+/**
+ * Compile-time coverage check for `WEBVIEW_REQUEST_TYPES`.
+ *
+ * The constraint on the parameter is the assertion: `UnlistedRequestType` is
+ * `never` exactly when every variant of the union appears in the list, so a
+ * variant missing from it turns the argument into a string literal, which
+ * `never` refuses. Nothing happens at runtime — the call exists so the check is
+ * a live statement rather than an alias nobody reads.
+ */
+function assertEveryRequestTypeIsListed(missing: UnlistedRequestType): void {
+	void missing;
+}
+
+assertEveryRequestTypeIsListed(undefined as UnlistedRequestType);
 
 const MAX_ACTION_ID_LENGTH = 128;
 /** Mirrors the host-side entry-id ceiling in `rpcValidation`. */

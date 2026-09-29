@@ -1,5 +1,107 @@
 # Changelog
 
+## 0.8.1
+
+- Stop sending a long session's whole history in every snapshot. `get_messages`
+  has no pagination, so a session that had grown to thousands of messages sent
+  megabytes the webview cannot show — it renders the newest 150 and reports the
+  rest as omitted — and re-sent all of it on every turn. A snapshot now carries
+  the newest 600, which leaves roughly twice the render cap once the tool results
+  that never get a node are filtered out, and the count the reader sees ("N
+  earlier messages omitted") now adds up the host's window and the webview's own
+  cap instead of reporting only the cap's share. Below that size nothing about
+  the transcript changes.
+- Keep a session's title after its first prompt scrolls out of the window. With
+  no session name of its own, the title falls back to the session's first user
+  message, and once that message was outside the window the sidebar renamed the
+  session after whatever prompt happened to be oldest on screen. The host reads
+  the first user message off the list it still holds and sends its text along for
+  the title alone — not as a transcript entry — so the webview shapes it through
+  the same pi-context strip and truncation it applies to a message it can see,
+  and reaches for its own window only when the host could not offer one.
+- Recover a submit whose `actionResult` never arrives. The webview clears its
+  in-flight state there, so a reply the editor refused to deliver to a hidden
+  view left Enter dead and the send button disabled until the sidebar was
+  reloaded. The host now keeps the replies a hidden view refused — `actionResult`,
+  plus the image answers the webview never asks for twice — and replays them on
+  reveal, and the webview separately unlatches a submit that a snapshot itself
+  proves was accepted. That proof needs the timestamp as well as the text: the
+  newest user message has to be this prompt and be stamped at or after the
+  submit, because a sentence the reader asked twice earlier in the session would
+  otherwise mark a refused retry as accepted — and a false positive here clears
+  the composer, losing a prompt pi never received.
+- Report a refused command as a notice instead of a fatal error. Anything thrown
+  while handling a message that carries no `actionId` — a `mailto:` link, a
+  transcript path outside the workspace, a workspace folder that has gone away —
+  travelled on `connection: error`, which marks the in-flight reply aborted,
+  disables sending, and leaves Restart as the banner's only button. Those now
+  arrive as a transient toast, and the webview refuses a non-HTTP link before the
+  round trip so a stray click on `[doc](README.md)` cannot cost the session in
+  the first place. `ready` still owns the fatal banner, because a failed start is
+  about pi itself.
+- Stop the process tree pi started, not just pi. pi runs the bash tool by
+  spawning a shell, and a signal sent to pi alone left those children running
+  after a restart or a reload — with their stdin closed, so they were also
+  invisible. pi is now spawned in its own process group and the group is
+  signalled, which is the only handle on a descendant whose parent has already
+  exited; Windows has no group to signal and keeps signalling the direct child.
+- Stop rebuilding the transcript after every turn. A snapshot re-parses every
+  message, so object identity — which the incremental renderer's signatures are
+  built on — was lost for the whole transcript at once: every rendered message
+  was rebuilt, its markdown parsed, sanitized and highlighted again, and the node
+  swapped. A rebuilt node drops what it carried, so thinking blocks and tool
+  cards the reader had opened closed themselves. Identities are now carried
+  across the snapshot for the tail that can still be on screen, paired by exact
+  content rather than by position — a snapshot can insert or drop entries, so
+  pairing by index would hand one message another's slot, and an identity adopted
+  for content that actually changed would leave a stale node on screen, which is
+  worse than the rebuild it avoids.
+- Open the paths pi prints, including the ones that start with a dot.
+  `.vscode/settings.json` and `.github/workflows/ci.yml` lost their leading dot
+  to a `\b` that treats it as a word boundary, and the host's own normalization
+  stripped every leading `.` and `/` for the same reason — so the two most common
+  configuration paths in pi's output could not be opened. The pattern now uses a
+  lookbehind, and the host removes only an explicit `./`: a traversal hidden in
+  the middle (`src/../../../etc/passwd`) is still rejected, while `src/a..b.ts`
+  still opens, because `..` inside a segment is part of a file name.
+- Leave the reader's editor alone when a preset asks pi about the file. "Explain
+  this file" and the other selection-shaped commands had no selection to
+  reference when the file was merely open, so they wrote a whole-document
+  selection into the editor — the user's file came out selected and their cursor
+  moved — to hand the reference builder a range. The range is now passed to the
+  reference and the editor is never touched.
+- Do less work per render pass. The transcript re-renders on every streaming
+  frame, and each pass did things it could not use: it rebuilt the attachment
+  chips (stranding keyboard focus on `body` and replacing every button under the
+  pointer), re-measured the composer tools row's fold, read the textarea's
+  metrics before writing styles that invalidate them, and re-scanned a draft of
+  up to 200K characters to recompute highlight ranges that had not changed.
+  `Intl` formatters are built once per locale instead of per visible timestamp,
+  and the workspace's recursive file watcher — one `**/*` watcher per window —
+  starts with the first `@` search rather than with the view, since nothing can
+  invalidate a cache that does not exist yet.
+- Close the CSS surface in the transcript's sanitizer, and escape an attached
+  image's payload. DOMPurify's html profile allows `<style>` and `style=`, and the
+  webview's CSP has to keep `'unsafe-inline'` for styles because mermaid's SVG
+  carries its own — so text that reached the transcript could repaint the
+  composer, the connection banner, or a dialog. Both call sites now share one
+  policy that forbids both, with `script-src` already nonce-only. The base64
+  payload of an image block is escaped like its mime type rather than trusted for
+  being base64.
+- Ask the compiler to prove both dispatch points are exhaustive. The host's and
+  the webview's switches over the message unions each ended in a bare `break`, so
+  a variant added to either union compiled cleanly and then vanished at runtime;
+  a `default` arm that takes `never` turns that into a build failure.
+  `WEBVIEW_REQUEST_TYPES` lists every request the webview can send, the compiler
+  refuses to build if the union and the list disagree, and a unit test walks the
+  list to prove the parser accepts one of each.
+- Run the release command in CI, and the suite on Windows. Two jobs are new:
+  `verify-windows`, because the Windows launch path, the non-POSIX branch of the
+  process-tree kill, and every path separator a composer reference carries had no
+  execution record anywhere; and `package`, which runs `npm run package` — the
+  same command a release runs — so the `files` allowlist, the entry point and the
+  production build are checked on every push rather than on release day.
+
 ## 0.8.0
 
 - Outline tool boxes and custom-message cards with a 1px border in a mid-tone of

@@ -81,6 +81,13 @@ export class PiRpcClient {
 			env: this.options.env ?? process.env,
 			shell: false,
 			stdio: ["pipe", "pipe", "pipe"],
+			// Its own process group, so the group can be signalled as a whole. pi runs
+			// the bash tool by spawning a shell, and a signal sent to pi alone leaves
+			// those children running after the client stops. Without `detached` there is
+			// no group of its own to signal — `-pid` would name the extension host's.
+			// Windows has no process group to signal (`taskkill /T` is a separate
+			// process), so it keeps signalling the direct child.
+			detached: process.platform !== "win32",
 		});
 		this.child = child;
 
@@ -89,7 +96,7 @@ export class PiRpcClient {
 		child.stderr.on("data", (chunk: Buffer) =>
 			this.emitter.emit("stderr", chunk.toString("utf8")),
 		);
-		child.on("exit", (code, signal) => this.handleExit(code, signal));
+		child.on("exit", (code, signal) => this.handleExit(child, code, signal));
 
 		await new Promise<void>((resolve, reject) => {
 			const onSpawn = (): void => {
@@ -99,14 +106,11 @@ export class PiRpcClient {
 			};
 			const onStartError = (error: Error): void => {
 				child.off("spawn", onSpawn);
-				this.child = undefined;
+				if (this.child === child) this.child = undefined;
 				reject(error);
 			};
 			const onRuntimeError = (error: Error): void => {
-				this.emitter.emit(
-					"protocolError",
-					`Pi process error: ${error.message}`,
-				);
+				this.emitter.emit("protocolError", `Pi process error: ${error.message}`);
 			};
 			child.once("spawn", onSpawn);
 			child.once("error", onStartError);
@@ -146,9 +150,7 @@ export class PiRpcClient {
 			if (pending) {
 				clearTimeout(pending.timer);
 				this.pending.delete(id);
-				pending.reject(
-					error instanceof Error ? error : new Error(String(error)),
-				);
+				pending.reject(error instanceof Error ? error : new Error(String(error)));
 			}
 		}
 
@@ -187,14 +189,20 @@ export class PiRpcClient {
 				if (settled) return;
 				settled = true;
 				cleanup();
+				// Sweeping a group whose leader is already gone is how a tool pi started
+				// gets stopped: pi exits on stdin EOF, and its shell is left behind. The
+				// group id cannot have been reused while a member still holds it, so this
+				// reaches nothing but pi's own descendants; if the group is empty the call
+				// fails with ESRCH and is dropped.
+				this.signalGroup(child, "SIGTERM");
 				resolve();
 			};
 			child.once("exit", finish);
 			terminateTimer = setTimeout(() => {
-				if (child.exitCode === null) child.kill("SIGTERM");
+				if (child.exitCode === null) this.signalGroup(child, "SIGTERM");
 			}, 500);
 			killTimer = setTimeout(() => {
-				if (child.exitCode === null) child.kill("SIGKILL");
+				if (child.exitCode === null) this.signalGroup(child, "SIGKILL");
 			}, 1_500);
 			failureTimer = setTimeout(() => {
 				if (settled) return;
@@ -240,8 +248,7 @@ export class PiRpcClient {
 			if (newline < 0) break;
 
 			if (
-				Buffer.byteLength(this.buffer.slice(0, newline), "utf8") >
-				MAX_RECORD_BYTES
+				Buffer.byteLength(this.buffer.slice(0, newline), "utf8") > MAX_RECORD_BYTES
 			) {
 				this.rejectPendingForOversizedRecord();
 				this.buffer = this.buffer.slice(newline + 1);
@@ -388,7 +395,44 @@ export class PiRpcClient {
 		this.emitter.emit("protocolError", error.message);
 	}
 
-	private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+	/**
+	 * Signals the child's whole process group where the platform has one.
+	 *
+	 * A negative pid means "that process group" to `kill(2)`. The pid is a group
+	 * leader only because `start()` spawned it detached, so this must not be used
+	 * for a child spawned any other way.
+	 */
+	private signalGroup(
+		child: ChildProcessWithoutNullStreams,
+		signal: NodeJS.Signals,
+	): void {
+		if (process.platform === "win32" || child.pid === undefined) {
+			child.kill(signal);
+			return;
+		}
+		try {
+			process.kill(-child.pid, signal);
+		} catch (error) {
+			// ESRCH means the group is already gone, which is the outcome wanted.
+			if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+				// Any other failure means the group signal did not land; signal the direct
+				// child rather than leave pi running.
+				child.kill(signal);
+			}
+		}
+	}
+
+	private handleExit(
+		child: ChildProcessWithoutNullStreams,
+		code: number | null,
+		signal: NodeJS.Signals | null,
+	): void {
+		// A superseded child can report its exit after its replacement has started.
+		// Clearing the field then would make a live pi look stopped — `isRunning` goes
+		// false, every later `request()` throws "not running", and `stop()` can no
+		// longer reach it — and rejecting the pending map would abort requests that
+		// were written to the new child.
+		if (this.child !== child) return;
 		this.child = undefined;
 		const suffix = this.stopping
 			? "stopped"

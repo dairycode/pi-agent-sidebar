@@ -36,6 +36,35 @@ export function parseDroppedResource(resource: string): vscode.Uri {
 	}
 }
 
+/**
+ * Normalizes a workspace-relative path taken from transcript text, or returns
+ * undefined when it cannot name a path inside the workspace.
+ *
+ * This is not a one-line strip. A character class such as `[./]` removes the
+ * dot from `.vscode/settings.json` and `.github/workflows/ci.yml` — both common
+ * in pi's output — and it also removes the leading `../` that the traversal
+ * check needs to see. Only an explicit `./` prefix is separator noise.
+ *
+ * `path.posix.normalize` runs first so a traversal hidden in the middle
+ * (`src/../../../etc/passwd`) collapses into a leading `..`, which the segment
+ * check rejects. Checking segments rather than the raw string keeps
+ * `src/a..b.ts` working: `..` inside a segment is part of a file name.
+ */
+export function normalizeWorkspacePath(
+	relativePath: string,
+): string | undefined {
+	const slashed = relativePath.replace(/\\/gu, "/");
+	const relative = slashed.startsWith("./") ? slashed.slice(2) : slashed;
+	const normalized = path.posix.normalize(relative);
+	// `normalize` maps `.`, `./` and `` to `.` or `./` rather than to an empty
+	// string, so strip the trailing separator before asking whether anything is
+	// left to open.
+	const trimmed = normalized.replace(/\/+$/u, "");
+	if (!trimmed || trimmed === ".") return undefined;
+	if (trimmed.split("/").includes("..")) return undefined;
+	return normalized;
+}
+
 export class WorkspaceResources {
 	public constructor(
 		private readonly selectWorkspaceFolder: () => Promise<
@@ -53,9 +82,7 @@ export class WorkspaceResources {
 		uris: readonly vscode.Uri[],
 	): Promise<vscode.Uri[]> {
 		const resources = await this.validateReferences(uris);
-		const directory = resources.find(
-			(resource) => resource.kind === "directory",
-		);
+		const directory = resources.find((resource) => resource.kind === "directory");
 		if (directory) {
 			const label = path.basename(directory.uri.fsPath) || directory.uri.fsPath;
 			throw new Error(`${label} is not a regular file.`);
@@ -144,8 +171,8 @@ export class WorkspaceResources {
 		relativePath: string,
 		line?: number,
 	): Promise<void> {
-		const normalized = relativePath.replace(/^[./]+/u, "").replace(/\\/gu, "/");
-		if (!normalized || normalized.includes("..")) return;
+		const normalized = normalizeWorkspacePath(relativePath);
+		if (!normalized) return;
 
 		const folders = vscode.workspace.workspaceFolders ?? [];
 		const qualified = splitWorkspaceReferencePath(
@@ -164,10 +191,7 @@ export class WorkspaceResources {
 			.relative(folder.uri.fsPath, target.fsPath)
 			.split(path.sep)
 			.join("/");
-		if (
-			relativeToFolder.startsWith("..") ||
-			path.isAbsolute(relativeToFolder)
-		) {
+		if (relativeToFolder.startsWith("..") || path.isAbsolute(relativeToFolder)) {
 			return;
 		}
 		try {

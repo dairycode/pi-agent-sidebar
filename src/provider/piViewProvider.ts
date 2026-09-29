@@ -16,12 +16,18 @@ import {
 	type PiCapabilityName,
 } from "../rpc/piCapabilities.js";
 import { shouldSnapshotFileReference } from "../../shared/composerReferences.js";
+import { assertNever } from "../../shared/assertNever.js";
+import {
+	MAX_MISSED_REPLIES,
+	MissedReplyQueue,
+	isReplayableReply,
+} from "./missedReplies.js";
 import { PiRpcClient } from "../rpc/piRpcClient.js";
 import { buildPrompt } from "../services/promptBuilder.js";
 import {
 	parseCommandsResponse,
 	parseForkMessagesResponse,
-	parseMessagesResponse,
+	parseMessagesWindow,
 	parseModelsResponse,
 	parsePiState,
 	parsePiStats,
@@ -63,6 +69,20 @@ import {
 } from "./sessionMutation.js";
 
 const VIEW_TYPE = "piAgentSidebar.chatView";
+
+/**
+ * How many of the newest messages a snapshot carries.
+ *
+ * pi's `get_messages` returns the whole session and has no pagination, so a long
+ * session sends megabytes that the webview cannot show: it renders the newest 150
+ * messages (`MAX_RENDERED_MESSAGES`) and reports the rest as omitted. The limit
+ * here only has to stay comfortably above that cap. In a real session about half
+ * the messages are renderable — nearly every tool result is paired with an
+ * assistant message that carries the call — so 600 leaves roughly 300 slots, twice
+ * the cap. Raising the webview's cap toward 300 would start thinning the
+ * transcript, so keep the two in step.
+ */
+const SNAPSHOT_MESSAGE_LIMIT = 600;
 const LONG_COMMAND_TIMEOUT_MS = 10 * 60_000;
 const SESSION_REPLACEMENT_TIMEOUT_MS = 5_000;
 const SESSION_REPLACEMENT_POLL_MS = 50;
@@ -139,16 +159,13 @@ export class PiViewProvider
 	 */
 	private missedPostWhileHidden = false;
 	/**
-	 * Image answers the view refused because it was hidden.
+	 * Replies the view refused because it was hidden.
 	 *
 	 * The webview cannot tell a dropped reply from one still in flight, and it never
-	 * asks twice for the same path, so without this the picture would stay blank for
-	 * the rest of the session. Replayed on reveal, like the snapshot above.
+	 * asks twice for the same answer, so these are replayed on reveal rather than
+	 * left to the snapshot. See `MissedReplyQueue` for which replies qualify.
 	 */
-	private missedMediaReplies: Array<{
-		requestId: number;
-		resolved: Array<{ source: string; uri: string }>;
-	}> = [];
+	private readonly missedReplies = new MissedReplyQueue();
 	private shutdownPromise: Promise<void> | undefined;
 	private statusBarItem: vscode.StatusBarItem | undefined;
 	private readonly sessionMutations = new AsyncQueue();
@@ -242,31 +259,30 @@ export class PiViewProvider
 	private async resyncAfterHidden(): Promise<void> {
 		if (!this.missedPostWhileHidden) return;
 		this.missedPostWhileHidden = false;
-		if (!this.client?.isRunning) return;
 		try {
+			// Replies come first and do not depend on pi: an `actionResult` for a request
+			// the view made before it was hidden has to arrive whether or not the process
+			// is still running, or the composer stays latched with no way back.
+			await this.flushMissedReplies();
+			if (!this.client?.isRunning) return;
 			await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
 			await this.refreshSnapshot();
-			await this.flushMissedMediaReplies();
 		} catch (error) {
 			this.output.appendLine(`[visibility] ${toErrorMessage(error)}`);
 		}
 	}
 
 	/**
-	 * Re-sends the image answers a hidden view refused.
+	 * Re-sends the replies a hidden view refused.
 	 *
-	 * The snapshot above cannot stand in for this: a re-sync only enhances the nodes
-	 * it rebuilds, so an image already in the retained DOM never asks again and would
-	 * stay blank without the answer that was dropped.
+	 * The snapshot cannot stand in for these: a re-sync only rebuilds the
+	 * transcript, while each of these answers a request the webview made and will not
+	 * repeat.
 	 */
-	private async flushMissedMediaReplies(): Promise<void> {
-		if (this.missedMediaReplies.length === 0) return;
-		const missed = this.missedMediaReplies;
-		this.missedMediaReplies = [];
-		for (const reply of missed) {
-			const delivered = await this.post({ type: "mediaResolved", ...reply });
-			// Hidden again mid-flush: the next reveal picks it up from here.
-			if (!delivered) this.missedMediaReplies.push(reply);
+	private async flushMissedReplies(): Promise<void> {
+		for (const reply of this.missedReplies.drain()) {
+			// `post` queues it again if the view went hidden mid-flush.
+			await this.post(reply);
 		}
 	}
 
@@ -316,14 +332,17 @@ export class PiViewProvider
 			kind === "refactorSelection" ||
 			kind === "generateTests" ||
 			kind === "explainDiagnostics";
-		if (needsSelection && editor.selection.isEmpty) {
-			// Fall back to the whole document range so the reference is meaningful.
-			const fullRange = new vscode.Selection(
-				editor.document.positionAt(0),
-				editor.document.positionAt(editor.document.getText().length),
-			);
-			editor.selection = fullRange;
-		}
+		// A whole-document range stands in for a missing selection, but only as the
+		// range the reference is taken from. Writing it back into `editor.selection`
+		// left the user's file selected merely because they asked pi about it, and
+		// moved their cursor while the preset ran.
+		const referenceRange =
+			needsSelection && editor.selection.isEmpty
+				? new vscode.Selection(
+						editor.document.positionAt(0),
+						editor.document.positionAt(editor.document.getText().length),
+					)
+				: undefined;
 		try {
 			if (kind === "explainFile") {
 				const { document } = editor;
@@ -341,7 +360,10 @@ export class PiViewProvider
 					this.composerReferenceStore.captureFile(document.uri);
 				}
 			} else {
-				const id = this.composerReferenceStore.captureSelection(editor);
+				const id = this.composerReferenceStore.captureSelection(
+					editor,
+					referenceRange,
+				);
 				await this.composerReferenceStore.enrichWithSymbol(id, editor);
 			}
 		} catch (error) {
@@ -734,7 +756,7 @@ export class PiViewProvider
 					break;
 				}
 				default:
-					break;
+					assertNever(message);
 			}
 		} catch (error) {
 			if (error instanceof RuntimeUnavailableError) return;
@@ -747,9 +769,18 @@ export class PiViewProvider
 					ok: false,
 					error: detail,
 				});
-			} else {
-				await this.post({ type: "connection", phase: "error", detail });
+				return;
 			}
+			// `ready` is the one message whose failure is about the pi process itself.
+			// Every other failure here belongs to a command the user can retry, so it gets
+			// a notice instead: reporting those on `connection` marked the in-flight reply
+			// aborted and left Restart as the banner's only button, for something as small
+			// as clicking a `mailto:` link.
+			if (message.type === "ready") {
+				await this.post({ type: "connection", phase: "error", detail });
+				return;
+			}
+			await this.post({ type: "notice", kind: "error", detail });
 		}
 	}
 
@@ -1489,7 +1520,11 @@ export class PiViewProvider
 		if (messagesResult.status === "rejected") throw messagesResult.reason;
 
 		this.state = parsePiState(stateResult.value);
-		const messages = parseMessagesResponse(messagesResult.value);
+		const window = parseMessagesWindow(
+			messagesResult.value,
+			SNAPSHOT_MESSAGE_LIMIT,
+		);
+		const messages = window.messages;
 		this.streaming = Boolean(this.state.isStreaming);
 		this.models = this.parseOptionalSnapshot(
 			"models",
@@ -1527,6 +1562,13 @@ export class PiViewProvider
 			type: "snapshot",
 			state: this.state,
 			messages,
+			// Reported rather than derived from `state.messageCount`: that number is
+			// pi's own accounting, and this one has to describe what this snapshot left
+			// out regardless of how pi counts.
+			omittedMessageCount: window.omittedCount,
+			// The window dropped the prompt the title is derived from; the webview
+			// cannot see it and this host can.
+			titleSeed: window.titleSeed,
 			stats,
 			models: this.models,
 			thinkingLevels: this.thinkingLevels,
@@ -1669,14 +1711,13 @@ export class PiViewProvider
 			}
 		}
 		// A hidden view refuses delivery, and the webview reads that as an answer it is
-		// still waiting for — so the reply is kept for the next reveal instead of
-		// being dropped with the image's source.
-		const delivered = await this.post({
+		// still waiting for — so `post` keeps the reply for the next reveal instead of
+		// letting it drop with the image's source.
+		await this.post({
 			type: "mediaResolved",
 			requestId,
 			resolved,
 		});
-		if (!delivered) this.missedMediaReplies.push({ requestId, resolved });
 	}
 
 	private async syncComposerReferences(): Promise<void> {
@@ -1918,8 +1959,19 @@ export class PiViewProvider
 		else if (message.type === "snapshot") this.updateStatusBar("ready");
 		if (!this.view) return false;
 		const delivered = await this.view.webview.postMessage(message);
-		// A hidden view refuses delivery; remember it so the next reveal resyncs.
-		if (!delivered) this.missedPostWhileHidden = true;
+		if (!delivered) {
+			// A hidden view refuses delivery; remember it so the next reveal resyncs,
+			// and keep the answers the webview cannot ask for again.
+			this.missedPostWhileHidden = true;
+			if (isReplayableReply(message)) {
+				const dropped = this.missedReplies.push(message);
+				if (dropped) {
+					this.output.appendLine(
+						`[webview] Dropped a queued ${dropped.type}: more than ${MAX_MISSED_REPLIES} replies are waiting for a hidden view.`,
+					);
+				}
+			}
+		}
 		return delivered;
 	}
 

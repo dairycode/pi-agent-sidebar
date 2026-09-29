@@ -1,3 +1,4 @@
+import { contentText } from "../../shared/messageContent.js";
 import type {
 	ForkCandidate,
 	JsonRecord,
@@ -44,10 +45,74 @@ export function parsePiState(value: unknown): PiState {
 }
 
 export function parseMessagesResponse(value: unknown): PiMessage[] {
+	return parseMessagesWindow(value, Number.POSITIVE_INFINITY).messages;
+}
+
+/** A tail of a message list, plus how many older messages were left behind. */
+export interface MessageWindow {
+	messages: PiMessage[];
+	omittedCount: number;
+	/**
+	 * Text of the session's first user message, when the window left it out.
+	 *
+	 * The session title is derived from that prompt and the webview only sees the
+	 * window, so the host reads it off the list it still holds. Read without
+	 * validation, deliberately: the head of a long session is old enough that a
+	 * malformed message there must not fail every snapshot — the same reason this
+	 * function skips validating what it drops. Anything unreadable yields
+	 * undefined, and the webview falls back to the oldest user message it can see.
+	 */
+	titleSeed?: string;
+}
+
+/**
+ * As `parseMessagesResponse`, but validates and returns only the newest `limit`
+ * messages.
+ *
+ * pi's `get_messages` has no pagination, so a bound has to be applied here. Doing
+ * it before validation rather than after is the point: a long session is
+ * thousands of messages, and `parsePiMessage` builds a fresh object for every one
+ * of them, which the extension host pays for on each snapshot.
+ */
+export function parseMessagesWindow(
+	value: unknown,
+	limit: number,
+): MessageWindow {
 	const response = record(value, "messages response");
-	return array(response.messages, "messages", MAX_MESSAGES).map(
-		(message, index) => parsePiMessage(message, `messages[${index}]`),
-	);
+	const all = array(response.messages, "messages", MAX_MESSAGES);
+	const start = Math.max(0, all.length - Math.max(0, limit));
+	return {
+		messages: all
+			.slice(start)
+			.map((message, index) =>
+				parsePiMessage(message, `messages[${start + index}]`),
+			),
+		omittedCount: start,
+		titleSeed: start > 0 ? firstUserMessageText(all, start) : undefined,
+	};
+}
+
+/**
+ * Text of the first user message in `messages[0..end)`, read leniently.
+ *
+ * The webview derives the title from the same text when the message is still
+ * inside its window, so the joining rule is shared with it rather than repeated.
+ */
+function firstUserMessageText(
+	messages: unknown[],
+	end: number,
+): string | undefined {
+	for (let index = 0; index < end; index += 1) {
+		const value = messages[index];
+		if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+		const message = value as JsonRecord;
+		if (message.role !== "user") continue;
+		const text = contentText(message.content);
+		// A prompt with no text at all (an image-only message) leaves the title to the
+		// window rather than to whatever the reader asked next.
+		return text.length > 0 ? text : undefined;
+	}
+	return undefined;
 }
 
 export function parseModelsResponse(value: unknown): PiModel[] {

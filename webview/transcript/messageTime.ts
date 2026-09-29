@@ -23,6 +23,26 @@ export function normalizeEpochMs(value: unknown): number | undefined {
 }
 
 /**
+ * Builds one `Intl` formatter per locale and call site, and reuses it.
+ *
+ * Constructing a formatter compiles the locale's pattern and symbol data, which
+ * costs far more than formatting with one. The locale is fixed for a session,
+ * while these run per visible message on every streaming delta, so the
+ * construction is worth keeping. The key space is tiny by construction — one
+ * entry per locale per variant below — so nothing is ever evicted.
+ */
+function memoized<T>(cache: Map<string, T>, key: string, create: () => T): T {
+	const existing = cache.get(key);
+	if (existing) return existing;
+	const value = create();
+	cache.set(key, value);
+	return value;
+}
+
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+const numberFormatters = new Map<string, Intl.NumberFormat>();
+
+/**
  * Compact relative label for the session list.
  *
  * Terse ("now", "5m ago", "3h ago") because the column is ~180px at its
@@ -46,10 +66,15 @@ export function formatRelativeTime(
 
 function formatShortDate(epochMs: number, locale?: string): string {
 	try {
-		return new Intl.DateTimeFormat(locale || undefined, {
-			month: "short",
-			day: "numeric",
-		}).format(epochMs);
+		return memoized(
+			dateFormatters,
+			`${locale || ""}:short-date`,
+			() =>
+				new Intl.DateTimeFormat(locale || undefined, {
+					month: "short",
+					day: "numeric",
+				}),
+		).format(epochMs);
 	} catch {
 		return new Date(epochMs).toISOString().slice(0, 10);
 	}
@@ -63,10 +88,15 @@ function formatShortDate(epochMs: number, locale?: string): string {
  */
 export function formatAbsoluteTime(epochMs: number, locale?: string): string {
 	try {
-		return new Intl.DateTimeFormat(locale || undefined, {
-			dateStyle: "medium",
-			timeStyle: "short",
-		}).format(epochMs);
+		return memoized(
+			dateFormatters,
+			`${locale || ""}:absolute-time`,
+			() =>
+				new Intl.DateTimeFormat(locale || undefined, {
+					dateStyle: "medium",
+					timeStyle: "short",
+				}),
+		).format(epochMs);
 	} catch {
 		return new Date(epochMs).toISOString();
 	}
@@ -152,9 +182,11 @@ export function formatDaySeparator(
 		return "Yesterday";
 	}
 	try {
-		return new Intl.DateTimeFormat(locale || undefined, {
-			dateStyle: "long",
-		}).format(epochMs);
+		return memoized(
+			dateFormatters,
+			`${locale || ""}:day-separator`,
+			() => new Intl.DateTimeFormat(locale || undefined, { dateStyle: "long" }),
+		).format(epochMs);
 	} catch {
 		return new Date(epochMs).toISOString().slice(0, 10);
 	}
@@ -169,7 +201,11 @@ export function formatDaySeparator(
 export function formatTokenCount(value: unknown, locale?: string): string {
 	if (typeof value !== "number" || !Number.isFinite(value)) return "—";
 	try {
-		return new Intl.NumberFormat(locale || undefined).format(Math.round(value));
+		return memoized(
+			numberFormatters,
+			`${locale || ""}:integer`,
+			() => new Intl.NumberFormat(locale || undefined),
+		).format(Math.round(value));
 	} catch {
 		return String(Math.round(value));
 	}
@@ -177,16 +213,24 @@ export function formatTokenCount(value: unknown, locale?: string): string {
 
 export function formatCost(value: unknown, locale?: string): string {
 	if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+	// Two option sets, not one: a sub-cent cost needs four decimals to be visible at
+	// all. Keyed apart so each is built once.
+	const variant = value > 0 && value < 0.01 ? "cost-subcent" : "cost";
 	try {
-		return new Intl.NumberFormat(locale || undefined, {
-			style: "currency",
-			currency: "USD",
-			// Chromium's ICU renders plain USD as "US$" in en locales; the narrow
-			// symbol pins it to "$" across runtimes (Node already formats "$").
-			currencyDisplay: "narrowSymbol",
-			minimumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
-			maximumFractionDigits: 4,
-		}).format(value);
+		return memoized(
+			numberFormatters,
+			`${locale || ""}:${variant}`,
+			() =>
+				new Intl.NumberFormat(locale || undefined, {
+					style: "currency",
+					currency: "USD",
+					// Chromium's ICU renders plain USD as "US$" in en locales; the narrow
+					// symbol pins it to "$" across runtimes (Node already formats "$").
+					currencyDisplay: "narrowSymbol",
+					minimumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
+					maximumFractionDigits: 4,
+				}),
+		).format(value);
 	} catch {
 		return `$${value.toFixed(4)}`;
 	}

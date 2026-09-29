@@ -28,16 +28,34 @@ export class WorkspaceFileSearch implements vscode.Disposable {
 	private candidates: WorkspaceFileCandidate[] | undefined;
 	private pending: Promise<WorkspaceFileCandidate[]> | undefined;
 	private loadedAt = 0;
-	private readonly watcher: vscode.FileSystemWatcher;
+	private watcher: vscode.FileSystemWatcher | undefined;
 	private readonly disposables: vscode.Disposable[] = [];
 
 	public constructor() {
-		this.watcher = vscode.workspace.createFileSystemWatcher("**/*");
 		this.disposables.push(
-			this.watcher,
-			this.watcher.onDidCreate(() => this.invalidate()),
-			this.watcher.onDidDelete(() => this.invalidate()),
 			vscode.workspace.onDidChangeWorkspaceFolders(() => this.invalidate()),
+		);
+	}
+
+	/**
+	 * Starts watching for created and deleted files, once.
+	 *
+	 * Deferred rather than done in the constructor, which is where it used to be:
+	 * this class is a field initializer of the view provider, so creating the
+	 * recursive watcher there meant watching every file in the workspace in every
+	 * window, whether or not the composer's at-sign browser was ever opened.
+	 * Nothing is missed by starting at first use — the first use walks the workspace
+	 * anyway, and the cache this watcher exists to invalidate only comes into being
+	 * then.
+	 */
+	private ensureWatching(): void {
+		if (this.watcher) return;
+		const watcher = vscode.workspace.createFileSystemWatcher("**/*");
+		this.watcher = watcher;
+		this.disposables.push(
+			watcher,
+			watcher.onDidCreate(() => this.invalidate()),
+			watcher.onDidDelete(() => this.invalidate()),
 		);
 	}
 
@@ -66,6 +84,7 @@ export class WorkspaceFileSearch implements vscode.Disposable {
 	}
 
 	private async load(): Promise<WorkspaceFileCandidate[]> {
+		this.ensureWatching();
 		if (this.candidates && Date.now() - this.loadedAt < CACHE_TTL_MS) {
 			return this.candidates;
 		}
@@ -238,8 +257,7 @@ function compareEntries(
 	right: WorkspaceEntrySuggestion,
 	nameQuery: string,
 ): number {
-	const kindOrder =
-		Number(left.kind === "file") - Number(right.kind === "file");
+	const kindOrder = Number(left.kind === "file") - Number(right.kind === "file");
 	if (kindOrder !== 0) return kindOrder;
 	const leftName = basenameOf(left.displayPath);
 	const rightName = basenameOf(right.displayPath);

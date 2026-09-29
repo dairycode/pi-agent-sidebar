@@ -154,3 +154,129 @@ test("stale and unrelated user messages do not claim a submit follow", async () 
 		await loaded.dispose();
 	}
 });
+
+/**
+ * The rule for recognising a prompt's echo is shared with the snapshot recovery
+ * in `main.ts`: both have to agree on what a submitted prompt looks like once pi
+ * has wrapped it, or one of them silently stops matching.
+ */
+/**
+ * The snapshot recovery has to recognise an accepted prompt without accepting a
+ * repeat of one: `clearUnansweredSubmit` unlocks the composer on a true, so a
+ * false positive here shows the reader a sent prompt that pi never took.
+ */
+test("a snapshot acknowledges the submit only through its own newest prompt", async () => {
+	const loaded = await loadCoordinator();
+	try {
+		const { snapshotAcknowledgesSubmit } = loaded.module;
+		const submittedAtMs = Date.parse("2026-03-04T05:00:00.000Z");
+		const base = { draft: "make it faster", submittedAtMs, clockSkewMs: 0 };
+		const user = (text, timestamp) => ({
+			role: "user",
+			content: [{ type: "text", text }],
+			timestamp,
+		});
+		const assistant = (text, timestamp) => ({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			timestamp,
+		});
+
+		// The acceptance: pi appended the wrapped prompt, then answered it.
+		assert.equal(
+			snapshotAcknowledgesSubmit(
+				[
+					user(
+						"<pi-context>file.ts</pi-context>\n\nmake it faster",
+						submittedAtMs + 200,
+					),
+					assistant("on it", submittedAtMs + 900),
+				],
+				base,
+			),
+			true,
+		);
+
+		// The reader asked the same thing earlier in the session. That echo is not this
+		// submit's acceptance, which the timestamp is what separates.
+		assert.equal(
+			snapshotAcknowledgesSubmit(
+				[user("make it faster", submittedAtMs - 300_000)],
+				base,
+			),
+			false,
+		);
+
+		// A newer prompt that is not this draft means pi took something else.
+		assert.equal(
+			snapshotAcknowledgesSubmit(
+				[
+					user("make it faster", submittedAtMs - 1_000),
+					user("actually, revert that", submittedAtMs + 500),
+				],
+				base,
+			),
+			false,
+		);
+
+		// Nothing to match, an unreadable timestamp, and a stamp outside the tolerance
+		// are all "not proven" rather than "refused".
+		assert.equal(
+			snapshotAcknowledgesSubmit([assistant("hello", submittedAtMs + 10)], base),
+			false,
+		);
+		assert.equal(snapshotAcknowledgesSubmit([], base), false);
+		assert.equal(
+			snapshotAcknowledgesSubmit([user("make it faster", undefined)], base),
+			false,
+		);
+		assert.equal(
+			snapshotAcknowledgesSubmit(
+				[user("make it faster", submittedAtMs - 120_000)],
+				base,
+			),
+			false,
+		);
+
+		// The comparison is on pi's clock: a host five minutes ahead still recognises
+		// its own timestamp.
+		assert.equal(
+			snapshotAcknowledgesSubmit(
+				[user("make it faster", submittedAtMs + 300_000)],
+				{ ...base, clockSkewMs: 300_000 },
+			),
+			true,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+/**
+ * The rule for recognising a prompt's echo is shared with the snapshot recovery
+ * in `main.ts`: both have to agree on what a submitted prompt looks like once pi
+ * has wrapped it, or one of them silently stops matching.
+ */
+test("a submitted draft matches its own echo and nothing else", async () => {
+	const loaded = await loadCoordinator();
+	try {
+		const { matchesSubmittedDraft } = loaded.module;
+		assert.equal(matchesSubmittedDraft("plain prompt", "plain prompt"), true);
+		// pi-context and reference blocks are prepended, separated by a blank line.
+		assert.equal(
+			matchesSubmittedDraft(
+				"<pi-context>file.ts</pi-context>\n\nplain prompt",
+				"plain prompt",
+			),
+			true,
+		);
+		assert.equal(matchesSubmittedDraft("plain prompt!", "plain prompt"), false);
+		assert.equal(
+			matchesSubmittedDraft("prefix plain prompt", "plain prompt"),
+			false,
+		);
+		assert.equal(matchesSubmittedDraft("plain", "plain prompt"), false);
+	} finally {
+		await loaded.dispose();
+	}
+});

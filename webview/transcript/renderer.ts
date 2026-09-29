@@ -10,6 +10,8 @@ import type {
 	PiMessage,
 } from "../../shared/protocol.js";
 import { objectValue, stringValue } from "../../shared/jsonValues.js";
+import { contentText } from "../../shared/messageContent.js";
+import { TRANSCRIPT_SANITIZE_OPTIONS } from "../sanitizerPolicy.js";
 import {
 	HighlightJsHighlighter,
 	isMermaidFence,
@@ -235,7 +237,7 @@ function userMessageHtml(message: PiMessage): string {
 	const imageHtml = contentImages(message.content)
 		.map(
 			(image) =>
-				`<img class="message-image" src="data:${escapeHtml(image.mimeType ?? "image/png")};base64,${image.data ?? ""}" alt="Attached image">`,
+				`<img class="message-image" src="data:${escapeHtml(image.mimeType ?? "image/png")};base64,${escapeHtml(image.data ?? "")}" alt="Attached image">`,
 		)
 		.join("");
 	return `<article class="message user-message"><div class="user-message-text">${bodyHtml}</div>${imageHtml}</article>`;
@@ -830,18 +832,6 @@ function renderDiffBlock(diff: string): string {
 	return `<div class="tool-diff">${rows}${more}</div>`;
 }
 
-export function contentText(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const value of content) {
-		if (!value || typeof value !== "object") continue;
-		const block = value as PiContentBlock;
-		if (block.type === "text" && block.text) parts.push(block.text);
-	}
-	return parts.join("\n");
-}
-
 function contentImages(content: unknown): PiContentBlock[] {
 	if (!Array.isArray(content)) return [];
 	return content.filter((block): block is PiContentBlock =>
@@ -1375,10 +1365,7 @@ function markdownTokens(tokens: Token[]): string {
 }
 
 function sanitizeMarkdown(html: string): string {
-	return DOMPurify.sanitize(html, {
-		USE_PROFILES: { html: true },
-		ADD_ATTR: ["target", "rel"],
-	});
+	return DOMPurify.sanitize(html, TRANSCRIPT_SANITIZE_OPTIONS);
 }
 
 function toolTarget(args: JsonRecord): string {

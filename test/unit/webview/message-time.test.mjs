@@ -150,3 +150,70 @@ test("usage formatting keeps null distinguishable from zero", async () => {
 		await loaded.dispose();
 	}
 });
+
+/**
+ * Formatting runs per visible message on every streaming delta, and building an
+ * `Intl` formatter costs far more than formatting with one. The locale is fixed
+ * for a session, so each call site should build its formatter once and keep it —
+ * and a locale change must still produce a new one rather than reusing the old.
+ */
+test("formatters are built once per locale rather than per call", async () => {
+	const loaded = await loadMessageTime();
+	const realDateTimeFormat = Intl.DateTimeFormat;
+	const realNumberFormat = Intl.NumberFormat;
+	let dateConstructions = 0;
+	let numberConstructions = 0;
+	// Subclasses, not plain functions: the module calls these with `new`, and an
+	// arrow function cannot be constructed — it throws, the module falls back to its
+	// `catch` branch, and the counters below would read zero for the wrong reason.
+	class CountingDateTimeFormat extends realDateTimeFormat {
+		constructor(...args) {
+			super(...args);
+			dateConstructions += 1;
+		}
+	}
+	class CountingNumberFormat extends realNumberFormat {
+		constructor(...args) {
+			super(...args);
+			numberConstructions += 1;
+		}
+	}
+	Intl.DateTimeFormat = CountingDateTimeFormat;
+	Intl.NumberFormat = CountingNumberFormat;
+	try {
+		const {
+			formatAbsoluteTime,
+			formatCost,
+			formatDaySeparator,
+			formatRelativeTime,
+			formatTokenCount,
+		} = loaded.module;
+		const now = Date.parse("2026-03-04T05:06:07.000Z");
+		const threeDaysAgo = now - 3 * DAY;
+		for (let repeat = 0; repeat < 50; repeat += 1) {
+			formatRelativeTime(threeDaysAgo, now, "en");
+			formatAbsoluteTime(now, "en");
+			formatDaySeparator(threeDaysAgo, now, "en");
+			formatTokenCount(12_345, "en");
+			formatCost(0.0042, "en");
+			formatCost(1.23, "en");
+		}
+		// Three date call sites, three number variants. Not 300.
+		assert.equal(dateConstructions, 3);
+		assert.equal(numberConstructions, 3);
+
+		formatAbsoluteTime(now, "de");
+		assert.equal(dateConstructions, 4, "a new locale needs its own formatter");
+
+		// The cached formatter still formats, and these must be the real localised
+		// labels: the module's `catch` branches return ISO slices and a bare number, so
+		// a mistake in this test's stubs would otherwise show up as a passing zero.
+		assert.equal(formatRelativeTime(threeDaysAgo, now, "en"), "Mar 1");
+		assert.equal(formatDaySeparator(threeDaysAgo, now, "en"), "March 1, 2026");
+		assert.equal(formatTokenCount(1_234_567, "en"), "1,234,567");
+	} finally {
+		Intl.DateTimeFormat = realDateTimeFormat;
+		Intl.NumberFormat = realNumberFormat;
+		await loaded.dispose();
+	}
+});

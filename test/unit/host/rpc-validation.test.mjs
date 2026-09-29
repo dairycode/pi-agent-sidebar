@@ -327,6 +327,152 @@ test("message timestamps must be epoch milliseconds", async () => {
 	}
 });
 
+test("the message window keeps the newest messages and counts the rest", async () => {
+	const loaded = await loadValidation();
+	try {
+		const { parseMessagesWindow } = loaded.module;
+		const messages = Array.from({ length: 10 }, (_value, index) => ({
+			role: "user",
+			content: `m${index}`,
+			timestamp: index + 1,
+		}));
+
+		const tail = parseMessagesWindow({ messages }, 4);
+		assert.deepEqual(
+			tail.messages.map((message) => message.timestamp),
+			[7, 8, 9, 10],
+		);
+		assert.equal(tail.omittedCount, 6);
+
+		// A window that covers the list omits nothing.
+		const whole = parseMessagesWindow({ messages }, 10);
+		assert.equal(whole.messages.length, 10);
+		assert.equal(whole.omittedCount, 0);
+		assert.equal(parseMessagesWindow({ messages }, 99).omittedCount, 0);
+
+		// A limit of zero is a legal, entirely omitted window rather than an error.
+		const empty = parseMessagesWindow({ messages }, 0);
+		assert.deepEqual(empty.messages, []);
+		assert.equal(empty.omittedCount, 10);
+
+		// The unwindowed parser is the same code path, so it must still see everything.
+		assert.equal(loaded.module.parseMessagesResponse({ messages }).length, 10);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a window skips validation for the messages it drops", async () => {
+	const loaded = await loadValidation();
+	try {
+		const { parseMessagesWindow } = loaded.module;
+		// Windowing before validation is the point of the function: a long session is
+		// thousands of objects to check, and the ones outside the window are never
+		// shown. The tradeoff is deliberate — corruption that far back is dropped
+		// silently, which costs the reader nothing they could have seen.
+		const messages = [
+			{ role: "user", content: "old", timestamp: "2026-01-02T03:04:01.000Z" },
+			{ role: "user", content: "new", timestamp: 2 },
+		];
+		const window = parseMessagesWindow({ messages }, 1);
+		assert.equal(window.omittedCount, 1);
+		assert.equal(window.messages[0].timestamp, 2);
+
+		// Inside the window the error is still raised, and it names the message's
+		// position in the original list rather than its offset in the window.
+		assert.throws(() => parseMessagesWindow({ messages }, 2), /messages\[0\]/u);
+		assert.throws(() => parseMessagesWindow({ messages: "nope" }, 5), /array/iu);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a window carries the session's opening prompt as a title seed", async () => {
+	const loaded = await loadValidation();
+	try {
+		const { parseMessagesWindow } = loaded.module;
+		const opening = {
+			role: "user",
+			content: [
+				{ type: "text", text: "<pi-context>file.ts</pi-context>" },
+				{ type: "text", text: "what does this do?" },
+			],
+			timestamp: 1,
+		};
+		const messages = [
+			opening,
+			{ role: "assistant", content: "reading it", timestamp: 2 },
+			{ role: "user", content: "thanks", timestamp: 3 },
+		];
+
+		// The seed comes off the head the window drops, and its text blocks are joined
+		// the way the webview joins them.
+		const windowed = parseMessagesWindow({ messages }, 1);
+		assert.equal(windowed.omittedCount, 2);
+		assert.equal(
+			windowed.titleSeed,
+			"<pi-context>file.ts</pi-context>\nwhat does this do?",
+		);
+
+		// A window that already reaches the first message needs no seed; the webview
+		// reads that prompt from `messages` itself.
+		assert.equal(parseMessagesWindow({ messages }, 3).titleSeed, undefined);
+		assert.equal(parseMessagesWindow({ messages }, 99).titleSeed, undefined);
+
+		// The first *user* message is the seed, not the first entry of any role, and a
+		// later prompt is never promoted in its place.
+		assert.equal(
+			parseMessagesWindow(
+				{
+					messages: [
+						{ role: "assistant", content: "hi", timestamp: 0 },
+						...messages,
+					],
+				},
+				1,
+			).titleSeed,
+			"<pi-context>file.ts</pi-context>\nwhat does this do?",
+		);
+		// An opening prompt with no text of its own leaves the title to the window
+		// rather than to whatever the reader asked next.
+		assert.equal(
+			parseMessagesWindow(
+				{
+					messages: [
+						{
+							role: "user",
+							content: [{ type: "image", data: "AA==" }],
+							timestamp: 1,
+						},
+						...messages,
+					],
+				},
+				1,
+			).titleSeed,
+			undefined,
+		);
+
+		// A head the window parser would refuse is read leniently here instead: it is
+		// outside the window, and old corruption must not fail every snapshot.
+		assert.equal(
+			parseMessagesWindow(
+				{ messages: [{ role: 7, content: null }, ...messages] },
+				1,
+			).titleSeed,
+			"<pi-context>file.ts</pi-context>\nwhat does this do?",
+		);
+		assert.equal(
+			parseMessagesWindow(
+				{ messages: [{ role: "user", content: 42, timestamp: 1 }, ...messages] },
+				1,
+			).titleSeed,
+			undefined,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("command validation rejects malformed envelopes and oversized fields", async () => {
 	const loaded = await loadValidation();
 	try {

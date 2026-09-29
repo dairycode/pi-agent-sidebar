@@ -1,9 +1,11 @@
 import DOMPurify from "dompurify";
 import { formatComposerReferenceLocation } from "../shared/composerReferences.js";
+import { assertNever } from "../shared/assertNever.js";
 import { handleImagePaste } from "./attachments/imagePaste.js";
 import type { ManagedComposerReference } from "./composer/model.js";
 import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
+import { ComposerFocusRequests } from "./composer/focusRequest.js";
 import { MentionController } from "./composer/mentions.js";
 import { StreamingUsageTracker } from "./streamUsage.js";
 import { StreamingMessagePlayback } from "./transcript/streaming.js";
@@ -18,21 +20,29 @@ import {
 	normalizeEpochMs,
 } from "./transcript/messageTime.js";
 import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
+import { contentText } from "../shared/messageContent.js";
 import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
 import {
 	MediaSources,
 	type ResolvedMediaSource,
 } from "./transcript/mediaSources.js";
+import {
+	adoptSnapshotIdentities,
+	type MessageIdentity,
+} from "./transcript/messageIdentity.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
 import { enhanceMermaidBlocks } from "./transcript/mermaid.js";
-import { SubmitFollowCoordinator } from "./transcript/submitFollow.js";
+import {
+	SubmitFollowCoordinator,
+	snapshotAcknowledgesSubmit,
+} from "./transcript/submitFollow.js";
 import {
 	TranscriptView,
 	type TranscriptEntry,
 } from "./transcript/transcriptView.js";
+import { WORKSPACE_PATH_PATTERN } from "./transcript/workspacePaths.js";
 import {
 	assistantMessageSections,
-	contentText,
 	friendlyToolName,
 	isRenderableMessage,
 	messageHtml,
@@ -44,10 +54,12 @@ import {
 	containsDroppedResources,
 	extractDroppedResources,
 } from "./resourceDrop.js";
+import { TRANSCRIPT_SANITIZE_OPTIONS } from "./sanitizerPolicy.js";
 import { ModalController } from "./ui/modalController.js";
 import { positionPopupAbove } from "./ui/popupPosition.js";
 import { SelectController } from "./ui/selectController.js";
 import { FrameCoordinator } from "./ui/frameCoordinator.js";
+import { LiveStatusAnnouncer } from "./ui/liveStatus.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
 	type AttachmentRef,
@@ -95,6 +107,14 @@ interface PendingAction {
 	attachmentIds?: string[];
 	referenceSnapshots?: ManagedComposerReference[];
 	stagedReferenceId?: string;
+	/**
+	 * When this webview asked for the submit, on its own clock.
+	 *
+	 * Only set for submits: the snapshot recovery compares it against the timestamp
+	 * pi stamped the message with, so a repeated prompt from earlier in the session
+	 * cannot pass as the answer to this one.
+	 */
+	submittedAtMs?: number;
 }
 
 interface UiState {
@@ -104,6 +124,17 @@ interface UiState {
 	state: PiState;
 	stats?: PiStats;
 	messages: PiMessage[];
+	/**
+	 * How many older messages the host left out of the snapshot it sent. Counted
+	 * together with the messages this cap drops, because from the reader's side
+	 * both are just history that is not on screen.
+	 */
+	omittedMessageCount: number;
+	/**
+	 * Text of the session's first user message, when the snapshot's window no
+	 * longer carries it. Feeds the title only; never rendered as an entry.
+	 */
+	titleSeed: string;
 	streamingMessage?: PiMessage;
 	models: PiModel[];
 	thinkingLevels: string[];
@@ -130,6 +161,8 @@ const ui: UiState = {
 	workspaceName: "",
 	state: {},
 	messages: [],
+	omittedMessageCount: 0,
+	titleSeed: "",
 	models: [],
 	thinkingLevels: ["off"],
 	commands: [],
@@ -153,19 +186,46 @@ const toolResults = new Map<string, PiMessage>();
 /** Last streamed source text per live streaming section, for exact change checks. */
 const streamingSectionSource = new WeakMap<HTMLElement, string>();
 const pendingActions = new Map<string, PendingAction>();
+
+/**
+ * Whether a submit is in flight.
+ *
+ * Derived from the two other places the same fact already lives — the registered
+ * actions and the follow coordinator — rather than mirrored in a third variable.
+ * The mirror was correct only as long as every removal of a `submit` action also
+ * cleared it, and the two paths that remove one are the reply path and the
+ * reply-lost recovery path.
+ */
+function isSubmitPending(): boolean {
+	for (const action of pendingActions.values()) {
+		if (action.type === "submit") return true;
+	}
+	return false;
+}
 const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
 /** Single transcript-wide timer for relative time labels. */
 let relativeTimeTimer: ReturnType<typeof setTimeout> | undefined;
 /** Debounces expensive prompt-bound measurements until native scrolling stops. */
 let transcriptScrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
-let pendingSubmit = false;
-let composerFocusRequestId: number | undefined;
-let composerFocusQueued = false;
-let lastAnnouncedFocusRequestId = 0;
-let lastCompletedFocusRequestId = 0;
 let renderedPromptText: string | undefined;
-let renderedPromptMarkerSignature: string | undefined;
+/**
+ * The inputs the composer highlights were last drawn from — reference identities
+ * and the command names, not the ranges they produce.
+ *
+ * Deliberately the inputs: `commandHighlightRanges` scans the whole draft, which
+ * can be 200K characters, and that scan is the cost this guard exists to skip.
+ */
+let renderedPromptInputSignature: string | undefined;
+/**
+ * The attachment chips currently on screen, keyed by what each chip shows.
+ *
+ * Rendering them is not free of consequences: rebuilding the list strands keyboard
+ * focus on `body` and replaces every remove button under the pointer, and render()
+ * runs on every streaming frame even though attachments only change when one is
+ * added or removed.
+ */
+let renderedAttachmentSignature: string | undefined;
 let resourceDragDepth = 0;
 /**
  * Prompts the active session can fork from, as last reported by the host.
@@ -243,6 +303,18 @@ const elements = {
 	modalBackdrop: element<HTMLElement>("modal-backdrop"),
 };
 
+const announcer = new LiveStatusAnnouncer({
+	liveStatus: elements.liveStatus,
+	requestFrame: (callback) => requestAnimationFrame(callback),
+});
+
+const composerFocusRequests = new ComposerFocusRequests({
+	input: elements.input,
+	isInputFocused: () => document.activeElement === elements.input,
+	notifyFocused: (requestId) => post({ type: "composerFocused", requestId }),
+	requestFrame: (callback) => requestAnimationFrame(callback),
+});
+
 const modalController = new ModalController({
 	backdrop: elements.modalBackdrop,
 	inertRoots: [
@@ -299,7 +371,7 @@ const composerController = new ComposerController(
 		persist: (draft, composerReferences) =>
 			vscode.setState({ draft, composerReferences }),
 		post,
-		announce,
+		announce: (message) => announcer.announce(message),
 		invalidate: scheduleRender,
 		refreshEditorView: () => {
 			resizeInput();
@@ -328,7 +400,7 @@ const mentionController = new MentionController({
 	commit: (file, token) => addMentionReference(file, token),
 	navigate: (directoryPath, token) =>
 		composerController.replaceRange(token.start, token.end, `@${directoryPath}/`),
-	announce,
+	announce: (message) => announcer.announce(message),
 	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
 	position: positionMentionPanel,
 	isProtectedOffset: (offset) =>
@@ -421,12 +493,9 @@ const mediaSources = new MediaSources((requestId, sources) =>
  *
  * Keyed by object identity because pi replaces messages rather than mutating
  * them, which makes identity both cheaper and more exact than hashing content.
+ * A snapshot is the one case that replaces every object at once, so identity has
+ * to be re-established there deliberately — see `adoptSnapshotMessageIdentities`.
  */
-interface MessageIdentity {
-	key: number;
-	version: number;
-}
-
 const messageIdentities = new WeakMap<PiMessage, MessageIdentity>();
 let nextMessageKey = 0;
 
@@ -580,6 +649,7 @@ window.addEventListener("blur", () => {
 	mentionController.dismiss();
 	if (!elements.historyPanel.hidden) dismissHistory();
 	dismissForkPicker();
+	if (!elements.usagePanel.hidden) dismissUsagePanel();
 });
 
 elements.input.addEventListener("input", () => {
@@ -714,6 +784,10 @@ promptHighlightResizeObserver.observe(elements.input);
 // Dragging the sidebar edge changes the available width without any state
 // change, so the label stages have to be re-measured here as well as in render().
 const composerToolsResizeObserver = new ResizeObserver(() => {
+	// The row's width is one of the fold's two inputs, and the only one no render
+	// pass can see change: dropping the measured signature makes the next call do
+	// the work again.
+	composerToolsFoldSignature = undefined;
 	reflowComposerTools();
 	selectorController.reposition();
 	if (!elements.commandPanel.hidden) positionCommandPanel();
@@ -784,7 +858,7 @@ window.addEventListener("dragenter", (event) => {
 	if (resourceDragDepth === 0) {
 		elements.resourceDropOverlay.hidden = false;
 		elements.app.classList.add("is-resource-drag");
-		announce("Drop files or folders to add as context");
+		announcer.announce("Drop files or folders to add as context");
 	}
 	resourceDragDepth += 1;
 });
@@ -963,6 +1037,10 @@ document.addEventListener("visibilitychange", () => {
 		return;
 	}
 	refreshRelativeTimes();
+	// Same reason: a focus request that landed while the sidebar was collapsed is
+	// retried only from a render pass, and nothing here is guaranteed to schedule
+	// one. The host is waiting on the `composerFocused` reply.
+	composerFocusRequests.attempt();
 });
 
 window.addEventListener("resize", () => selectorController.reposition());
@@ -1038,6 +1116,10 @@ elements.messages.addEventListener("click", (event) => {
 		// leaving it to run would open the link a second time, unprompted.
 		event.preventDefault();
 		event.stopPropagation();
+		if (!isExternallyOpenable(anchor.protocol)) {
+			showToast("Only http and https links can be opened", "error");
+			return;
+		}
 		post({ type: "openExternal", href: anchor.href });
 	}
 });
@@ -1144,30 +1226,31 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 				.applyIncoming(message.references)
 				.at(-1);
 			const requestId = message.focusRequestId;
-			if (
-				typeof requestId === "number" &&
-				Number.isInteger(requestId) &&
-				requestId > lastCompletedFocusRequestId &&
-				requestId >= (composerFocusRequestId ?? 0)
-			) {
-				composerFocusRequestId = requestId;
+			const focusRequest =
+				typeof requestId === "number"
+					? composerFocusRequests.accept(requestId)
+					: undefined;
+			if (focusRequest) {
 				dismissHistory();
-				if (requestId > lastAnnouncedFocusRequestId) {
-					lastAnnouncedFocusRequestId = requestId;
+				if (focusRequest === "announce") {
 					if (changedReference) {
-						announce(
+						announcer.announce(
 							`Referenced ${formatComposerReferenceLocation(changedReference)}`,
 						);
 					} else if (composerController.references.length > 0) {
-						announce(
+						announcer.announce(
 							`Pi Agent input focused with ${composerController.references.length} ${composerController.references.length === 1 ? "reference" : "references"}`,
 						);
 					} else {
-						announce("Pi Agent input focused");
+						announcer.announce("Pi Agent input focused");
 					}
 				}
 			}
 			scheduleRender();
+			break;
+		}
+		case "notice": {
+			showToast(message.detail, message.kind);
 			break;
 		}
 		case "connection": {
@@ -1179,8 +1262,28 @@ function handleHostMessage(message: HostToWebviewMessage): void {
 			break;
 		}
 		default:
-			break;
+			assertNever(message);
 	}
+}
+
+/**
+ * Re-establishes message identity across a snapshot.
+ *
+ * The window is twice the render cap so that a reader who scrolls a little past
+ * the capped window still finds those nodes intact, and each message gets its own
+ * copy of the identity: sharing one object between two messages would make a
+ * later in-place bump silently affect a message it does not belong to.
+ */
+function adoptSnapshotMessageIdentities(next: readonly PiMessage[]): void {
+	adoptSnapshotIdentities({
+		previous: ui.messages,
+		next,
+		windowSize: MAX_RENDERED_MESSAGES * 2,
+		identityOf: (message) => messageIdentities.get(message),
+		adopt: (message, identity) => {
+			messageIdentities.set(message, { ...identity });
+		},
+	});
 }
 
 function applySnapshot(
@@ -1190,6 +1293,11 @@ function applySnapshot(
 		ui.state.sessionId && ui.state.sessionId !== message.state.sessionId,
 	);
 	ui.state = message.state;
+	ui.omittedMessageCount = message.omittedMessageCount ?? 0;
+	ui.titleSeed = message.titleSeed ?? "";
+	// Before the swap: identity lives on the object, so replacing the array without
+	// this step rebuilds every rendered message and closes what the reader opened.
+	adoptSnapshotMessageIdentities(message.messages);
 	ui.messages = message.messages;
 	ui.stats = message.stats;
 	// snapshot 是全量权威统计，流式实时增量以此为零点重新累计。
@@ -1206,6 +1314,7 @@ function applySnapshot(
 		ui.clockSkewMs = message.timeContext.hostNowMs - Date.now();
 	}
 	ui.busy = Boolean(message.state.isStreaming || message.state.isCompacting);
+	clearUnansweredSubmit(message.messages);
 	streamingPlayback.reset();
 	const streamingMessage = snapshotStreamingMessage(message);
 	if (streamingMessage) {
@@ -1266,7 +1375,9 @@ function applyConnection(
 	}
 	if (phase === "disconnected" || phase === "error")
 		finishInterruptedRun(detail);
-	announce(phase === "ready" ? "Pi is ready" : detail || `Pi is ${phase}`);
+	announcer.announce(
+		phase === "ready" ? "Pi is ready" : detail || `Pi is ${phase}`,
+	);
 	scheduleRender();
 }
 
@@ -1302,6 +1413,67 @@ function finishInterruptedRun(detail?: string): void {
 	extensionWidgets.clear();
 }
 
+/**
+ * Clears a submit the host never answered.
+ *
+ * `handleActionResult` is the documented place the in-flight submit is settled,
+ * so a reply lost while the view was hidden left Enter dead and the send button
+ * disabled until the webview reloaded. The host's reply queue covers that path;
+ * this is the second line of defence, for a reply that never reached the queue —
+ * or that lost the race against an `agent_settled` snapshot, which the host posts
+ * without waiting for the submit handler to finish.
+ *
+ * The condition lives in `snapshotAcknowledgesSubmit`: the snapshot's newest user
+ * message has to be this submit's own prompt, stamped at or after the submit. That
+ * pairing is what makes acceptance provable rather than merely plausible — a
+ * snapshot without it may have arrived mid-flight, where dropping the action would
+ * let the reader submit the same prompt twice. A result that arrives later finds
+ * no action and no-ops.
+ */
+function clearUnansweredSubmit(snapshotMessages: readonly PiMessage[]): void {
+	for (const [actionId, action] of pendingActions) {
+		if (action.type !== "submit" || !action.draft) continue;
+		if (action.submittedAtMs === undefined) continue;
+		if (
+			!snapshotAcknowledgesSubmit(snapshotMessages, {
+				draft: action.draft,
+				submittedAtMs: action.submittedAtMs,
+				clockSkewMs: ui.clockSkewMs,
+			})
+		) {
+			continue;
+		}
+		pendingActions.delete(actionId);
+		applySendSuccess(actionId, action);
+		return;
+	}
+}
+
+/**
+ * Applies the success side of an accepted submit or new-session request:
+ * clears what was sent from the composer and re-attaches the transcript.
+ *
+ * Shared with `clearUnansweredSubmit`, which reaches the same state from the
+ * other direction — a snapshot proves acceptance before any action result does.
+ */
+function applySendSuccess(actionId: string, action: PendingAction): void {
+	const submittedIds = new Set(action.attachmentIds ?? []);
+	ui.attachments = ui.attachments.filter(
+		(attachment) => !submittedIds.has(attachment.id),
+	);
+	composerController.completeSubmittedReferences(action);
+	if (action.type === "submit") {
+		// The action result can precede or follow the user-message RPC echo. In
+		// either order, clearing a multi-line composer is part of the same explicit
+		// "show me what I sent" action and must keep the transcript attached.
+		submitFollowCoordinator.settleAction(
+			actionId,
+			true,
+			elements.input.getBoundingClientRect().height,
+		);
+	}
+}
+
 function handleActionResult(
 	actionId: string,
 	ok: boolean,
@@ -1311,7 +1483,6 @@ function handleActionResult(
 	const action = pendingActions.get(actionId);
 	pendingActions.delete(actionId);
 	if (action?.type === "submit") {
-		pendingSubmit = false;
 		if (!ok || cancelled) {
 			submitFollowCoordinator.settleAction(actionId, false, 0);
 		}
@@ -1322,29 +1493,15 @@ function handleActionResult(
 		action &&
 		(action.type === "submit" || action.type === "newSession")
 	) {
-		const submittedIds = new Set(action.attachmentIds ?? []);
-		ui.attachments = ui.attachments.filter(
-			(attachment) => !submittedIds.has(attachment.id),
-		);
-		composerController.completeSubmittedReferences(action);
-		if (action.type === "submit") {
-			// The action result can precede or follow the user-message RPC echo. In
-			// either order, clearing a multi-line composer is part of the same explicit
-			// "show me what I sent" action and must keep the transcript attached.
-			submitFollowCoordinator.settleAction(
-				actionId,
-				true,
-				elements.input.getBoundingClientRect().height,
-			);
-		}
+		applySendSuccess(actionId, action);
 	}
 	if (ok && !cancelled && action?.type === "pasteImages") {
 		showToast("Clipboard image attached", "info");
-		announce("Clipboard image attached");
+		announcer.announce("Clipboard image attached");
 	}
 	if (ok && !cancelled && action?.type === "addResources") {
 		showToast("Resources added to the input", "info");
-		announce("Resources added to the input");
+		announcer.announce("Resources added to the input");
 	}
 	if (
 		action?.stagedReferenceId &&
@@ -1354,20 +1511,20 @@ function handleActionResult(
 	}
 	if (ok && !cancelled && action?.type === "deleteSession") {
 		showToast("Session deleted", "info");
-		announce("Session deleted");
+		announcer.announce("Session deleted");
 		if (!elements.historyPanel.hidden) elements.sessionSearch.focus();
 	}
 	if (ok && !cancelled && action?.type === "renameSession") {
 		showToast("Session renamed", "info");
-		announce("Session renamed");
+		announcer.announce("Session renamed");
 	}
 	if (ok && !cancelled && action?.type === "cloneSession") {
 		showToast("Session duplicated", "info");
-		announce("Session duplicated");
+		announcer.announce("Session duplicated");
 	}
 	if (ok && !cancelled && action?.type === "forkSession") {
 		showToast("Session forked", "info");
-		announce("Session forked");
+		announcer.announce("Session forked");
 	}
 	// The generic error toast below explains the failure; the picker closes because
 	// it has no list to show and its entry ids were never delivered.
@@ -1387,13 +1544,13 @@ function reduceRpcEvent(event: JsonRecord): void {
 	switch (event.type) {
 		case "agent_start":
 			ui.busy = true;
-			announce("Pi started working");
+			announcer.announce("Pi started working");
 			// 新一轮 agent 运行：实时用量从最近一次 snapshot 之上重新累计。
 			streamingUsage.startAgentRun();
 			break;
 		case "agent_settled":
 			ui.busy = false;
-			announce("Pi finished responding");
+			announcer.announce("Pi finished responding");
 			break;
 		case "message_start": {
 			const message = asMessage(event.message);
@@ -1526,7 +1683,7 @@ function reduceRpcEvent(event: JsonRecord): void {
 				startedAt: existing?.startedAt ?? Date.now(),
 				revision: (existing?.revision ?? 0) + 1,
 			});
-			announce(
+			announcer.announce(
 				`${friendlyToolName(toolName)} ${status === "error" ? "failed" : "completed"}`,
 			);
 			frameCoordinator.scheduleTranscriptRender();
@@ -1630,10 +1787,11 @@ function renderStreamingFrame(): void {
 }
 
 function render(): void {
+	const submitPending = isSubmitPending();
 	const hasMessages =
-		ui.messages.length > 0 || Boolean(ui.streamingMessage) || pendingSubmit;
+		ui.messages.length > 0 || Boolean(ui.streamingMessage) || submitPending;
 	const title = deriveSessionTitle();
-	const working = ui.busy || pendingSubmit;
+	const working = ui.busy || submitPending;
 
 	elements.sessionTitle.textContent = title;
 	elements.sessionTitle.title = title;
@@ -1691,7 +1849,7 @@ function render(): void {
 		mentionController.dismiss();
 	}
 	reflowComposerTools();
-	focusComposerIfRequested();
+	composerFocusRequests.attempt();
 
 	// Relative labels can change text width, so update them before measuring the
 	// transcript's final bottom for this render pass.
@@ -1725,8 +1883,24 @@ function render(): void {
  * every model. All reads happen in one frame, so intermediate states are never
  * painted.
  */
+/**
+ * The composer tools row's own text, as of the last fold measurement.
+ *
+ * The fold turns on whether the row's content outgrows its width, and those are
+ * its only two inputs. The width is reported by the ResizeObserver above, which
+ * clears this to ask for a fresh measurement; the text is read here because
+ * nothing else reports it. Caching both is what lets a render pass that changed
+ * neither skip the measurement — and the measurement is not free: removing a
+ * class and reading `scrollWidth` in the same turn forces a synchronous layout,
+ * in a function `render()` calls on every streaming frame.
+ */
+let composerToolsFoldSignature: string | undefined;
+
 function reflowComposerTools(): void {
 	const tools = elements.composerTools;
+	const signature = `${elements.modelSelectValue.textContent}\u0000${elements.thinkingSelectValue.textContent}`;
+	if (signature === composerToolsFoldSignature) return;
+	composerToolsFoldSignature = signature;
 	tools.classList.remove("is-icons", "is-minimal");
 	if (tools.scrollWidth <= tools.clientWidth) return;
 	tools.classList.add("is-icons");
@@ -1969,7 +2143,10 @@ function renderMessages(): void {
 	// position, and stops them consuming the render cap.
 	const renderable = allMessages.filter(isRenderableMessage);
 	const visible = renderable.slice(-MAX_RENDERED_MESSAGES);
-	const omitted = renderable.length - visible.length;
+	// History is dropped in two places: the host sends only the newest messages, and
+	// this cap keeps the newest 150 of those. The reader is told the total, not just
+	// the part this cap is responsible for.
+	const omitted = renderable.length - visible.length + ui.omittedMessageCount;
 	pruneExpandedThinkingKeys(visible);
 
 	const entries: TranscriptEntry[] = [];
@@ -2647,9 +2824,6 @@ function enhanceCodeBlocks(root: ParentNode): void {
 	}
 }
 
-const WORKSPACE_PATH_PATTERN =
-	/\b([\w.-]+(?:\/[\w.-]+)+\.[A-Za-z][\w]*)(?::(\d+))?/gu;
-
 /**
  * Walk rendered assistant/user message text nodes and turn `path/to/file.ts`
  * or `path/to/file.ts:42` tokens into clickable spans. Code blocks, links,
@@ -2712,6 +2886,14 @@ function linkifyWorkspacePaths(root: Element): void {
 }
 
 function renderAttachments(): void {
+	const signature = ui.attachments
+		.map(
+			(attachment) =>
+				`${attachment.id}:${attachment.kind}:${attachment.label}:${attachment.path}`,
+		)
+		.join("\u0000");
+	if (signature === renderedAttachmentSignature) return;
+	renderedAttachmentSignature = signature;
 	elements.attachmentList.replaceChildren();
 	for (const attachment of ui.attachments) {
 		const chip = document.createElement("div");
@@ -2738,17 +2920,22 @@ function renderAttachments(): void {
 }
 
 function syncPromptHighlightScroll(): void {
-	if (elements.input.clientWidth > 0) {
-		elements.promptHighlights.style.width = `${elements.input.clientWidth}px`;
+	// Both measurements are taken before either write. Reading them in place cost
+	// two forced layouts per call, and this runs on every render pass as well as on
+	// every scroll and resize.
+	const width = elements.input.clientWidth;
+	const { scrollLeft, scrollTop } = elements.input;
+	if (width > 0) {
+		elements.promptHighlights.style.width = `${width}px`;
 	}
-	elements.promptHighlights.style.transform = `translate(${-elements.input.scrollLeft}px, ${-elements.input.scrollTop}px)`;
+	elements.promptHighlights.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
 }
 
 function renderComposerHighlights(): void {
 	const text = elements.input.value;
 	if (text.length > MAX_HIGHLIGHTED_COMPOSER_LENGTH) {
 		renderedPromptText = undefined;
-		renderedPromptMarkerSignature = undefined;
+		renderedPromptInputSignature = undefined;
 		elements.promptEditor.classList.remove("has-token-highlights");
 		if (elements.promptHighlights.childNodes.length > 0) {
 			elements.promptHighlights.replaceChildren();
@@ -2759,26 +2946,26 @@ function renderComposerHighlights(): void {
 	const references = composerController
 		.managedReferences()
 		.sort((left, right) => left.start - right.start || left.end - right.end);
-	const commandRanges = commandHighlightRanges(
-		text,
-		ui.commands.map((command) => command.name),
-	);
-	const markerSignature = [
+	const commandNames = ui.commands.map((command) => command.name);
+	const inputSignature = [
 		...references.map(
 			(reference) =>
 				`reference:${reference.id}:${reference.revision}:${reference.start}:${reference.end}`,
 		),
-		...commandRanges.map((range) => `command:${range.start}:${range.end}`),
+		// The names, not the ranges they resolve to: this signature has to be cheaper
+		// than what it guards, and the ranges are what it guards.
+		`commands:${commandNames.join("\u0000")}`,
 	].join("\u0000");
 	if (
 		text === renderedPromptText &&
-		markerSignature === renderedPromptMarkerSignature
+		inputSignature === renderedPromptInputSignature
 	) {
 		syncPromptHighlightScroll();
 		return;
 	}
 	renderedPromptText = text;
-	renderedPromptMarkerSignature = markerSignature;
+	renderedPromptInputSignature = inputSignature;
+	const commandRanges = commandHighlightRanges(text, commandNames);
 
 	const ranges = [
 		...references.map(({ start, end }) => ({
@@ -3014,8 +3201,8 @@ function renderSendButton(): void {
 	elements.sendButton.setAttribute("aria-label", label);
 	elements.sendButton.disabled =
 		ui.connection !== "ready" ||
-		(!ui.busy && (pendingSubmit || composerController.hasPendingReferences));
-	elements.composer.classList.toggle("busy", ui.busy || pendingSubmit);
+		(!ui.busy && (isSubmitPending() || composerController.hasPendingReferences));
+	elements.composer.classList.toggle("busy", ui.busy || isSubmitPending());
 	// Enter's meaning flips with the run state, so a hint that is already open has
 	// to be re-rendered rather than left describing the previous state.
 	if (!elements.sendHint.hidden) {
@@ -3600,7 +3787,7 @@ function insertSlashCommand(name: string): void {
 	composerController.replaceRange(start, end, insertion);
 	dismissCommandPalette();
 	elements.input.focus();
-	announce(`Inserted /${name}`);
+	announcer.announce(`Inserted /${name}`);
 }
 
 /**
@@ -3759,7 +3946,7 @@ function clearResourceDragState(): void {
 
 function sendPrompt(delivery?: SubmitDelivery): void {
 	if (
-		pendingSubmit ||
+		isSubmitPending() ||
 		ui.connection !== "ready" ||
 		composerController.hasPendingReferences
 	)
@@ -3775,7 +3962,10 @@ function sendPrompt(delivery?: SubmitDelivery): void {
 	// clears the text the palette was filtering on.
 	dismissCommandPalette();
 	mentionController.dismiss();
-	pendingSubmit = true;
+	// Nothing latches the submit here: registering the `submit` action inside
+	// `runAction` below is what marks one in flight, and `isSubmitPending()` reads
+	// that as the single source of the fact.
+	//
 	// Sending is an explicit "show me what happens next", so it re-attaches the
 	// transcript to its bottom edge even if the reader had scrolled up.
 	scrollAnchor.follow();
@@ -3832,6 +4022,9 @@ function runAction(
 		action.attachmentIds = ui.attachments.map((attachment) => attachment.id);
 		action.referenceSnapshots = composerController.snapshotReferences();
 	}
+	// The snapshot recovery needs to tell this submit's own prompt from an
+	// identical one the reader sent earlier in the session.
+	if (type === "submit") action.submittedAtMs = Date.now();
 	pendingActions.set(actionId, action);
 	const { stagedReferenceId: _stagedReferenceId, ...outgoingFields } = fields;
 	post({ type, actionId, ...outgoingFields } as WebviewToHostMessage);
@@ -3859,11 +4052,18 @@ function openRenamePrompt(): void {
 	});
 }
 
-function announce(message: string): void {
-	elements.liveStatus.textContent = "";
-	requestAnimationFrame(() => {
-		elements.liveStatus.textContent = message;
-	});
+/**
+ * Whether the host will open a link with this protocol.
+ *
+ * The host throws for anything but HTTP and HTTPS, and a thrown error on a
+ * message carrying no `actionId` is reported as a fatal `connection: error`:
+ * the in-flight reply is marked aborted, sending is disabled, and the banner
+ * offers only Restart. Relative links (`[doc](README.md)`), fragments
+ * (`#section`) and `mailto:` all arrive at the anchor branch, so the scheme is
+ * checked before the round trip turns a stray click into a dead session.
+ */
+function isExternallyOpenable(protocol: string): boolean {
+	return protocol === "http:" || protocol === "https:";
 }
 
 function showToast(message: string, kind: "info" | "error"): void {
@@ -3927,29 +4127,6 @@ function hideSendHint(): void {
 	elements.sendHint.hidden = true;
 }
 
-function focusComposerIfRequested(): void {
-	if (
-		composerFocusRequestId === undefined ||
-		composerFocusQueued ||
-		elements.input.disabled
-	)
-		return;
-	const requestId = composerFocusRequestId;
-	composerFocusQueued = true;
-	requestAnimationFrame(() => {
-		composerFocusQueued = false;
-		if (composerFocusRequestId !== requestId || elements.input.disabled) {
-			focusComposerIfRequested();
-			return;
-		}
-		elements.input.focus({ preventScroll: true });
-		if (document.activeElement !== elements.input) return;
-		lastCompletedFocusRequestId = requestId;
-		composerFocusRequestId = undefined;
-		post({ type: "composerFocused", requestId });
-	});
-}
-
 function resizeInput(): void {
 	elements.input.style.height = "auto";
 	elements.input.style.height = `${Math.min(elements.input.scrollHeight, 150)}px`;
@@ -3957,13 +4134,21 @@ function resizeInput(): void {
 
 function deriveSessionTitle(): string {
 	if (ui.state.sessionName?.trim()) return ui.state.sessionName.trim();
-	const firstUser = ui.messages.find((message) => message.role === "user");
-	const text = firstUser
-		? contentText(firstUser.content)
-				.replace(/^<pi-context>[\s\S]*?<\/pi-context>\s*/u, "")
-				.trim()
-		: "";
+	// A snapshot carries only the newest messages, so the prompt a session is named
+	// after has usually left `ui.messages` and the host sends its text along. The
+	// window is a fallback for a session the host could not read one from — and then
+	// it is the oldest visible prompt, not the session's first.
+	const seed = ui.titleSeed || firstWindowedUserText();
+	const text = seed
+		.replace(/^<pi-context>[\s\S]*?<\/pi-context>\s*/u, "")
+		.trim();
 	return truncate(text.replace(/\s+/gu, " "), 54) || "Untitled";
+}
+
+/** Text of the oldest user message the snapshot window still holds. */
+function firstWindowedUserText(): string {
+	const firstUser = ui.messages.find((message) => message.role === "user");
+	return firstUser ? contentText(firstUser.content) : "";
 }
 
 function connectionLabel(): string {
@@ -4028,10 +4213,7 @@ function createCodicon(name: string): HTMLElement {
 }
 
 function sanitizedNodes(html: string): Node[] {
-	const sanitized = DOMPurify.sanitize(html, {
-		USE_PROFILES: { html: true },
-		ADD_ATTR: ["target", "rel", "data-copy-code"],
-	});
+	const sanitized = DOMPurify.sanitize(html, TRANSCRIPT_SANITIZE_OPTIONS);
 	const parsed = new DOMParser().parseFromString(sanitized, "text/html");
 	return [...parsed.body.childNodes].map((node) =>
 		document.importNode(node, true),

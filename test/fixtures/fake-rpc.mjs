@@ -1,7 +1,10 @@
+import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 
 const decoder = new StringDecoder("utf8");
 let buffer = "";
+/** Set by `spawn_helper` with `keepRunning`, to model a pi that ignores stdin EOF. */
+let surviveStdinEnd = false;
 
 process.stdout.write("null\n");
 
@@ -52,6 +55,26 @@ process.stdin.on("data", (chunk) => {
 		}
 		if (command.type === "cancelled_mutation") {
 			respond(command, { cancelled: true });
+			continue;
+		}
+		if (command.type === "spawn_helper") {
+			// A tool pi runs under itself. It inherits this process's group, so
+			// signalling the group is what stops it; signalling only this process
+			// leaves it running.
+			const helper = spawn(
+				process.execPath,
+				["-e", "setInterval(() => {}, 1000);"],
+				{ stdio: "ignore" },
+			);
+			helper.unref();
+			if (command.keepRunning) {
+				surviveStdinEnd = true;
+				// An active handle, so a stdin EOF does not drain the event loop. The point
+				// is a pi that ignores the request to stop, which only a signal can end, and
+				// the handle is deliberately never cleared: it dies with this process.
+				setInterval(() => {}, 1_000);
+			}
+			respond(command, { pid: helper.pid });
 			continue;
 		}
 		// A response whose `command` disagrees with the request must be refused
@@ -116,5 +139,6 @@ process.stdin.on("data", (chunk) => {
 
 process.stdin.on("end", () => {
 	buffer += decoder.end();
+	if (surviveStdinEnd) return;
 	process.exit(0);
 });

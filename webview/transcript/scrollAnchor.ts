@@ -260,12 +260,15 @@ export class ScrollAnchor {
 	 * clamped value still counts as ours in `noteScroll`.
 	 */
 	public stickToBottomIfFollowing(): boolean {
+		if (!this.following) return false;
 		const { viewport } = this.options;
+		// Measured only once following is confirmed: reading the scroll metrics forces
+		// a layout, and a render pass where the reader has scrolled away does not
+		// owe it one.
 		const targetScrollTop = Math.max(
 			0,
 			viewport.scrollHeight - viewport.clientHeight,
 		);
-		if (!this.following) return false;
 		if (
 			this.canAnimate() &&
 			targetScrollTop - viewport.scrollTop > SMOOTH_SCROLL_SETTLE_PX

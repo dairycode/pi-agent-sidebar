@@ -8,9 +8,13 @@ import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
  *
  * DOMPurify needs a DOM, which this environment has no need to provide: the
  * behaviour under test is whether highlighting runs at all and what markup it
- * produces. A pass-through sanitizer keeps that markup observable. Class
- * survival through the real DOMPurify is covered by the existing transcript
- * rendering, which depends on `class` attributes throughout.
+ * produces. A pass-through sanitizer keeps that markup observable.
+ *
+ * That pass-through is also why this file cannot observe the sanitizer policy:
+ * any configuration is accepted and ignored. `sanitizer-policy.test.mjs`
+ * asserts the policy itself, and the other renderer tests that mock DOMPurify
+ * the same way (`transcript.test.mjs`, `transcript-sections.test.mjs`) share
+ * this limitation.
  */
 async function loadRenderer() {
 	return loadBundledModule({

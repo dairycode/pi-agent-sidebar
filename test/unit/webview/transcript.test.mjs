@@ -163,6 +163,73 @@ test("assistant transcript preserves activity ordering and stream state", async 
 	}
 });
 
+test("adjacent reasoning parts render as one section", async () => {
+	const loaded = await loadTranscript();
+	try {
+		// The shape GPT streams: one `thinking` block per reasoning part.
+		const message = {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "first part" },
+				{ type: "thinking", thinking: "second part" },
+				{ type: "text", text: "answer" },
+			],
+		};
+		const collapsed = loaded.module.messageHtml(
+			message,
+			new Map(),
+			new Map(),
+			false,
+			"message-9",
+		);
+		assert.equal(
+			collapsed.match(/data-expandable="thinking"/gu).length,
+			1,
+			"three parts must not stack three collapsed rows",
+		);
+		assert.match(collapsed, /data-thinking-key="message-9-thinking-0"/u);
+		assert.doesNotMatch(collapsed, /first part|second part/u);
+
+		// One disclosure covers the whole run, and its parts keep their order.
+		const expanded = loaded.module.messageHtml(
+			message,
+			new Map(),
+			new Map(),
+			false,
+			"message-9",
+			new Set(["message-9-thinking-0"]),
+		);
+		assert.match(expanded, /aria-expanded="true"/u);
+		assert.ok(expanded.indexOf("first part") < expanded.indexOf("second part"));
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("prose between reasoning parts keeps them apart", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const html = loaded.module.messageHtml(
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "first part" },
+					{ type: "text", text: "prose" },
+					{ type: "thinking", thinking: "second part" },
+				],
+			},
+			new Map(),
+			new Map(),
+			false,
+			"message-9",
+		);
+		assert.equal(html.match(/data-expandable="thinking"/gu).length, 2);
+		assert.match(html, /data-thinking-key="message-9-thinking-1"/u);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("live successful tool diff replaces persisted tool output", async () => {
 	const loaded = await loadTranscript();
 	try {
@@ -219,7 +286,15 @@ test("live successful tool diff replaces persisted tool output", async () => {
 		assert.match(html, /<span class="sr-only">Edit file: done<\/span>/u);
 		assert.match(html, /<span class="tool-path">src\/file\.ts<\/span>/u);
 		assert.match(html, /data-tool-body="lazy"/u);
-		assert.match(html, /<span class="tool-hint">output<\/span>/u);
+		// The collapsed row is one line, so the header text rides in its own span
+		// and yields width to the hint beside it rather than clipping it away
+		// (see the `.header-text` rules in transcript.css), and the box carries the
+		// full text for the pointer that cannot read the clipped line.
+		assert.match(
+			html,
+			/<span class="header-text"><span class="tool-name">edit<\/span> <span class="tool-path">src\/file\.ts<\/span><\/span><span class="header-trail"><span class="tool-hint">output<\/span><\/span>/u,
+		);
+		assert.match(html, /title="edit src\/file\.ts"/u);
 		assert.doesNotMatch(
 			html,
 			/diff-remove|diff-add|persisted output|live output/u,
@@ -284,6 +359,81 @@ test("live successful tool diff replaces persisted tool output", async () => {
 	}
 });
 
+test("a call with nothing to reveal still collapses onto one line", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const content = [
+			{
+				type: "toolCall",
+				id: "tool-1",
+				name: "bash",
+				arguments: { command: 'npm run typecheck 2>&1 | grep -E "error TS"' },
+			},
+		];
+		// No result: the call is still running, so it has no body to reveal and is
+		// not a button. It clips anyway — a box that stayed wrapped until its first
+		// output chunk landed snapped to one line mid-run — which leaves `title` as
+		// the only way back to the full command, since there is no click to open.
+		const html = loaded.module.messageHtml(
+			{ role: "assistant", content },
+			new Map(),
+			new Map(),
+			false,
+			"message-1",
+		);
+
+		assert.doesNotMatch(html, /expandable/u);
+		assert.match(html, /tool-spinner/u);
+		assert.match(
+			html,
+			/title="\$ npm run typecheck 2&gt;&amp;1 \| grep -E &quot;error TS&quot;"/u,
+		);
+		assert.match(
+			html,
+			/<span class="header-text">\$ npm run typecheck 2&gt;&amp;1 \| grep -E &quot;error TS&quot;<\/span>/u,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("tool title preserves text beyond the one-line preview", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const command = `${"x".repeat(2100)} tail`;
+		const html = loaded.module.messageHtml(
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "tool-long",
+						name: "bash",
+						arguments: { command },
+					},
+				],
+			},
+			new Map(),
+			new Map(),
+			false,
+			"message-long-tool",
+		);
+
+		assert.ok(
+			html.includes(`title="$ ${command}"`),
+			"the tooltip should retain the command beyond the visible preview limit",
+		);
+		assert.ok(
+			html.includes(
+				`<span class="header-text">$ ${"x".repeat(1999)}…</span>`,
+			),
+			"the rendered header should still use the bounded one-line preview",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("skill invocation renders as a collapsed card with the arguments below", async () => {
 	const loaded = await loadTranscript();
 	try {
@@ -317,6 +467,12 @@ test("skill invocation renders as a collapsed card with the arguments below", as
 		assert.match(html, /<span class="skill-label">\[skill\]<\/span>/u);
 		assert.match(html, /<span class="skill-name">code-review<\/span>/u);
 		assert.match(html, /<span class="skill-hint">5 lines<\/span>/u);
+		// Same one-line contract as a tool box: the label and name are what the
+		// collapsed clip shortens, and the line count keeps its place at the end.
+		assert.match(
+			html,
+			/<span class="header-text"><span class="skill-label">\[skill\]<\/span> <span class="skill-name">code-review<\/span><\/span><span class="header-trail"><span class="skill-hint">5 lines<\/span><\/span>/u,
+		);
 		// The body renders through the same sanitized markdown pipeline as any
 		// other message content (the mocked marked wraps it in <p>).
 		assert.match(html, /<div class="skill-body"><p>/u);

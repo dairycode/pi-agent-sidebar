@@ -9,6 +9,13 @@ async function loadStreaming() {
 	});
 }
 
+async function loadGroups() {
+	return loadBundledModule({
+		entry: "webview/transcript/thinkingGroups.ts",
+		name: "thinking-groups-streaming",
+	});
+}
+
 const update = (assistantMessageEvent) => ({
 	type: "message_update",
 	assistantMessageEvent,
@@ -208,6 +215,63 @@ test("expanded thinking keeps its incremental playback", async () => {
 		assert.equal(playback.needsFrame, true);
 	} finally {
 		await loaded.dispose();
+	}
+});
+
+test("a run of reasoning parts reveals as one append-only section", async () => {
+	const [streaming, groups] = await Promise.all([loadStreaming(), loadGroups()]);
+	try {
+		const { StreamingMessagePlayback } = streaming.module;
+		const { thinkingGroupKeyIndex, thinkingGroups } = groups.module;
+		const blocksOf = (message) =>
+			Array.isArray(message.content) ? message.content : [];
+		const sectionText = (message) =>
+			thinkingGroups(blocksOf(message))
+				.map((group) => group.text)
+				.join("");
+		const playback = new StreamingMessagePlayback({
+			// Grouped from the target, as the webview does: the section key has to
+			// hold for every part of the run and for every frame of the reveal.
+			shouldAnimateThinking: (message, thinkingIndex) =>
+				thinkingGroupKeyIndex(
+					blocksOf(playback.target ?? message),
+					thinkingIndex,
+				) === 0,
+		});
+		playback.start({ role: "assistant", content: [] });
+		// Both parts are on the wire before the first frame is drawn, which is what a
+		// fast provider produces and the shape that used to reveal the second part
+		// whole while the first was still typing.
+		playback.applyDelta(update({ type: "thinking_start", contentIndex: 0 }));
+		playback.applyDelta(
+			update({ type: "thinking_delta", contentIndex: 0, delta: "first part" }),
+		);
+		playback.applyDelta(update({ type: "thinking_start", contentIndex: 1 }));
+		playback.applyDelta(
+			update({ type: "thinking_delta", contentIndex: 1, delta: "second part" }),
+		);
+
+		let timestamp = 1000 / 60;
+		let shown = "";
+		let frames = 0;
+		let frame;
+		while (playback.needsFrame) {
+			frame = playback.advance(timestamp);
+			timestamp += 1000 / 60;
+			// The DOM patcher appends the bytes that did not change before; a section
+			// that rewrites its middle would make that append apply the wrong suffix.
+			const text = sectionText(frame.message);
+			assert.ok(
+				text.startsWith(shown),
+				`frame ${frames} rewrote the section instead of extending it: ${JSON.stringify(text)}`,
+			);
+			shown = text;
+			frames += 1;
+		}
+		assert.ok(frames > 1, "the section should be revealed over several frames");
+		assert.equal(shown, "first part\n\nsecond part");
+	} finally {
+		await Promise.all([streaming.dispose(), groups.dispose()]);
 	}
 });
 

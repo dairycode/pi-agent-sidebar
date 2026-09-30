@@ -31,6 +31,7 @@ import {
 	type MessageIdentity,
 } from "./transcript/messageIdentity.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
+import { thinkingGroupKeyIndex } from "./transcript/thinkingGroups.js";
 import { enhanceMermaidBlocks } from "./transcript/mermaid.js";
 import {
 	SubmitFollowCoordinator,
@@ -68,6 +69,7 @@ import {
 	type JsonRecord,
 	type PiCapabilities,
 	type PiCommand,
+	type PiContentBlock,
 	type PiMessage,
 	type PiModel,
 	type PiState,
@@ -442,9 +444,18 @@ const expandedThinkingKeys = new Set<string>();
 let pendingThinkingToggleAnchor:
 	| { thinkingKey: string; viewportTop: number }
 	| undefined;
-const streamingPlayback = new StreamingMessagePlayback({
+const streamingPlayback: StreamingMessagePlayback = new StreamingMessagePlayback({
+	// Grouping is read from the target rather than from the displayed message: the
+	// section key it produces has to hold for every block of a run and for every
+	// frame of its reveal, and the first displayed frame is still the empty shell
+	// pi opens an assistant message with.
 	shouldAnimateThinking: (message, thinkingIndex) =>
-		expandedThinkingKeys.has(`${messageKey(message)}-thinking-${thinkingIndex}`),
+		expandedThinkingKeys.has(
+			`${messageKey(message)}-thinking-${thinkingGroupKeyIndex(
+				messageBlocks(streamingPlayback.target ?? message),
+				thinkingIndex,
+			)}`,
+		),
 });
 const frameCoordinator = new FrameCoordinator({
 	requestFrame: (callback) => window.requestAnimationFrame(callback),
@@ -540,6 +551,11 @@ function messageSignaturePart(message: PiMessage): string {
 
 function messageKey(message: PiMessage): string {
 	return `message-${messageIdentity(message).key}`;
+}
+
+/** A message's content blocks; pi sends a string only for non-assistant roles. */
+function messageBlocks(message: PiMessage): readonly PiContentBlock[] {
+	return Array.isArray(message.content) ? message.content : [];
 }
 
 /**

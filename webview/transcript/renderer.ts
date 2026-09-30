@@ -18,6 +18,7 @@ import {
 	resolveLanguage,
 	type CodeHighlighter,
 } from "./highlight.js";
+import { thinkingGroups, type ThinkingGroup } from "./thinkingGroups.js";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -282,11 +283,15 @@ function parseSkillBlock(text: string): SkillBlock | undefined {
  * a tool box — this webview's CSP forbids inline handlers, so toggling goes
  * through the delegated handler in `main.ts`, and the file path rides in the
  * `title` because the card itself has no room for it.
+ *
+ * The header shares the tool box's `.header-text`/`.header-trail` split:
+ * collapsed, the clip shortens the first span so the line count keeps its place
+ * at the end of the line instead of being clipped with the name.
  */
 function skillMessageHtml(skill: SkillBlock): string {
 	const lines = skill.content.replace(/\n$/u, "").split("\n").length;
 	const hint = `<span class="skill-hint">${lines} ${lines === 1 ? "line" : "lines"}</span>`;
-	const header = `<div class="skill-header"><span class="skill-label">[skill]</span> <span class="skill-name">${escapeHtml(skill.name)}</span>${hint}</div>`;
+	const header = `<div class="skill-header"><span class="header-text"><span class="skill-label">[skill]</span> <span class="skill-name">${escapeHtml(skill.name)}</span></span><span class="header-trail">${hint}</span></div>`;
 	const body = `<div class="skill-body">${markdown(skill.content, true)}</div>`;
 	const card = `<div class="skill-block expandable" data-expandable="skill" data-skill-key="${escapeHtml(skill.name)}" role="button" tabindex="0" aria-expanded="false" title="${escapeHtml(skill.location)}">${header}${body}</div>`;
 	if (!skill.userMessage) return card;
@@ -448,6 +453,13 @@ export function assistantMessageSections(
 	expandedThinkingKeys?: ReadonlySet<string>,
 ): AssistantMessageSection[] {
 	const blocks = Array.isArray(message.content) ? message.content : [];
+	// GPT reports reasoning as a series of parts, one `thinking` block each. They
+	// are drawn as one section per run of them; the run's first block is the one
+	// that carries the section.
+	const thinkingGroupsByStart = new Map<number, ThinkingGroup>();
+	for (const group of thinkingGroups(blocks)) {
+		thinkingGroupsByStart.set(group.startIndex, group);
+	}
 	const sections: AssistantMessageSection[] = [];
 	let activityOrdinal = 0;
 	let contentOrdinal = 0;
@@ -528,30 +540,36 @@ export function assistantMessageSections(
 			});
 		}
 		if (block.type === "thinking") {
+			// A later block of the same run is covered by the section its run
+			// started: one reasoning section per run, so nothing is left to draw here.
+			const group = thinkingGroupsByStart.get(blockIndex);
+			if (!group) continue;
 			const thinkingKey = `${messageKey}-thinking-${thinkingIndex}`;
 			const streamingState = streaming ? " streaming" : "";
 			const expanded = Boolean(expandedThinkingKeys?.has(thinkingKey));
-			const streamText =
-				streaming && expanded ? (block.thinking ?? "") : undefined;
+			const rawThinking = expanded ? group.text : "";
+			const streamText = streaming && expanded ? rawThinking : undefined;
 			const omitThinkingText = Boolean(
 				deferStreamingTextHtml && streamText !== undefined,
 			);
 			const nextVisibleBlock = blocks
-				.slice(blockIndex + 1)
+				.slice(group.endIndex)
 				.find(
 					(candidate) =>
 						candidate.type !== "text" || (candidate.text ?? "").trim().length > 0,
 				);
 			const isActiveThinking = streaming && !expanded && !nextVisibleBlock;
-			thinkingIndex += 1;
+			thinkingIndex += group.blocks.length;
 			pushActivity(
 				"thinking",
-				`thinking:${objectIdentity(block)}:${streamingState}:${expanded ? 1 : 0}:active:${isActiveThinking ? 1 : 0}:omit:${omitThinkingText ? 1 : 0}`,
+				`thinking:${group.blocks
+					.map(objectIdentity)
+					.join(".")}:${streamingState}:${expanded ? 1 : 0}:active:${isActiveThinking ? 1 : 0}:omit:${omitThinkingText ? 1 : 0}`,
 				() =>
 					thinkingBlockHtml(
 						thinkingKey,
 						streamingState,
-						omitThinkingText ? { ...block, thinking: "" } : block,
+						omitThinkingText ? "" : rawThinking,
 						expanded,
 					),
 				streamText,
@@ -677,14 +695,16 @@ function contentHash(value: string): string {
  * reasoning (the stream patcher fills `.thinking-text`), collapsing it again
  * stops that per-frame work entirely. A collapsed block carries no body, so a
  * long settle costs nothing until the reader asks to see it.
+ *
+ * `rawText` is the whole section's reasoning, which is more than one of pi's
+ * blocks whenever a run of them is drawn together (`thinkingGroups`).
  */
 function thinkingBlockHtml(
 	thinkingKey: string,
 	streamingState: string,
-	block: PiContentBlock,
+	rawText: string,
 	expanded: boolean,
 ): string {
-	const rawText = block.thinking ?? "";
 	const expandedClass = expanded ? " is-expanded" : "";
 	const body = expanded
 		? `<div class="thinking-text">${markdown(rawText)}</div>`
@@ -710,7 +730,9 @@ function thinkingBlockHtml(
  * that already happened, and a transcript of expanded outputs buries the prose
  * that explains them. Only a box with something to reveal becomes a button:
  * giving an output-less call a button role would promise an expansion that never
- * arrives.
+ * arrives. Such a box still carries its header text in `title`, because the
+ * collapsed line clips whatever it holds (`transcript.css`) and this one has no
+ * click that would bring the rest of it back.
  */
 function toolCallHtml(
 	id: string,
@@ -731,14 +753,17 @@ function toolCallHtml(
 			: "";
 	const statusNote = `<span class="sr-only">${escapeHtml(`${friendlyToolName(name)}: ${toolStatusLabel(status)}`)}</span>`;
 	if (!hasBody) {
-		return `<div class="activity-item tool-call ${status}">${statusNote}${toolHeaderHtml(name, args, spinner, "")}</div>`;
+		const header = toolHeaderParts(name, args, spinner, "");
+		return `<div class="activity-item tool-call ${status}" title="${escapeHtml(header.title)}">${statusNote}${header.html}</div>`;
 	}
 	// The collapsed hot path carries only the header. Large output and diffs are
 	// materialized by the delegated click handler when the reader asks to expand.
 	// Avoid even counting lines here: tool_end must remain constant-time with
 	// respect to result size so the next assistant text frame is never delayed.
 	const hint = '<span class="tool-hint">output</span>';
-	return `<div class="activity-item tool-call ${status} expandable" data-tool-key="${escapeHtml(id)}" data-tool-body="lazy" data-expandable="tool" role="button" tabindex="0" aria-expanded="false">${statusNote}${toolHeaderHtml(name, args, spinner, hint)}</div>`;
+	const header = toolHeaderParts(name, args, spinner, hint);
+	// `title` is the pointer's way back to what the collapsed line clipped.
+	return `<div class="activity-item tool-call ${status} expandable" data-tool-key="${escapeHtml(id)}" data-tool-body="lazy" data-expandable="tool" role="button" tabindex="0" aria-expanded="false" title="${escapeHtml(header.title)}">${statusNote}${header.html}</div>`;
 }
 
 /** Builds a tool body on demand instead of parsing hidden output at tool end. */
@@ -786,30 +811,49 @@ const MAX_TOOL_TARGET_LENGTH = 2000;
  *
  * pi splits this by tool: a shell command becomes `$ …` on its own bold,
  * wrapping line, while every other tool gets `name` followed by its primary
- * argument. Commands are not truncated or ellipsised the way a one-line summary
- * would be — the command *is* the content, and a clipped one cannot be checked
- * against what actually ran.
+ * argument.
+ *
+ * The text rides in one `.header-text` span so a collapsed box can clip it to a
+ * single line (`transcript.css`) while the `output` hint and the spinner keep
+ * their place at the end of that line. Those two ride together in
+ * one `.header-trail` span rather than as two flex items, which keeps the
+ * spinner in an inline formatting context and with it the `-0.15em` drop this
+ * box drew the glyph with before the row became a flex container.
+ *
+ * The header keeps its 2000-character preview, but `title` holds the original
+ * command or path, so a clipped or truncated one can still be inspected. The
+ * clip is a collapsed-state rule only:
+ * expanding restores the wrapping line unchanged, and every collapsed box clips
+ * — a header that stayed wrapped until the first output chunk landed used to
+ * change height in the middle of a run.
  */
-function toolHeaderHtml(
+function toolHeaderParts(
 	name: string,
 	args: JsonRecord,
 	spinner: string,
 	hint: string,
-): string {
+): { html: string; title: string } {
 	// The spinner goes at the end of the line, never at the start: a leading
 	// inline element costs the header its column position when the call settles
 	// and it is removed, which shifts `$ command` (or the tool name) by the
 	// spinner's width in the same frame the box changes colour. Trailing, it
 	// vanishes into the line that was there anyway and nothing moves.
 	if (name === "bash") {
-		const command = truncate(stringValue(args.command), MAX_TOOL_TARGET_LENGTH);
-		return `<div class="tool-command">$ ${escapeHtml(command)}${hint}${spinner}</div>`;
+		const command = stringValue(args.command);
+		const preview = `$ ${truncate(command, MAX_TOOL_TARGET_LENGTH)}`;
+		return {
+			html: `<div class="tool-command"><span class="header-text">${escapeHtml(preview)}</span><span class="header-trail">${hint}${spinner}</span></div>`,
+			title: `$ ${command}`,
+		};
 	}
-	const target = truncate(toolTarget(args), MAX_TOOL_TARGET_LENGTH);
+	const target = toolTarget(args);
 	const targetHtml = target
-		? ` <span class="tool-path">${escapeHtml(target)}</span>`
+		? ` <span class="tool-path">${escapeHtml(truncate(target, MAX_TOOL_TARGET_LENGTH))}</span>`
 		: "";
-	return `<div class="tool-header"><span class="tool-name">${escapeHtml(name)}</span>${targetHtml}${hint}${spinner}</div>`;
+	return {
+		html: `<div class="tool-header"><span class="header-text"><span class="tool-name">${escapeHtml(name)}</span>${targetHtml}</span><span class="header-trail">${hint}${spinner}</span></div>`,
+		title: target ? `${name} ${target}` : name,
+	};
 }
 
 const MAX_TOOL_OUTPUT_LENGTH = 20_000;

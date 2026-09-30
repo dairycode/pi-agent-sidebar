@@ -865,8 +865,8 @@
 	border-color: var(--pi-theme-tool-error-border);
 }
 
-/* Bold, wrapping, never ellipsised. For a shell call the command *is* the
-   content: a clipped one cannot be checked against what actually ran. */
+/* Bold and wrapping when the box is expanded; collapsed, the one-line clip
+   below ellipsises the header and the full text rides in the box's `title`. */
 .tool-command,
 .tool-header {
 	min-width: 0;
@@ -941,6 +941,52 @@
 .tool-call.expandable:not(.expanded) .tool-output,
 .tool-call.expandable:not(.expanded) .tool-diff {
 	display: none;
+}
+
+/* Collapsed, the box is one line even when its command is not: the header text
+   yields its width to the `output` hint and the running spinner, which stay
+   pinned at the end of the line instead of being clipped along with it. Both
+   carry state the tint cannot — forced-colours drops the tint entirely, and a
+   still frame cannot tell a running call from a settled one — so they are the
+   last things that may leave the line. The skill card's header follows the same
+   contract, which is why the rule reaches across both blocks.
+
+   Every collapsed box clips, `expandable` or not, and that is a rule about
+   time rather than about state: a call is drawn before its output exists, so a
+   clip scoped to boxes that already have a body let a long command arrive
+   wrapped to three lines and then snap to one the moment the first chunk
+   landed — a flicker in the middle of a run, exactly where the reader is
+   watching. Nothing else carries its height: the header is the same line in
+   both frames, and the hint only appears at the end of it.
+
+   What that costs the box with no body is the click that would have brought
+   the clipped part back, so its full text rides in the box's `title` instead —
+   alongside the DOM text, which still carries it for selection, copy and the
+   accessible name. A box that does have a body keeps both: the clip is a
+   collapsed-state rule only, and expanding restores the wrapping line. */
+.tool-call:not(.expanded) .tool-command,
+.tool-call:not(.expanded) .tool-header,
+.skill-block:not(.expanded) .skill-header {
+	display: flex;
+	align-items: baseline;
+	white-space: nowrap;
+}
+
+/* `min-width: 0` is load-bearing: a flex item will not shrink past its
+   min-content width without it, and an overflowing box draws no ellipsis. */
+.tool-call:not(.expanded) .header-text,
+.skill-block:not(.expanded) .header-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The hint and the spinner are one flex item, not two: `flex` would blockify
+   the spinner and drop its `vertical-align`, so a running call's glyph would sit
+   a couple of pixels higher than the same glyph in a box that never clips. */
+.tool-call:not(.expanded) .header-trail,
+.skill-block:not(.expanded) .header-trail {
+	flex: 0 0 auto;
 }
 
 .tool-call.expandable:focus-visible {

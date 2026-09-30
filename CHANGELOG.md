@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.8.3
+
+- Draw a run of reasoning parts as one section. GPT reports reasoning as a
+  series of summary parts and pi hands each part over as its own `thinking`
+  block, so a single answer opened a stack of collapsed "Thinking" rows — most
+  of them three or four lines of headline — and reading the reasoning meant
+  opening every part of it in turn. Adjacent parts now share one section, joined
+  by a blank line and streamed as one block, so one click opens the whole run.
+  Only a part that prose or a tool call separates from the next keeps its own
+  section: the visible blocks between them are what keep the activity timeline
+  in order, and the merge never crosses one.
+
+- Fold a collapsed tool box or skill card onto one line, whatever it holds. A
+  long shell command or path wrapped to three lines in a 380px sidebar, so a run
+  of calls buried the prose that explains them — the thing collapsing a settled
+  call exists to prevent. The collapsed line now ellipsises instead of wrapping,
+  and the `output` hint, the `N lines` count and the running spinner keep their
+  place at the end of that line rather than being clipped along with the text.
+  Every collapsed box clips, running or settled: a call is drawn before its
+  output exists, so a clip that waited for a body let a long command arrive
+  wrapped to three lines and snap to one mid-run, which read as a flicker right
+  where the reader was watching. A box with nothing to open has no click that
+  would bring the clipped part back, so the full text rides in `title` alongside
+  the DOM text that selection, copy and assistive tech read; expanding restores
+  the wrapping line unchanged.
+
 ## 0.8.2
 
 - Fold "Duplicate this session" and "Fork from an earlier prompt" into one

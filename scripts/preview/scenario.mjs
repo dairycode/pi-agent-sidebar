@@ -115,21 +115,30 @@ const SAMPLE_MESSAGES = [
 				name: "edit",
 				arguments: { path: "webview/styles/composer.css" },
 			},
+			// Long enough to overrun one line. A settled, expandable call this size is
+			// the only coverage the collapsed one-line clip gets in the preview — and
+			// the only place the pinned hint and spill of the clipped header can be
+			// seen to share a line.
 			{
 				type: "toolCall",
 				id: "call-bash",
 				name: "bash",
-				arguments: { command: "npm run typecheck" },
+				arguments: {
+					command: 'npm run typecheck 2>&1 | grep -E "error TS" | head -20',
+				},
 			},
 			// Deliberately without a matching result below: a call that has not
 			// settled wears the same green as a settled one — the spinner is what
 			// says it is still running — and it is the base `.tool-call` rule
-			// rather than a modifier class.
+			// rather than a modifier class. Its header overruns the line too, which
+			// is the point: a collapsed box clips from its first frame, before there
+			// is anything to expand, so the preview holds a one-line box whose
+			// clipped command lives only in its `title` and in the DOM.
 			{
 				type: "toolCall",
 				id: "call-grep",
 				name: "grep",
-				arguments: { pattern: "inputPadding", path: "webview/styles" },
+				arguments: { pattern: "inputPadding|control-size|send-button" },
 			},
 			{
 				type: "text",

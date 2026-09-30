@@ -49,6 +49,23 @@ test("streaming thinking paragraphs keep their settled spacing", async () => {
 	);
 });
 
+test("a collapsed tool box clips from its first frame, body or not", async () => {
+	const css = await readFile("webview/styles/transcript.css", "utf8");
+	// The clip must not be qualified by `.expandable`: a call is drawn before its
+	// output exists, and a box that only starts clipping once it has a body
+	// changes height in the middle of the run.
+	assert.match(
+		css,
+		/\.tool-call:not\(\.expanded\) \.tool-command,\s*\.tool-call:not\(\.expanded\) \.tool-header,\s*\.skill-block:not\(\.expanded\) \.skill-header\s*\{\s*display: flex;\s*align-items: baseline;\s*white-space: nowrap;\s*\}/u,
+		"every collapsed header stays on one line",
+	);
+	assert.match(
+		css,
+		/\.tool-call:not\(\.expanded\) \.header-text,\s*\.skill-block:not\(\.expanded\) \.header-text\s*\{\s*min-width: 0;\s*overflow: hidden;\s*text-overflow: ellipsis;\s*\}/u,
+		"the clipped header needs a shrinkable box to draw its ellipsis in",
+	);
+});
+
 test("a new user turn gets a full-line boundary without moving the composer", async () => {
 	const [transcriptCss, composerCss, mainSource] = await Promise.all([
 		readFile("webview/styles/transcript.css", "utf8"),

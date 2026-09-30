@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.9.0
+
+- Let a running call say so on the box itself: the border breathes between a
+  faint and the full-strength pending edge while a halo swells and fades around
+  it, and stops the frame the call settles — the border drops from the breath's
+  own full strength straight to the settled green, with nothing entering or
+  leaving the header line. The header now carries no status glyph at all, only
+  the `output` column it always ends in: the column is the same width in every
+  box, the header text ellipsises into the space it leaves, so the clip lands at
+  the same offset in every box instead of wherever that box's path happened to
+  end, and a call with nothing to reveal keeps the column empty rather than
+  absent. The spinner used to sit in that column and hand its width back to the
+  text the frame it left, sliding the `output` hint toward the edge and moving
+  the ellipsis with it, exactly where the reader was watching the command run.
+  Both ends of the breath derive from the palette's pending border, which is
+  also the box's static running edge — the key frames merely overshoot it — so
+  `prefers-reduced-motion` can drop the animation and the edge still reads as
+  pending, and forced-colours mode, which overrides tint and halo both,
+  carries the state in a dashed edge instead.
+
+- Keep an answer where pi put it when the next message arrives while the answer
+  is still being revealed. A follow-up prompt is handed to pi the moment the run
+  that produced the answer stops, which is while the tail of that answer is still
+  animating in: the prompt was spliced above the reply it follows, and the reply
+  then settled underneath it. The reader saw the question jump over the answer,
+  and the turn reshuffle once more when pi's own order arrived. The reply now
+  records the place it belongs at from its first frame, and both the live row and
+  the row it settles into are put back there. A steering message sent mid-run
+  takes the same path.
+
+- Stop trusting a state refresh — a rename, a model change, a reconnect — to
+  carry the answer pi is streaming. It never does: pi holds that reply outside
+  the message list until it ends, so the newest assistant message a snapshot
+  lists is a finished one. The view resumed that older answer in the streaming
+  reply's place and appended every later delta to its text. A snapshot now hands
+  the reply the view is already revealing over to pi's copy once pi has one,
+  keeps it on screen while it is still arriving, and lets a view that reloaded
+  mid-reply show the text a delta carries at once instead of waiting for the end.
+
 ## 0.8.3
 
 - Draw a run of reasoning parts as one section. GPT reports reasoning as a
@@ -478,26 +517,26 @@
 ## 0.5.0
 
 - Add a level-by-level `@` workspace browser to the composer: each view shows
- only the current directory's immediate files and folders, selecting a folder
- descends into it, and `Enter` or `Tab` inserts the selected file as the same
- inline `@path` reference Explorer and drag-and-drop already produce. VS Code's
- `files.exclude` and `search.exclude` settings apply.
+  only the current directory's immediate files and folders, selecting a folder
+  descends into it, and `Enter` or `Tab` inserts the selected file as the same
+  inline `@path` reference Explorer and drag-and-drop already produce. VS Code's
+  `files.exclude` and `search.exclude` settings apply.
 - Preserve the current in-memory contents when **Explain This File** targets an
- unsaved or untitled editor, and reopen submitted references by their canonical
- URI so files in other multi-root workspace folders navigate correctly.
+  unsaved or untitled editor, and reopen submitted references by their canonical
+  URI so files in other multi-root workspace folders navigate correctly.
 - Add workspace files to the composer as clickable inline `@path` references
- through an Explorer context-menu action or by holding `Shift` and dragging
- from VS Code Explorer. File and selection references share the same composer
- lifecycle and open with `Cmd`/`Ctrl`-click or `F12`.
+  through an Explorer context-menu action or by holding `Shift` and dragging
+  from VS Code Explorer. File and selection references share the same composer
+  lifecycle and open with `Cmd`/`Ctrl`-click or `F12`.
 - Keep the `+` picker distinct from drag-and-drop: picked files and images render
- as removable attachment chips, while dropped files enter the text composer as
- inline references.
+  as removable attachment chips, while dropped files enter the text composer as
+  inline references.
 - Make the entire Pi sidebar a file drop target and show a compact,
- Codex-inspired full-surface overlay with a subtle accent tint and an
- edge-to-edge, square dashed drop boundary that reuses the sidebar's accent.
+  Codex-inspired full-surface overlay with a subtle accent tint and an
+  edge-to-edge, square dashed drop boundary that reuses the sidebar's accent.
 - Expose **Pi Agent: Focus Input with Selection** above **Explain Selection**
- in the editor context submenu, reusing the existing inline `@path#line`
- selection flow without inserting a preset instruction.
+  in the editor context submenu, reusing the existing inline `@path#line`
+  selection flow without inserting a preset instruction.
 
 ## 0.4.4
 

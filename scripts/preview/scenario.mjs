@@ -32,7 +32,8 @@ const SAMPLE_COMMANDS = [
 	},
 	{
 		name: "gather-context-and-clarify",
-		description: "Use subagents to gather context, then ask clarifying questions",
+		description:
+			"Use subagents to gather context, then ask clarifying questions",
 		source: "prompt",
 		location: "user",
 	},
@@ -128,8 +129,8 @@ const SAMPLE_MESSAGES = [
 				},
 			},
 			// Deliberately without a matching result below: a call that has not
-			// settled wears the same green as a settled one — the spinner is what
-			// says it is still running — and it is the base `.tool-call` rule
+			// settled wears the same green as a settled one — the breathing border is
+			// what says it is still running — and it is the base `.tool-call` rule
 			// rather than a modifier class. Its header overruns the line too, which
 			// is the point: a collapsed box clips from its first frame, before there
 			// is anything to expand, so the preview holds a one-line box whose
@@ -140,10 +141,23 @@ const SAMPLE_MESSAGES = [
 				name: "grep",
 				arguments: { pattern: "inputPadding|control-size|send-button" },
 			},
+			// Started and streaming with output already in hand, so the preview shows
+			// a running, expandable card: its border breathes while the ones above sit
+			// still, and its `output` word waits invisibly in the right-edge column
+			// until the call lands. The box below (`call-grep`) shows the other
+			// running case, a call with no body yet, whose column holds no ink at all.
+			{
+				type: "toolCall",
+				id: "call-build",
+				name: "bash",
+				arguments: {
+					command:
+						"npm run build --workspace packages/pi-agent-sidebar && npm run preview",
+				},
+			},
 			{
 				type: "text",
-				text:
-					"## What changed\n\nThe toolbar now shares one control size, so `--pi-control-size` is the only knob:\n\n- pickers and icon buttons resolve to the same box\n- the send button stops setting the row height\n- a narrow sidebar wraps instead of clipping\n\n```css\n.composer-toolbar {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 4px; /* one grid step */\n}\n```\n\nTypecheck passes; see the failing lint run above for the unrelated `find` call.",
+				text: "## What changed\n\nThe toolbar now shares one control size, so `--pi-control-size` is the only knob:\n\n- pickers and icon buttons resolve to the same box\n- the send button stops setting the row height\n- a narrow sidebar wraps instead of clipping\n\n```css\n.composer-toolbar {\n\tdisplay: flex;\n\talign-items: center;\n\tgap: 4px; /* one grid step */\n}\n```\n\nTypecheck passes; see the failing lint run above for the unrelated `find` call.",
 			},
 		],
 	},
@@ -157,8 +171,7 @@ const SAMPLE_MESSAGES = [
 		content: [
 			{
 				type: "text",
-				text:
-					"## Diagram\n\nA mermaid fence renders as a diagram, with the source kept one click away:\n\n```mermaid\nflowchart LR\n  prompt[Ask a question with a label long enough to wrap] --> runtime{pi}\n  runtime -->|edits| files[(files)]\n  runtime -->|answers| transcript[first line<br/>second line]\n```\n\nA diagram keeps its natural width and the frame scrolls, because a 900px flowchart scaled into a 300px column is unreadable at any zoom.",
+				text: "## Diagram\n\nA mermaid fence renders as a diagram, with the source kept one click away:\n\n```mermaid\nflowchart LR\n  prompt[Ask a question with a label long enough to wrap] --> runtime{pi}\n  runtime -->|edits| files[(files)]\n  runtime -->|answers| transcript[first line<br/>second line]\n```\n\nA diagram keeps its natural width and the frame scrolls, because a 900px flowchart scaled into a 300px column is unreadable at any zoom.",
 			},
 		],
 	},
@@ -170,8 +183,7 @@ const SAMPLE_MESSAGES = [
 		content: [
 			{
 				type: "text",
-				text:
-					"**pi-lens** re-indexed 214 files in 0.8s.\n\n3 rules skipped: `no-floating-promises` is not configured for this workspace.",
+				text: "**pi-lens** re-indexed 214 files in 0.8s.\n\n3 rules skipped: `no-floating-promises` is not configured for this workspace.",
 			},
 		],
 	},
@@ -200,8 +212,7 @@ const SAMPLE_TOOL_RESULTS = [
 		timestamp: 1_756_000_032_000,
 		content: [{ type: "text", text: "Applied 1 edit" }],
 		details: {
-			diff:
-				"@@ -12,6 +12,7 @@\n .composer-toolbar {\n \tdisplay: flex;\n+\talign-items: center;\n-\tgap: 6px;\n+\tgap: 4px;\n }",
+			diff: "@@ -12,6 +12,7 @@\n .composer-toolbar {\n \tdisplay: flex;\n+\talign-items: center;\n-\tgap: 6px;\n+\tgap: 4px;\n }",
 		},
 	},
 	{
@@ -212,8 +223,7 @@ const SAMPLE_TOOL_RESULTS = [
 		content: [
 			{
 				type: "text",
-				text:
-					"webview/main.ts(214,9): error TS2554: Expected 2 arguments, but got 1.",
+				text: "webview/main.ts(214,9): error TS2554: Expected 2 arguments, but got 1.",
 			},
 		],
 	},
@@ -291,6 +301,81 @@ const snapshot = {
 const post = (message) => window.postMessage(message, "*");
 post(snapshot);
 post({ type: "connection", phase: "ready" });
+
+// The streaming call in the sample: pi hands over a partial result as soon as a
+// tool starts, which is what makes a running box expandable. Every tool header
+// ends in the same right-edge column holding the 'output' word, and the call's
+// state is the box's border: this card's border breathes while it runs, the ones
+// above have landed and sit still. Posted
+// after the snapshot, which clears live tools.
+post({
+	type: "rpcEvent",
+	event: {
+		type: "tool_execution_start",
+		toolCallId: "call-build",
+		toolName: "bash",
+		args: {
+			command: "npm run build --workspace packages/pi-agent-sidebar && npm run preview",
+		},
+	},
+});
+post({
+	type: "rpcEvent",
+	event: {
+		type: "tool_execution_update",
+		toolCallId: "call-build",
+		toolName: "bash",
+		partialResult: {
+			content: [
+				{
+					type: "text",
+					text: "transforming webview/main.ts…\nwriting dist/webview/main.js 316.4kb",
+				},
+			],
+		},
+	},
+});
+
+// A round of parallel calls mid-run: several boxes breathing at once is the one
+// thing the default state cannot show. Each event lands on a call the sample
+// already carries, so the still-settled boxes above and below keep their role as
+// the contrast — and the three running ones hold different amounts of progress,
+// the way a real turn's calls rarely finish together:
+//   call-edit  — partial result in hand, a running box the reader can open;
+//   call-grep  — started, no body yet, the column empty while the border moves;
+//   call-build — posted above, partway through its output.
+// Posts must follow the snapshot, which clears live tools.
+if (state === "running") {
+	post({
+		type: "rpcEvent",
+		event: {
+			type: "tool_execution_start",
+			toolCallId: "call-edit",
+			toolName: "edit",
+			args: { path: "webview/styles/composer.css" },
+		},
+	});
+	post({
+		type: "rpcEvent",
+		event: {
+			type: "tool_execution_update",
+			toolCallId: "call-edit",
+			toolName: "edit",
+			partialResult: {
+				content: [{ type: "text", text: "Applied 1 edit — validating…" }],
+			},
+		},
+	});
+	post({
+		type: "rpcEvent",
+		event: {
+			type: "tool_execution_start",
+			toolCallId: "call-grep",
+			toolName: "grep",
+			args: { pattern: "inputPadding|control-size|send-button" },
+		},
+	});
+}
 
 // A throwing check aborts the deferred body before it can mark the document
 // ready, which on its own tells the caller only that nothing rendered. The

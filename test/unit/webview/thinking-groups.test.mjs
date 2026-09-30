@@ -13,7 +13,7 @@ test("a run of adjacent thinking blocks becomes one group", async () => {
 	const loaded = await loadGroups();
 	try {
 		const { thinkingGroups, thinkingGroupKeyIndex } = loaded.module;
-		// The shape GPT streams: one `thinking` block per reasoning part.
+		// The shape some models stream: one `thinking` block per reasoning part.
 		const blocks = [
 			{ type: "thinking", thinking: "first part" },
 			{ type: "thinking", thinking: "second part" },
@@ -61,7 +61,11 @@ test("group text and key lookup avoid eager reasoning reads", async () => {
 			},
 		];
 		const groups = thinkingGroups(blocks);
-		assert.equal(reads, 0, "group structure must not build hidden reasoning text");
+		assert.equal(
+			reads,
+			0,
+			"group structure must not build hidden reasoning text",
+		);
 		assert.equal(thinkingGroupKeyIndex(blocks, 1), 0);
 		assert.equal(reads, 0, "key lookup must not read reasoning text");
 		assert.equal(groups[0].text, "first part\n\nsecond part");
@@ -82,7 +86,11 @@ test("a blank text block does not split a run", async () => {
 			{ type: "text", text: "  \n " },
 			{ type: "thinking", thinking: "second part" },
 		]);
-		assert.equal(groups.length, 1, "an invisible block must not split the section");
+		assert.equal(
+			groups.length,
+			1,
+			"an invisible block must not split the section",
+		);
 		assert.equal(groups[0].blocks.length, 2);
 		assert.equal(groups[0].endIndex, 3);
 	} finally {

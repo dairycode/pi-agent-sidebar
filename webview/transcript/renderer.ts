@@ -212,7 +212,10 @@ export function messageHtml(
 			},
 		)}</div>`;
 	}
-	if (message.role === "compactionSummary" || message.role === "branchSummary") {
+	if (
+		message.role === "compactionSummary" ||
+		message.role === "branchSummary"
+	) {
 		return '<div class="context-divider"><i class="codicon codicon-fold"></i> Context summarized</div>';
 	}
 	if (message.role === "custom" && message.display !== false) {
@@ -310,7 +313,8 @@ function markerSpanHtml(marker: InlineMarker): string {
 }
 
 function renderUserBodyHtml(text: string, markers: InlineMarker[]): string {
-	const inline: Array<{ start: number; end: number; marker: InlineMarker }> = [];
+	const inline: Array<{ start: number; end: number; marker: InlineMarker }> =
+		[];
 	const leftover: InlineMarker[] = [];
 	let searchFrom = 0;
 	for (const marker of markers) {
@@ -453,9 +457,9 @@ export function assistantMessageSections(
 	expandedThinkingKeys?: ReadonlySet<string>,
 ): AssistantMessageSection[] {
 	const blocks = Array.isArray(message.content) ? message.content : [];
-	// GPT reports reasoning as a series of parts, one `thinking` block each. They
-	// are drawn as one section per run of them; the run's first block is the one
-	// that carries the section.
+	// Some models report reasoning as a series of parts, one `thinking` block
+	// each. They are drawn as one section per run of them; the run's first block
+	// is the one that carries the section.
 	const thinkingGroupsByStart = new Map<number, ThinkingGroup>();
 	for (const group of thinkingGroups(blocks)) {
 		thinkingGroupsByStart.set(group.startIndex, group);
@@ -556,7 +560,8 @@ export function assistantMessageSections(
 				.slice(group.endIndex)
 				.find(
 					(candidate) =>
-						candidate.type !== "text" || (candidate.text ?? "").trim().length > 0,
+						candidate.type !== "text" ||
+						(candidate.text ?? "").trim().length > 0,
 				);
 			const isActiveThinking = streaming && !expanded && !nextVisibleBlock;
 			thinkingIndex += group.blocks.length;
@@ -564,7 +569,9 @@ export function assistantMessageSections(
 				"thinking",
 				`thinking:${group.blocks
 					.map(objectIdentity)
-					.join(".")}:${streamingState}:${expanded ? 1 : 0}:active:${isActiveThinking ? 1 : 0}:omit:${omitThinkingText ? 1 : 0}`,
+					.join(
+						".",
+					)}:${streamingState}:${expanded ? 1 : 0}:active:${isActiveThinking ? 1 : 0}:omit:${omitThinkingText ? 1 : 0}`,
 				() =>
 					thinkingBlockHtml(
 						thinkingKey,
@@ -719,12 +726,12 @@ function thinkingBlockHtml(
  *
  * Two things pi can leave out and this cannot. Colour is pi's only status
  * channel, which fails WCAG 1.4.1 on its own, so the state is also carried as
- * visually-hidden text and `running` keeps a spinner — a still frame cannot
- * otherwise distinguish "in progress" from "finished". The status rides in a
- * `.sr-only` span rather than an `aria-label` so the accessible name still
- * includes the tool name and path the header shows. And pi toggles output with
- * an inline `onclick`, which this webview's CSP forbids, so the box is marked
- * with `data-expandable` for the delegated handler in `main.ts`.
+ * visually-hidden text and `running` keeps the box's border breathing — a still
+ * frame cannot otherwise distinguish "in progress" from "finished". The status
+ * rides in a `.sr-only` span rather than an `aria-label` so the accessible name
+ * still includes the tool name and path the header shows. And pi toggles output
+ * with an inline `onclick`, which this webview's CSP forbids, so the box is
+ * marked with `data-expandable` for the delegated handler in `main.ts`.
  *
  * Collapsed to its header by default. A settled call is a record of something
  * that already happened, and a transcript of expanded outputs buries the prose
@@ -747,21 +754,22 @@ function toolCallHtml(
 			? live.result !== undefined || live.output || live.diff
 			: result !== undefined,
 	);
-	const spinner =
-		status === "running"
-			? '<i class="codicon codicon-loading codicon-modifier-spin tool-spinner" aria-hidden="true"></i>'
-			: "";
+	// The call's status lives on the box itself — the border breathes while the
+	// call runs (`transcript.css`) — so the header carries no status glyph. The
+	// trail is only the `output` word: it reserves the column every header clips
+	// against, and its ink is held back while the call runs, so the word appears
+	// exactly when the border stops breathing without the line ever moving.
+	const hint = '<span class="tool-hint">output</span>';
 	const statusNote = `<span class="sr-only">${escapeHtml(`${friendlyToolName(name)}: ${toolStatusLabel(status)}`)}</span>`;
 	if (!hasBody) {
-		const header = toolHeaderParts(name, args, spinner, "");
+		const header = toolHeaderParts(name, args, hint);
 		return `<div class="activity-item tool-call ${status}" title="${escapeHtml(header.title)}">${statusNote}${header.html}</div>`;
 	}
 	// The collapsed hot path carries only the header. Large output and diffs are
 	// materialized by the delegated click handler when the reader asks to expand.
 	// Avoid even counting lines here: tool_end must remain constant-time with
 	// respect to result size so the next assistant text frame is never delayed.
-	const hint = '<span class="tool-hint">output</span>';
-	const header = toolHeaderParts(name, args, spinner, hint);
+	const header = toolHeaderParts(name, args, hint);
 	// `title` is the pointer's way back to what the collapsed line clipped.
 	return `<div class="activity-item tool-call ${status} expandable" data-tool-key="${escapeHtml(id)}" data-tool-body="lazy" data-expandable="tool" role="button" tabindex="0" aria-expanded="false" title="${escapeHtml(header.title)}">${statusNote}${header.html}</div>`;
 }
@@ -814,11 +822,12 @@ const MAX_TOOL_TARGET_LENGTH = 2000;
  * argument.
  *
  * The text rides in one `.header-text` span so a collapsed box can clip it to a
- * single line (`transcript.css`) while the `output` hint and the spinner keep
- * their place at the end of that line. Those two ride together in
- * one `.header-trail` span rather than as two flex items, which keeps the
- * spinner in an inline formatting context and with it the `-0.15em` drop this
- * box drew the glyph with before the row became a flex container.
+ * single line (`transcript.css`) while the `output` hint holds the row's right
+ * edge. The hint rides in one `.header-trail` span, pinned there by
+ * `transcript.css`, so every header clips at the same offset — the column's own
+ * width — instead of wherever that box's path happened to end. The call's state
+ * itself is the box's border breathing (`transcript.css`), so the header carries
+ * no glyph of its own.
  *
  * The header keeps its 2000-character preview, but `title` holds the original
  * command or path, so a clipped or truncated one can still be inspected. The
@@ -830,19 +839,16 @@ const MAX_TOOL_TARGET_LENGTH = 2000;
 function toolHeaderParts(
 	name: string,
 	args: JsonRecord,
-	spinner: string,
 	hint: string,
 ): { html: string; title: string } {
-	// The spinner goes at the end of the line, never at the start: a leading
-	// inline element costs the header its column position when the call settles
-	// and it is removed, which shifts `$ command` (or the tool name) by the
-	// spinner's width in the same frame the box changes colour. Trailing, it
-	// vanishes into the line that was there anyway and nothing moves.
+	// The trail rides the row's right edge, never its start: the header text
+	// keeps the space to its left and ellipsises into it, so the clip offset is
+	// the column's own width — the same in every box.
 	if (name === "bash") {
 		const command = stringValue(args.command);
 		const preview = `$ ${truncate(command, MAX_TOOL_TARGET_LENGTH)}`;
 		return {
-			html: `<div class="tool-command"><span class="header-text">${escapeHtml(preview)}</span><span class="header-trail">${hint}${spinner}</span></div>`,
+			html: `<div class="tool-command"><span class="header-text">${escapeHtml(preview)}</span><span class="header-trail">${hint}</span></div>`,
 			title: `$ ${command}`,
 		};
 	}
@@ -851,7 +857,7 @@ function toolHeaderParts(
 		? ` <span class="tool-path">${escapeHtml(truncate(target, MAX_TOOL_TARGET_LENGTH))}</span>`
 		: "";
 	return {
-		html: `<div class="tool-header"><span class="header-text"><span class="tool-name">${escapeHtml(name)}</span>${targetHtml}</span><span class="header-trail">${hint}${spinner}</span></div>`,
+		html: `<div class="tool-header"><span class="header-text"><span class="tool-name">${escapeHtml(name)}</span>${targetHtml}</span><span class="header-trail">${hint}</span></div>`,
 		title: target ? `${name} ${target}` : name,
 	};
 }
@@ -866,7 +872,8 @@ function renderDiffBlock(diff: string): string {
 	const rows = shown
 		.map((line) => {
 			const marker = line.charAt(0);
-			const kind = marker === "+" ? "add" : marker === "-" ? "remove" : "context";
+			const kind =
+				marker === "+" ? "add" : marker === "-" ? "remove" : "context";
 			return `<div class="diff-line diff-${kind}"><span class="diff-text">${escapeHtml(line) || "&nbsp;"}</span></div>`;
 		})
 		.join("");
@@ -991,7 +998,9 @@ function stabilizeStreamingToken(token: Token): Token | undefined {
 		if (!lastItem) return token;
 		if (isEmptyStreamingListItem(lastItem)) {
 			const stableItems = list.items.slice(0, -1);
-			return stableItems.length > 0 ? { ...list, items: stableItems } : undefined;
+			return stableItems.length > 0
+				? { ...list, items: stableItems }
+				: undefined;
 		}
 		const stableItem = stabilizeStreamingListItem(lastItem);
 		if (!stableItem) return token;
@@ -1088,7 +1097,10 @@ function stabilizeStreamingLink(source: string): string {
 	// Incomplete labels and destinations are the only link forms that marked may
 	// reinterpret retroactively. Show link labels as text, but never leak brackets,
 	// destination URLs, or image alt text that the completed construct consumes.
-	let stable = source.replace(/(!?)\[([^\]\n]*)\]\([^\n)]*$/u, replaceCandidate);
+	let stable = source.replace(
+		/(!?)\[([^\]\n]*)\]\([^\n)]*$/u,
+		replaceCandidate,
+	);
 	stable = stable.replace(/(!?)\[([^\]\n]*)\]$/u, replaceCandidate);
 	return stable.replace(/(!?)\[([^\]\n]*)$/u, replaceCandidate);
 }
@@ -1161,7 +1173,7 @@ function maskUnmatchedRuns(
 	minimumLength = 1,
 ): string {
 	const runs: DelimiterRun[] = [];
-	for (let index = 0; index < source.length; ) {
+	for (let index = 0; index < source.length;) {
 		if (source[index] !== marker || isEscapedAt(source, index)) {
 			index += 1;
 			continue;
@@ -1220,7 +1232,8 @@ function maskUnmatchedRuns(
 	if (
 		runs.every(
 			(run) =>
-				run.matched || (!run.canOpen && !run.canClose && run.end < source.length),
+				run.matched ||
+				(!run.canOpen && !run.canClose && run.end < source.length),
 		)
 	) {
 		return source;

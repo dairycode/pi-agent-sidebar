@@ -261,6 +261,10 @@
 	border-radius: var(--pi-radius-content);
 	background: var(--pi-theme-user-message-bg);
 	white-space: pre-wrap;
+	/* The reader's own words, so the same width the composer types at
+	   (`composer.css`): pasted text keeps the indentation it had in the editor
+	   instead of the browser's default eight. */
+	tab-size: 4;
 }
 
 .user-message-text {
@@ -835,10 +839,10 @@
    Running and settled calls share that surface, and `.success` has no rule of
    its own: a call that arrives wearing pi's `toolPendingBg` and turns green the
    moment it settles flickers, and a round of calls settling in sequence reads
-   as a glitch rather than as progress. "In progress" is the spinner's job and
-   the `.sr-only` note's — the two channels colour could never carry alone.
-   `toolPendingBg` stays in the palette; the custom-message surface is where it
-   went (see `pi-theme.css`). */
+   as a glitch rather than as progress. "In progress" is the breathing border's
+   job and the `.sr-only` note's — the two channels colour could never carry
+   alone. `toolPendingBg` stays in the palette; the custom-message surface is
+   where it went (see `pi-theme.css`). */
 .tool-call {
 	min-width: 0;
 	/* 10px, not the 11px `.assistant-text` uses: the border takes the other 1px,
@@ -882,25 +886,64 @@
 	word-break: break-all;
 }
 
-/* Colour alone cannot carry "in progress" in a still frame, and it is not an
-   accessible status channel on its own; the box also names its state in
-   `aria-label`. Trailing, so its removal when the call settles shifts nothing.
+/* The call's status lives on the box itself: while the call runs, the border
+   breathes between a faint and the full-strength pending edge while a halo
+   swells and fades around it.
 
-   The three-class selector is load-order insurance, not style: codicon.css is
-   linked after this file and its `.codicon[class*='codicon-']` (two classes of
-   specificity) sets `font: ... 16px/1 codicon` to an icon that would otherwise
-   win a tie and grow the glyph past the chrome text, inflating the header row.
-   With the ink locked to the chrome size and line-height 1, the glyph no
-   longer participates in line-box sizing. */
-.activity-item.tool-call .tool-spinner {
-	display: inline-block;
-	overflow: hidden;
-	margin-left: 5px;
-	height: 1em;
-	line-height: 1;
-	vertical-align: -0.15em;
-	font-size: var(--pi-font-chrome);
-	color: var(--pi-theme-border);
+   The header carries no status glyph, so nothing in the row ever enters or
+   leaves the layout — the `output` column every header clips against is the
+   only thing the trail holds, and it keeps its width in every state
+   (`visibility`, not `display`). The animation rides the state class, so it
+   stops the frame the call settles: the border drops from the breathing edge's
+   own full strength to the settled green, with no intermediate step to draw.
+
+   Both ends of the breath derive from `--pi-theme-tool-pending-border`: the
+   faint end mixes it toward transparent, the bright end is the token itself,
+   and the halo is the token at low strength. One decision per theme, in the
+   palette file where hex literals live.
+
+   The breath is the dynamic half of the status; the static halves are the
+   border tint itself and the screen-reader note the box carries
+   (`toolStatusLabel`). The declaration sitting under the animation is that
+   tint: key frames outrank it while the breath runs, and it is what a still
+   frame falls back on, so `prefers-reduced-motion` drops the animation
+   without silencing the state. An expanded box keeps breathing — the halo
+   occupies no line box, so the expanded header needs no exception here. */
+.tool-call.running {
+	animation: tool-breathe 1.8s ease-in-out infinite alternate;
+	/* The static half: overshadowed by the breath, left behind when it stops. */
+	border-color: var(--pi-theme-tool-pending-border);
+}
+
+@keyframes tool-breathe {
+	from {
+		border-color: color-mix(
+			in srgb,
+			var(--pi-theme-tool-pending-border) 45%,
+			transparent
+		);
+		box-shadow: 0 0 0 0 transparent;
+	}
+	to {
+		border-color: var(--pi-theme-tool-pending-border);
+		box-shadow: 0 0 0 3px
+			color-mix(in srgb, var(--pi-theme-tool-pending-border) 25%, transparent);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tool-call.running {
+		animation: none;
+	}
+}
+
+/* Forced-colours mode overrides both channels the breath rides — the border
+   colour is forced to the system edge and the halo is dropped — so the
+   running state rides the one border channel that survives: the style. */
+@media (forced-colors: active) {
+	.tool-call.running {
+		border-style: dashed;
+	}
 }
 
 .message-error {
@@ -930,6 +973,11 @@
 	line-height: var(--pi-line-ratio);
 	white-space: pre-wrap;
 	word-break: break-word;
+	/* Same width the markdown code blocks read at (`transcript.css`): tool
+	   output is read-only display, so a tab lands on two columns, not the
+	   browser's default eight — build logs and JSON dumps are where indented
+	   output spends most of a narrow sidebar on whitespace. */
+	tab-size: 2;
 }
 
 /* The whole box is the control, so the hit target is the header line the reader
@@ -944,12 +992,11 @@
 }
 
 /* Collapsed, the box is one line even when its command is not: the header text
-   yields its width to the `output` hint and the running spinner, which stay
-   pinned at the end of the line instead of being clipped along with it. Both
-   carry state the tint cannot — forced-colours drops the tint entirely, and a
-   still frame cannot tell a running call from a settled one — so they are the
-   last things that may leave the line. The skill card's header follows the same
-   contract, which is why the rule reaches across both blocks.
+   yields its width to the `output` hint, which stays pinned at the end of the
+   line instead of being clipped along with it. The hint marks what a click
+   would open — the one thing the clipped line cannot say for itself — so it is
+   the last thing that may leave the line. The skill card's header follows the
+   same contract, which is why the rule reaches across both blocks.
 
    Every collapsed box clips, `expandable` or not, and that is a rule about
    time rather than about state: a call is drawn before its output exists, so a
@@ -981,12 +1028,23 @@
 	text-overflow: ellipsis;
 }
 
-/* The hint and the spinner are one flex item, not two: `flex` would blockify
-   the spinner and drop its `vertical-align`, so a running call's glyph would sit
-   a couple of pixels higher than the same glyph in a box that never clips. */
+/* The trail is one flex item, so its width holds no matter what rides in it:
+   `flex` would blockify an inline child and resettle its vertical metrics
+   mid-line, which is exactly what the clipped header must never do. */
 .tool-call:not(.expanded) .header-trail,
 .skill-block:not(.expanded) .header-trail {
 	flex: 0 0 auto;
+}
+
+/* A tool trail rides the row's right edge rather than the end of its text. The
+   status column is the one part every tool box has in common, and pinning it is
+   what puts it in the same place in all of them: the header text keeps the space
+   to its left and ellipsises into it, so the clip offset is the column's own
+   width — the same everywhere — instead of wherever that box's path happened to
+   end. A skill card keeps its count beside the name it counts: that trail is
+   part of the title, not a status of its own. */
+.tool-call:not(.expanded) .header-trail {
+	margin-left: auto;
 }
 
 .tool-call.expandable:focus-visible {
@@ -994,13 +1052,32 @@
 	outline-offset: 2px;
 }
 
-/* Sits at the end of the header line and only means something while collapsed:
-   once the content is on screen, counting it is noise. */
+/* The word the slot stands for. It rides in every tool trail so the column has
+   the same width in every box; only its ink is held back, while the call runs
+   (the breathing border is the status then) or when there is no body to open.
+   It only means something while collapsed: once the content is on screen,
+   counting it is noise. The left margin is the gap between a clipped header's
+   ellipsis and the column: without it the word reads as the command's own
+   continuation — `script…output` — instead of a separate affordance. */
 .tool-hint {
 	margin-left: 7px;
 	color: var(--pi-theme-dim);
 	font-weight: 400;
 	font-style: italic;
+}
+
+/* One status at a time: while the call runs the breathing border is the box's
+   statement and the word waits invisible in its column. Showing both at once
+   would be two statements where the eye has room for one. */
+.tool-call.running .tool-hint {
+	visibility: hidden;
+}
+
+/* A call that never had a body to reveal keeps the column empty rather than
+   absent — the word is in every trail, so its width is what lines up the clip of
+   every header in the transcript. */
+.tool-call:not(.expandable) .tool-hint {
+	visibility: hidden;
 }
 
 .tool-call.expanded .tool-hint {
@@ -1094,6 +1171,9 @@
 	font-family: inherit;
 	font-size: inherit;
 	line-height: var(--pi-line-ratio);
+	/* Read-only display, so the display width the code blocks use — a diff of a
+	   tab-indented file keeps its shape beside the output above it. */
+	tab-size: 2;
 }
 
 .diff-line {

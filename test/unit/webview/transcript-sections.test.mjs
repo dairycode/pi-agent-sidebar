@@ -23,7 +23,8 @@ async function loadSections() {
 						{ filter: /^dompurify$/, namespace: "mock-markdown" },
 						() => ({
 							loader: "js",
-							contents: "export default { sanitize: (value) => String(value) };",
+							contents:
+								"export default { sanitize: (value) => String(value) };",
 						}),
 					);
 					buildApi.onLoad(
@@ -66,6 +67,80 @@ test("a collapsed tool box clips from its first frame, body or not", async () =>
 	);
 });
 
+test("a running call breathes on its border, the header carries only the output column", async () => {
+	const css = await readFile("webview/styles/transcript.css", "utf8");
+	// The call's status lives on the box: a running border breathes between a
+	// faint and the full-strength pending edge, with a halo swelling around it.
+	// The header carries no glyph, so nothing in the row enters or leaves the
+	// layout when the state changes — the `output` column every header clips
+	// against keeps its width, and the ellipsis never moves. Both ends of the
+	// breath derive from the palette's pending token, which is also the box's
+	// static running edge: key frames outrank it while the breath runs, so
+	// `prefers-reduced-motion` can drop the animation and the tint — with the
+	// sr-only note — still carries the state. Forced-colours mode overrides
+	// tint and halo both, so there the border style carries the state instead.
+	assert.match(
+		css,
+		/\.tool-call\.running\s*\{\s*animation: tool-breathe [^}]*\}/u,
+		"the running state is what starts the breath",
+	);
+	assert.match(
+		css,
+		/\.tool-call\.running\s*\{[^}]*border-color: var\(--pi-theme-tool-pending-border\);/u,
+		"the tint is the static half: a frame without the animation still reads as pending",
+	);
+	assert.match(
+		css,
+		/from\s*\{\s*border-color: color-mix\(\s*in srgb,\s*var\(--pi-theme-tool-pending-border\) 45%,\s*transparent\s*\);\s*box-shadow: 0 0 0 0 transparent;\s*\}/su,
+		"the faint end of the breath mixes the pending border toward transparent",
+	);
+	assert.match(
+		css,
+		/to\s*\{\s*border-color: var\(--pi-theme-tool-pending-border\);\s*box-shadow: 0 0 0 3px\s*color-mix\(\s*in srgb,\s*var\(--pi-theme-tool-pending-border\) 25%,\s*transparent\);\s*\}/su,
+		"the bright end is the pending border itself, with the halo at low strength",
+	);
+	assert.match(
+		css,
+		/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.tool-call\.running\s*\{\s*animation: none;\s*\}\s*\}/u,
+		"the animation can be dropped without silencing the state",
+	);
+	assert.match(
+		css,
+		/@media \(forced-colors: active\)\s*\{\s*\.tool-call\.running\s*\{\s*border-style: dashed;\s*\}\s*\}/u,
+		"forced-colours overrides tint and halo, so the surviving border channel carries the state",
+	);
+	assert.match(
+		css,
+		/\.tool-call\.running \.tool-hint\s*\{\s*visibility: hidden;\s*\}/u,
+		"the hint waits for the call to land instead of sharing the line",
+	);
+	assert.match(
+		css,
+		/\.tool-call:not\(\.expandable\) \.tool-hint\s*\{\s*visibility: hidden;\s*\}/u,
+		"a call with nothing to reveal keeps the column empty, not absent",
+	);
+	assert.match(
+		css,
+		/\.tool-call:not\(\.expanded\) \.header-trail\s*\{\s*margin-left: auto;\s*\}/u,
+		"the output column rides the row's right edge, not the end of its text",
+	);
+	assert.match(
+		css,
+		/\.tool-hint\s*\{[^}]*margin-left: 7px;/su,
+		"the word keeps a gap from the ellipsis it sits beside, or it reads as the command's own continuation",
+	);
+	assert.doesNotMatch(
+		css,
+		/\.skill-block:not\(\.expanded\) \.header-trail[^{]*\{[^}]*margin-left: auto/u,
+		"a skill card's line count stays beside the name it counts",
+	);
+	assert.doesNotMatch(
+		css,
+		/tool-spinner/u,
+		"the header carries no status glyph any more",
+	);
+});
+
 test("a new user turn gets a full-line boundary without moving the composer", async () => {
 	const [transcriptCss, composerCss, mainSource] = await Promise.all([
 		readFile("webview/styles/transcript.css", "utf8"),
@@ -80,7 +155,10 @@ test("a new user turn gets a full-line boundary without moving the composer", as
 		mainSource,
 		/classList\.toggle\("user-turn", message\.role === "user"\)/u,
 	);
-	assert.match(composerCss, /\.composer-shell\s*\{[^}]*padding: 7px 7px 9px;/su);
+	assert.match(
+		composerCss,
+		/\.composer-shell\s*\{[^}]*padding: 7px 7px 9px;/su,
+	);
 });
 
 test("only the active collapsed streaming thinking animates", async () => {
@@ -114,7 +192,11 @@ test("only the active collapsed streaming thinking animates", async () => {
 		]);
 		assert.doesNotMatch(beforeTool[0].html, /is-active-thinking/u);
 
-		const expanded = render([thinking], true, new Set(["message-1-thinking-0"]));
+		const expanded = render(
+			[thinking],
+			true,
+			new Set(["message-1-thinking-0"]),
+		);
 		assert.doesNotMatch(expanded[0].html, /is-active-thinking/u);
 		const settled = render([thinking], false);
 		assert.doesNotMatch(settled[0].html, /is-active-thinking/u);
@@ -424,7 +506,9 @@ test("sections carry the marker attributes the streaming patcher reads", async (
 			"the content hash must ride on the section root",
 		);
 		assert.ok(
-			sections[0].html.startsWith(`<div class="assistant-text" data-section-key`),
+			sections[0].html.startsWith(
+				`<div class="assistant-text" data-section-key`,
+			),
 			"the marker must be injected into the root tag, not a child",
 		);
 	} finally {

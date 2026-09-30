@@ -41,6 +41,7 @@ import {
 	TranscriptView,
 	type TranscriptEntry,
 } from "./transcript/transcriptView.js";
+import { insertReply, withLiveReply } from "./transcript/transcriptOrder.js";
 import { WORKSPACE_PATH_PATTERN } from "./transcript/workspacePaths.js";
 import {
 	assistantMessageSections,
@@ -138,6 +139,17 @@ interface UiState {
 	 */
 	titleSeed: string;
 	streamingMessage?: PiMessage;
+	/**
+	 * Index in `ui.messages` the in-flight reply belongs at once it settles.
+	 *
+	 * pi does not wait for this view's reveal animation: a drained follow-up (or
+	 * a steering message) can arrive while the reply it followed is still showing
+	 * its buffered tail. That reply is not in `ui.messages` yet, so it has to be
+	 * spliced back in ahead of the newer message — both while it streams and when
+	 * it settles — instead of being appended past it. Set when the reply starts
+	 * (and by a snapshot that resumes one), then corrected when pi finalises it.
+	 */
+	streamingIndex: number;
 	models: PiModel[];
 	thinkingLevels: string[];
 	commands: PiCommand[];
@@ -165,6 +177,7 @@ const ui: UiState = {
 	messages: [],
 	omittedMessageCount: 0,
 	titleSeed: "",
+	streamingIndex: 0,
 	models: [],
 	thinkingLevels: ["off"],
 	commands: [],
@@ -404,7 +417,11 @@ const mentionController = new MentionController({
 		post({ type: "listWorkspaceFiles", requestId, query }),
 	commit: (file, token) => addMentionReference(file, token),
 	navigate: (directoryPath, token) =>
-		composerController.replaceRange(token.start, token.end, `@${directoryPath}/`),
+		composerController.replaceRange(
+			token.start,
+			token.end,
+			`@${directoryPath}/`,
+		),
 	announce: (message) => announcer.announce(message),
 	isEnabled: () => ui.connection === "ready" && !elements.input.disabled,
 	position: positionMentionPanel,
@@ -442,21 +459,21 @@ const reducedMotionQuery = window.matchMedia(
 );
 const expandedThinkingKeys = new Set<string>();
 let pendingThinkingToggleAnchor:
-	| { thinkingKey: string; viewportTop: number }
-	| undefined;
-const streamingPlayback: StreamingMessagePlayback = new StreamingMessagePlayback({
-	// Grouping is read from the target rather than from the displayed message: the
-	// section key it produces has to hold for every block of a run and for every
-	// frame of its reveal, and the first displayed frame is still the empty shell
-	// pi opens an assistant message with.
-	shouldAnimateThinking: (message, thinkingIndex) =>
-		expandedThinkingKeys.has(
-			`${messageKey(message)}-thinking-${thinkingGroupKeyIndex(
-				messageBlocks(streamingPlayback.target ?? message),
-				thinkingIndex,
-			)}`,
-		),
-});
+	{ thinkingKey: string; viewportTop: number } | undefined;
+const streamingPlayback: StreamingMessagePlayback =
+	new StreamingMessagePlayback({
+		// Grouping is read from the target rather than from the displayed message: the
+		// section key it produces has to hold for every block of a run and for every
+		// frame of its reveal, and the first displayed frame is still the empty shell
+		// pi opens an assistant message with.
+		shouldAnimateThinking: (message, thinkingIndex) =>
+			expandedThinkingKeys.has(
+				`${messageKey(message)}-thinking-${thinkingGroupKeyIndex(
+					messageBlocks(streamingPlayback.target ?? message),
+					thinkingIndex,
+				)}`,
+			),
+	});
 const frameCoordinator = new FrameCoordinator({
 	requestFrame: (callback) => window.requestAnimationFrame(callback),
 	cancelFrame: (handle) => window.cancelAnimationFrame(handle),
@@ -751,7 +768,8 @@ elements.transcript.addEventListener(
 elements.transcript.addEventListener(
 	"pointerdown",
 	(event) => {
-		if (event.target === elements.transcript) submitFollowCoordinator.cancelAll();
+		if (event.target === elements.transcript)
+			submitFollowCoordinator.cancelAll();
 	},
 	{ passive: true },
 );
@@ -852,7 +870,8 @@ elements.input.addEventListener("keydown", (event) => {
 		const reference = composerController.referenceAtOffset(
 			elements.input.selectionStart,
 		);
-		if (!reference || composerController.isPendingReference(reference.id)) return;
+		if (!reference || composerController.isPendingReference(reference.id))
+			return;
 		event.preventDefault();
 		post({ type: "openComposerReference", id: reference.id });
 		return;
@@ -1019,7 +1038,9 @@ elements.sessionList.addEventListener("keydown", (event) => {
 		return;
 	}
 	const nextIndex =
-		event.key === "ArrowDown" ? Math.min(index + 1, rows.length - 1) : index - 1;
+		event.key === "ArrowDown"
+			? Math.min(index + 1, rows.length - 1)
+			: index - 1;
 	rows[nextIndex]?.querySelector<HTMLButtonElement>(".session-open")?.focus();
 });
 // No confirmation: pi keeps the current conversation in session history, so
@@ -1110,7 +1131,8 @@ elements.messages.addEventListener("click", (event) => {
 	const copyButton = target.closest<HTMLButtonElement>("[data-copy-code]");
 	if (copyButton) {
 		const code =
-			copyButton.closest(".code-block")?.querySelector("code")?.textContent ?? "";
+			copyButton.closest(".code-block")?.querySelector("code")?.textContent ??
+			"";
 		void navigator.clipboard
 			.writeText(code)
 			.then(() => showToast("Copied", "info"));
@@ -1369,16 +1391,41 @@ function applySnapshot(
 	}
 	ui.busy = Boolean(message.state.isStreaming || message.state.isCompacting);
 	clearUnansweredSubmit(message.messages);
-	streamingPlayback.reset();
-	const streamingMessage = snapshotStreamingMessage(message);
-	if (streamingMessage) {
-		// A snapshot can arrive while pi is mid-stream (connection recovery, state
-		// refresh). Its final assistant message already holds the delivered prefix;
-		// resuming there keeps subsequent message_update deltas continuous instead
-		// of resetting the playback to an empty shell that would re-reveal text the
-		// reader has already seen.
-		ui.streamingMessage = streamingPlayback.resume(streamingMessage);
+	// Read before the reset below: it says whether pi has already finalised the
+	// reply this view is revealing, which is what decides where that reply lives
+	// after the swap.
+	const finishing = streamingPlayback.isFinishing;
+	const liveReply = ui.streamingMessage;
+	const listedReply =
+		finishing && liveReply
+			? findLastMessage(ui.messages, (candidate) =>
+					isSameMessage(candidate, liveReply),
+				)
+			: undefined;
+	if (listedReply && liveReply) {
+		// A snapshot cannot carry the reply pi is still streaming — `state.messages`
+		// only receives a message at `message_end` — but it does carry the final copy
+		// of one that just ended. The list is authoritative and already holds it, so
+		// the slot is handed over rather than resumed: drawing both would render the
+		// same reply twice, under two identities.
+		streamingPlayback.reset();
+		ui.streamingIndex = message.messages.indexOf(listedReply);
+		settleStreamingMessage(listedReply);
+	} else if (
+		liveReply &&
+		!sessionChanged &&
+		(finishing || message.state.isStreaming)
+	) {
+		// A reply this snapshot has no copy of is still being revealed: leave the
+		// playback and the text alone and let it finish. Nothing newer than the reply
+		// can be in pi's list yet, so it belongs after everything in it.
+		// A session switch is the exception: the reply belongs to the session it
+		// streamed in, and keeping it would glue it onto the next session's
+		// transcript — and write it into that list at settle. Dropped here, the new
+		// session's own stream (if any) rebuilds playback from its next delta.
+		ui.streamingIndex = ui.messages.length;
 	} else {
+		streamingPlayback.reset();
 		ui.streamingMessage = undefined;
 	}
 	liveTools.clear();
@@ -1405,16 +1452,36 @@ function applySnapshot(
 	scheduleRender();
 }
 
-/** The in-flight assistant message a streaming snapshot carries, if any. */
-function snapshotStreamingMessage(
-	message: Extract<HostToWebviewMessage, { type: "snapshot" }>,
+/**
+ * The last message satisfying `matches`.
+ *
+ * A reverse loop rather than `findLast`: the configured lib target predates it.
+ */
+function findLastMessage(
+	messages: readonly PiMessage[],
+	matches: (message: PiMessage) => boolean,
 ): PiMessage | undefined {
-	if (!message.state.isStreaming) return undefined;
-	for (let index = message.messages.length - 1; index >= 0; index -= 1) {
-		const candidate = message.messages[index];
-		if (candidate?.role === "assistant") return candidate;
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message && matches(message)) return message;
 	}
 	return undefined;
+}
+
+/**
+ * Whether two objects are the same message pi listed twice.
+ *
+ * pi stamps every message it creates, and a reply keeps one timestamp from its
+ * first partial through to the copy a snapshot carries, so the timestamp is the
+ * evidence that a message this view is streaming is the one now listed. Content
+ * is the fallback for a message that arrived without one, as in the dedupe that
+ * keeps a re-delivered prompt out of the transcript.
+ */
+function isSameMessage(left: PiMessage, right: PiMessage): boolean {
+	if (left.role !== right.role) return false;
+	if (left.timestamp && right.timestamp)
+		return left.timestamp === right.timestamp;
+	return contentText(left.content) === contentText(right.content);
 }
 
 function applyConnection(
@@ -1443,8 +1510,11 @@ function finishInterruptedRun(detail?: string): void {
 	if (activeMessage) {
 		const interrupted = { ...activeMessage, stopReason: "aborted" };
 		inheritMessageIdentity(ui.streamingMessage, interrupted);
-		if (!hasEquivalentTail(ui.messages, interrupted))
-			ui.messages.push(interrupted);
+		// Back where the reply sat while streaming, not at the end: a follow-up that
+		// arrived during the reveal belongs after it, as in the ordinary settle.
+		if (!hasEquivalentTail(ui.messages, interrupted)) {
+			insertReply(ui.messages, interrupted, ui.streamingIndex);
+		}
 		ui.streamingMessage = undefined;
 	}
 	for (const tool of liveTools.values()) {
@@ -1612,6 +1682,9 @@ function reduceRpcEvent(event: JsonRecord): void {
 			if (message.role === "assistant") {
 				const overlappingMessage = streamingPlayback.completeImmediately();
 				if (overlappingMessage) settleStreamingMessage(overlappingMessage);
+				// Where this reply sits in pi's order: after everything already in the
+				// transcript, ahead of whatever pi delivers while it streams.
+				ui.streamingIndex = ui.messages.length;
 				ui.streamingMessage = streamingPlayback.start(message);
 				// 新一轮回复从零累计，上一轮的用量已在 message_end 提交。
 				streamingUsage.beginCall();
@@ -1646,7 +1719,15 @@ function reduceRpcEvent(event: JsonRecord): void {
 				if (message) {
 					if (streamingPlayback.isActive) {
 						streamingPlayback.updateTarget(message);
+					} else if (event.assistantMessageEvent !== undefined) {
+						// A delta with no playback to apply it to: this view was reloaded
+						// mid-reply and missed `message_start`. The event carries the reply so
+						// far, so the delivered text is shown at once instead of waiting for
+						// `message_end` to reveal it from nothing.
+						ui.streamingIndex = ui.messages.length;
+						ui.streamingMessage = streamingPlayback.resume(message);
 					} else {
+						ui.streamingIndex = ui.messages.length;
 						ui.streamingMessage = streamingPlayback.start(message);
 					}
 					frameCoordinator.scheduleAdvance();
@@ -1658,6 +1739,12 @@ function reduceRpcEvent(event: JsonRecord): void {
 			const message = asMessage(event.message);
 			if (!message) break;
 			if (message.role === "assistant") {
+				// pi appends accepted messages to its own list as it takes them, so the
+				// end of the list is now exactly where this reply belongs: everything
+				// pi delivers from here on (a drained follow-up, a steering message)
+				// was appended after it. Recorded before the reveal finishes, because
+				// the settle that ends it inserts the reply back here.
+				ui.streamingIndex = ui.messages.length;
 				streamingPlayback.finish(message);
 				// 本回复完成：最终用量并入累计，下一条回复从零开始。
 				if (
@@ -1731,7 +1818,9 @@ function reduceRpcEvent(event: JsonRecord): void {
 				id,
 				name: toolName,
 				args:
-					Object.keys(eventArgs).length > 0 ? eventArgs : (existing?.args ?? {}),
+					Object.keys(eventArgs).length > 0
+						? eventArgs
+						: (existing?.args ?? {}),
 				status,
 				result: event.result,
 				startedAt: existing?.startedAt ?? Date.now(),
@@ -1813,7 +1902,11 @@ function advanceStreamingPlayback(timestamp: number): boolean {
 
 function settleStreamingMessage(message: PiMessage): void {
 	inheritMessageIdentity(ui.streamingMessage, message);
-	if (!hasEquivalentTail(ui.messages, message)) ui.messages.push(message);
+	// Back where it sat while streaming rather than at the end: a follow-up pi
+	// delivered during the reveal belongs after it.
+	if (!hasEquivalentTail(ui.messages, message)) {
+		insertReply(ui.messages, message, ui.streamingIndex);
+	}
 	ui.streamingMessage = undefined;
 }
 
@@ -2165,7 +2258,10 @@ function renderConnectionBanner(): void {
 		const restart = document.createElement("button");
 		restart.type = "button";
 		restart.className = "text-button";
-		restart.append(createCodicon("refresh"), document.createTextNode(" Restart"));
+		restart.append(
+			createCodicon("refresh"),
+			document.createTextNode(" Restart"),
+		);
 		restart.addEventListener("click", () => runAction("restart"));
 		elements.connectionBanner.append(restart);
 	}
@@ -2195,10 +2291,10 @@ function renderMessages(): void {
 				? content.length > 0
 				: Array.isArray(content) && content.length > 0;
 	}
-	const allMessages =
-		streamingVisible && streamingMessage
-			? [...ui.messages, streamingMessage]
-			: ui.messages;
+	const live = streamingVisible ? streamingMessage : undefined;
+	// `withLiveReply` keeps the reply ahead of anything pi delivered while it was
+	// still revealing its buffered tail.
+	const allMessages = withLiveReply(ui.messages, live, ui.streamingIndex);
 	// Invisible roles (tool results, hidden custom messages) render to an empty
 	// string. Dropping them here keeps the entry list aligned one-to-one with the
 	// container's children, which is what lets reconciliation address nodes by
@@ -2529,7 +2625,8 @@ function appendStreamingText(
 			const appendMode = sectionRoot.dataset.streamAppendMode;
 			const didAppend =
 				appendMode === "plain"
-					? isPlainMarkdownSuffix(suffix) && appendToLastTextNode(active, suffix)
+					? isPlainMarkdownSuffix(suffix) &&
+						appendToLastTextNode(active, suffix)
 					: appendMode === "code"
 						? isSafeCodeSuffix(suffix) && appendToCodeTail(active, suffix)
 						: false;
@@ -2548,7 +2645,9 @@ function appendStreamingText(
 					enhanceStableStreamingNodes(stableNodes);
 				}
 				active.replaceChildren(...sanitizedNodes(parts.activeHtml));
-				sectionRoot.dataset.streamStableLength = String(parts.stableSourceLength);
+				sectionRoot.dataset.streamStableLength = String(
+					parts.stableSourceLength,
+				);
 				sectionRoot.dataset.streamAppendMode = parts.appendMode;
 			}
 		}
@@ -2905,7 +3004,9 @@ function linkifyWorkspacePaths(root: Element): void {
 			// already-linkified spans. Inline <code> is allowed so paths that
 			// pi wraps in backticks still become clickable.
 			if (
-				parent.closest("pre, a, .tool-call, .thinking-block, [data-workspace-path]")
+				parent.closest(
+					"pre, a, .tool-call, .thinking-block, [data-workspace-path]",
+				)
 			) {
 				return NodeFilter.FILTER_REJECT;
 			}
@@ -2972,7 +3073,9 @@ function renderAttachments(): void {
 		remove.setAttribute("aria-label", `Remove ${attachment.label}`);
 		remove.append(createCodicon("close"));
 		remove.addEventListener("click", () => {
-			ui.attachments = ui.attachments.filter((item) => item.id !== attachment.id);
+			ui.attachments = ui.attachments.filter(
+				(item) => item.id !== attachment.id,
+			);
 			post({ type: "removeAttachment", id: attachment.id });
 			scheduleRender();
 		});
@@ -3112,7 +3215,8 @@ function renderRuntimeMeta(): void {
 	const parts: string[] = [];
 	const stats = streamingUsage.displayStats(ui.stats);
 	const context = stats?.contextUsage?.percent;
-	if (typeof context === "number") parts.push(`${Math.round(context)}% context`);
+	if (typeof context === "number")
+		parts.push(`${Math.round(context)}% context`);
 	if (typeof stats?.cost === "number" && stats.cost > 0)
 		parts.push(formatCost(stats.cost, locale));
 	const text = parts.join(" \u00b7 ");
@@ -3211,7 +3315,9 @@ function dismissUsagePanel(): void {
  */
 function refreshRelativeTimes(): void {
 	const epochValues: number[] = [];
-	for (const node of document.querySelectorAll<HTMLElement>("[data-epoch-ms]")) {
+	for (const node of document.querySelectorAll<HTMLElement>(
+		"[data-epoch-ms]",
+	)) {
 		const epochMs = Number(node.dataset.epochMs);
 		if (!Number.isFinite(epochMs)) continue;
 		epochValues.push(epochMs);
@@ -3263,7 +3369,8 @@ function renderSendButton(): void {
 	elements.sendButton.setAttribute("aria-label", label);
 	elements.sendButton.disabled =
 		ui.connection !== "ready" ||
-		(!ui.busy && (isSubmitPending() || composerController.hasPendingReferences));
+		(!ui.busy &&
+			(isSubmitPending() || composerController.hasPendingReferences));
 	elements.composer.classList.toggle("busy", ui.busy || isSubmitPending());
 	// Enter's meaning flips with the run state, so a hint that is already open has
 	// to be re-rendered rather than left describing the previous state.
@@ -3441,7 +3548,8 @@ function focusSessionMenuItem(key: string): void {
 		return;
 	}
 	const active = document.activeElement;
-	const index = active instanceof HTMLButtonElement ? items.indexOf(active) : -1;
+	const index =
+		active instanceof HTMLButtonElement ? items.indexOf(active) : -1;
 	const delta = key === "ArrowDown" ? 1 : -1;
 	const next = index < 0 ? 0 : (index + delta + items.length) % items.length;
 	items[next]?.focus();
@@ -3752,7 +3860,9 @@ function renderCommands(): void {
 		const empty = document.createElement("div");
 		empty.className = "command-list-empty";
 		empty.textContent =
-			ui.commands.length === 0 ? "No commands available" : "No matching commands";
+			ui.commands.length === 0
+				? "No commands available"
+				: "No matching commands";
 		elements.commandList.replaceChildren(empty);
 		setCommandActiveDescendant(undefined);
 		return;
@@ -3865,7 +3975,8 @@ function moveActiveCommand(delta: number): void {
 		? renderedCommandNames.indexOf(activeCommandName)
 		: -1;
 	const next =
-		(current + delta + renderedCommandNames.length) % renderedCommandNames.length;
+		(current + delta + renderedCommandNames.length) %
+		renderedCommandNames.length;
 	activeCommandName = renderedCommandNames[next];
 	highlightActiveCommand();
 }
@@ -4092,8 +4203,8 @@ function isAttachableResourceDrag(
 ): dataTransfer is DataTransfer {
 	return Boolean(
 		dataTransfer &&
-			ui.connection === "ready" &&
-			containsDroppedResources(dataTransfer),
+		ui.connection === "ready" &&
+		containsDroppedResources(dataTransfer),
 	);
 }
 
@@ -4323,10 +4434,7 @@ function hasEquivalentTail(
 	candidate: PiMessage,
 ): boolean {
 	const tail = messages.at(-1);
-	if (!tail || tail.role !== candidate.role) return false;
-	if (tail.timestamp && candidate.timestamp)
-		return tail.timestamp === candidate.timestamp;
-	return contentText(tail.content) === contentText(candidate.content);
+	return Boolean(tail && isSameMessage(tail, candidate));
 }
 
 function asMessage(value: unknown): PiMessage | undefined {

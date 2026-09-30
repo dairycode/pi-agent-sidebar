@@ -22,7 +22,8 @@ async function loadTranscript() {
 						{ filter: /^dompurify$/, namespace: "mock-markdown" },
 						() => ({
 							loader: "js",
-							contents: "export default { sanitize: (value) => String(value) };",
+							contents:
+								"export default { sanitize: (value) => String(value) };",
 						}),
 					);
 					buildApi.onLoad(
@@ -166,7 +167,7 @@ test("assistant transcript preserves activity ordering and stream state", async 
 test("adjacent reasoning parts render as one section", async () => {
 	const loaded = await loadTranscript();
 	try {
-		// The shape GPT streams: one `thinking` block per reasoning part.
+		// The shape some models stream: one `thinking` block per reasoning part.
 		const message = {
 			role: "assistant",
 			content: [
@@ -287,9 +288,11 @@ test("live successful tool diff replaces persisted tool output", async () => {
 		assert.match(html, /<span class="tool-path">src\/file\.ts<\/span>/u);
 		assert.match(html, /data-tool-body="lazy"/u);
 		// The collapsed row is one line, so the header text rides in its own span
-		// and yields width to the hint beside it rather than clipping it away
-		// (see the `.header-text` rules in transcript.css), and the box carries the
-		// full text for the pointer that cannot read the clipped line.
+		// and yields width to the output column beside it rather than clipping it
+		// away (see the `.header-text` rules in transcript.css), and the box carries
+		// the full text for the pointer that cannot read the clipped line. The trail
+		// holds the hint alone, pinned to the row's right edge — the call's state
+		// lives on the box's border, so the header carries no glyph of its own.
 		assert.match(
 			html,
 			/<span class="header-text"><span class="tool-name">edit<\/span> <span class="tool-path">src\/file\.ts<\/span><\/span><span class="header-trail"><span class="tool-hint">output<\/span><\/span>/u,
@@ -383,7 +386,16 @@ test("a call with nothing to reveal still collapses onto one line", async () => 
 		);
 
 		assert.doesNotMatch(html, /expandable/u);
-		assert.match(html, /tool-spinner/u);
+		// The header carries no status glyph: the call's state lives on the box's
+		// border, so a running box with no body is indistinguishable from a settled
+		// one in the header itself (transcript.css breathes the border only while
+		// the state class is on the box).
+		assert.doesNotMatch(html, /tool-spinner/u);
+		// The output column is in this header too, with no ink behind it: the word is
+		// what fixes every tool box's clip at the same offset, so a box that will
+		// never have output still reserves its width (transcript.css hides the ink of
+		// a `:not(.expandable)` panel).
+		assert.match(html, /<span class="tool-hint">output<\/span>/u);
 		assert.match(
 			html,
 			/title="\$ npm run typecheck 2&gt;&amp;1 \| grep -E &quot;error TS&quot;"/u,
@@ -391,6 +403,58 @@ test("a call with nothing to reveal still collapses onto one line", async () => 
 		assert.match(
 			html,
 			/<span class="header-text">\$ npm run typecheck 2&gt;&amp;1 \| grep -E &quot;error TS&quot;<\/span>/u,
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a running call keeps the output column and no header glyph", async () => {
+	const loaded = await loadTranscript();
+	try {
+		const toolCall = {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "tool-1",
+					name: "bash",
+					arguments: { command: "npm run build" },
+				},
+			],
+		};
+		// pi streams a partial result the moment a call starts, which gives a running
+		// box a body to open — and so the hint. The hint's ink is held back while
+		// the call runs (the breathing border is the status then), but the column
+		// itself stays: the header text is clipped against it, so the settled row
+		// has to measure the same as the running one for the hint to hold its place.
+		const liveTools = new Map([
+			[
+				"tool-1",
+				{
+					id: "tool-1",
+					name: "bash",
+					args: { command: "npm run build" },
+					status: "running",
+					result: { content: [{ type: "text", text: "building…" }] },
+					startedAt: 0,
+					revision: 0,
+				},
+			],
+		]);
+		const html = loaded.module.messageHtml(
+			toolCall,
+			new Map(),
+			liveTools,
+			false,
+			"message-1",
+		);
+
+		assert.match(html, /tool-call running expandable/u);
+		assert.doesNotMatch(html, /tool-spinner/u);
+		assert.match(
+			html,
+			/<span class="header-trail"><span class="tool-hint">output<\/span><\/span>/u,
 		);
 	} finally {
 		await loaded.dispose();
@@ -424,9 +488,7 @@ test("tool title preserves text beyond the one-line preview", async () => {
 			"the tooltip should retain the command beyond the visible preview limit",
 		);
 		assert.ok(
-			html.includes(
-				`<span class="header-text">$ ${"x".repeat(1999)}…</span>`,
-			),
+			html.includes(`<span class="header-text">$ ${"x".repeat(1999)}…</span>`),
 			"the rendered header should still use the bounded one-line preview",
 		);
 	} finally {

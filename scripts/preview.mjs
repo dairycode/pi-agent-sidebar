@@ -21,6 +21,7 @@
  *   node scripts/preview.mjs --state=menu          # header session menu open
  *   node scripts/preview.mjs --state=select        # model picker open
  *   node scripts/preview.mjs --state=reference     # inline file reference
+ *   node scripts/preview.mjs --state=running      # several calls mid-run
  *   node scripts/preview.mjs --state=drop          # resource drop overlay
  *   node scripts/preview.mjs --theme=light
  *   node scripts/preview.mjs --theme=one-dark-pro-darker

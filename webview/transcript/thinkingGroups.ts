@@ -4,8 +4,8 @@ import type { PiContentBlock } from "../../shared/protocol.js";
  * One rendered reasoning section: a run of thinking blocks shown as a single
  * expandable block.
  *
- * GPT reports reasoning as a series of summary parts, and pi passes each part
- * through as its own `thinking` content block. Drawn one-to-one, a single
+ * Some models report reasoning as a series of summary parts, and pi passes each
+ * part through as its own `thinking` content block. Drawn one-to-one, a single
  * answer's reasoning became a stack of collapsed "Thinking" rows — one per part,
  * each only a few lines of headline — and the reader's expand/collapse choice
  * was scattered across all of them. The blocks themselves stay untouched; this

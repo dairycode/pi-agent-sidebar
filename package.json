@@ -28,18 +28,7 @@
     "assistant"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onView:piAgentSidebar.chatView",
-    "onCommand:piAgentSidebar.open",
-    "onCommand:piAgentSidebar.focusInput",
-    "onCommand:piAgentSidebar.explainSelection",
-    "onCommand:piAgentSidebar.explainFile",
-    "onCommand:piAgentSidebar.refactorSelection",
-    "onCommand:piAgentSidebar.generateTests",
-    "onCommand:piAgentSidebar.explainDiagnostics",
-    "onCommand:piAgentSidebar.addFilesToInput",
-    "onCommand:piAgentSidebar.renameSession",
-    "onCommand:piAgentSidebar.exportHtml"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "icon": "assets/pi-logo.png",

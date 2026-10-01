@@ -86,6 +86,16 @@ export class TranscriptView<N> {
 		return this.rendered.get(key)?.node;
 	}
 
+	/**
+	 * How many nodes the view currently holds. Zero means nothing is built yet —
+	 * the signal a progressive first build uses to arm its first, tail-only
+	 * window. Note this counts every entry kind (separators, the omitted banner),
+	 * so it answers "is anything built at all", never "how many messages".
+	 */
+	public get size(): number {
+		return this.rendered.size;
+	}
+
 	public update(entries: readonly TranscriptEntry[]): TranscriptUpdateStats {
 		const stats: TranscriptUpdateStats = {
 			created: 0,

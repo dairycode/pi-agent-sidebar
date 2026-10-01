@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.1
+
+- Spend the transcript's frames on the content, not the bookkeeping. An
+  expanded tool call streaming output swaps just its body now — a chunk used
+  to re-parse and rebuild the whole message, which read as stutter while a
+  chatty command ran. The running border breathes through overlays whose
+  opacity animates, so parallel running calls cost compositor layer updates
+  instead of a repaint per card per frame. And a fresh build of a long
+  transcript stages its newest messages first, backfilling the history above
+  the fold a window at a time, so switching sessions lands on the newest
+  message in the first frame instead of a blank beat.
+
 ## 0.9.0
 
 - Let a running call say so on the box itself: the border breathes between a

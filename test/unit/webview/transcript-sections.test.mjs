@@ -73,36 +73,37 @@ test("a running call breathes on its border, the header carries only the output 
 	// faint and the full-strength pending edge, with a halo swelling around it.
 	// The header carries no glyph, so nothing in the row enters or leaves the
 	// layout when the state changes — the `output` column every header clips
-	// against keeps its width, and the ellipsis never moves. Both ends of the
-	// breath derive from the palette's pending token, which is also the box's
-	// static running edge: key frames outrank it while the breath runs, so
-	// `prefers-reduced-motion` can drop the animation and the tint — with the
-	// sr-only note — still carries the state. Forced-colours mode overrides
-	// tint and halo both, so there the border style carries the state instead.
+	// against keeps its width, and the ellipsis never moves. Both the edge and
+	// the halo ride pseudo-element overlays whose opacity animates: opacity is
+	// a compositor property, so parallel running cards cost layer updates
+	// instead of a paint per card per frame. `prefers-reduced-motion` drops
+	// the animations and the ring's opacity rests at 1 — with the sr-only
+	// note, the state still carries. Forced-colours mode forces the border
+	// colour entirely, so there the border style carries the state instead.
 	assert.match(
 		css,
-		/\.tool-call\.running\s*\{\s*animation: tool-breathe [^}]*\}/u,
+		/\.tool-call\.running::before\s*\{[^}]*animation: tool-breathe-edge/u,
 		"the running state is what starts the breath",
 	);
 	assert.match(
 		css,
-		/\.tool-call\.running\s*\{[^}]*border-color: var\(--pi-theme-tool-pending-border\);/u,
-		"the tint is the static half: a frame without the animation still reads as pending",
+		/\.tool-call\.running::before\s*\{[^}]*border: 1px solid var\(--pi-theme-tool-pending-border\);/u,
+		"the ring is the pending token: a frame without the animation still reads as pending",
 	);
 	assert.match(
 		css,
-		/from\s*\{\s*border-color: color-mix\(\s*in srgb,\s*var\(--pi-theme-tool-pending-border\) 45%,\s*transparent\s*\);\s*box-shadow: 0 0 0 0 transparent;\s*\}/su,
-		"the faint end of the breath mixes the pending border toward transparent",
+		/@keyframes tool-breathe-edge\s*\{\s*from\s*\{\s*opacity: 0\.45;\s*\}\s*to\s*\{\s*opacity: 1;\s*\}\s*\}/u,
+		"the breath animates opacity only — nothing that forces a paint per frame",
 	);
 	assert.match(
 		css,
-		/to\s*\{\s*border-color: var\(--pi-theme-tool-pending-border\);\s*box-shadow: 0 0 0 3px\s*color-mix\(\s*in srgb,\s*var\(--pi-theme-tool-pending-border\) 25%,\s*transparent\);\s*\}/su,
-		"the bright end is the pending border itself, with the halo at low strength",
+		/\.tool-call\.running::after\s*\{[^}]*opacity: 0;[^}]*animation: tool-breathe-halo/u,
+		"the halo rests invisible when no animation runs",
 	);
 	assert.match(
 		css,
-		/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.tool-call\.running\s*\{\s*animation: none;\s*\}\s*\}/u,
-		"the animation can be dropped without silencing the state",
+		/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.tool-call\.running::before,\s*\.tool-call\.running::after\s*\{\s*animation: none;\s*\}\s*\}/su,
+		"the animations can be dropped without silencing the state",
 	);
 	assert.match(
 		css,

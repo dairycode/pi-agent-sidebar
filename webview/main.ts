@@ -41,6 +41,7 @@ import {
 	TranscriptView,
 	type TranscriptEntry,
 } from "./transcript/transcriptView.js";
+import { ProgressiveWindow } from "./transcript/progressiveWindow.js";
 import { insertReply, withLiveReply } from "./transcript/transcriptOrder.js";
 import { WORKSPACE_PATH_PATTERN } from "./transcript/workspacePaths.js";
 import {
@@ -495,6 +496,19 @@ const submitFollowCoordinator = new SubmitFollowCoordinator({
 const transcriptView = new TranscriptView<Element>({
 	container: elements.messages,
 	createNode: (entry, previous) => createMessageNode(entry, previous),
+});
+
+/**
+ * Stages a fresh build of a big window across frames: the tail renders in the
+ * first pass so the reader lands on the newest messages immediately, and the
+ * history backfills above the fold a window-worth at a time. A full render
+ * schedules the next pass — `renderStreamingFrame` would rather patch a
+ * streaming message and leave the backfill stalled.
+ */
+const progressiveWindow = new ProgressiveWindow({
+	threshold: 60,
+	initial: 40,
+	chunk: 40,
 });
 
 /**
@@ -1793,17 +1807,21 @@ function reduceRpcEvent(event: JsonRecord): void {
 			if (!tool) break;
 			const hadResult = tool.result !== undefined;
 			tool.result = event.partialResult;
-			const isExpanded = Boolean(
-				elements.messages.querySelector(
-					`.tool-call.expanded[data-tool-key="${CSS.escape(id)}"]`,
-				),
+			const section = elements.messages.querySelector<HTMLElement>(
+				`.tool-call[data-tool-key="${CSS.escape(id)}"]`,
 			);
+			const isExpanded = Boolean(section?.classList.contains("expanded"));
 			// A collapsed card only needs one transition from no body to body. Further
 			// chunks replace the retained raw result without touching DOM or scanning
-			// output. An explicitly expanded card keeps showing current content.
-			if (!hadResult || isExpanded) {
+			// output. An explicitly expanded card keeps showing current content — by
+			// swapping just its body: a full render here re-parses every section of
+			// the message once per output chunk, which is the per-frame cost that
+			// shows up as stutter while a chatty command streams.
+			if (!hadResult) {
 				tool.revision += 1;
 				frameCoordinator.scheduleTranscriptRender();
+			} else if (section && isExpanded) {
+				refreshExpandedToolBody(section, id);
 			}
 			needsImmediateRender = false;
 			break;
@@ -2300,11 +2318,17 @@ function renderMessages(): void {
 	// container's children, which is what lets reconciliation address nodes by
 	// position, and stops them consuming the render cap.
 	const renderable = allMessages.filter(isRenderableMessage);
-	const visible = renderable.slice(-MAX_RENDERED_MESSAGES);
+	const capped = renderable.slice(-MAX_RENDERED_MESSAGES);
+	// A fresh build of a big window stages its tail first (see `progressiveWindow`);
+	// an in-flight backfill keeps widening. Incremental passes on a built view are
+	// the identity.
+	const visible = progressiveWindow.window(capped, transcriptView.size === 0);
 	// History is dropped in two places: the host sends only the newest messages, and
 	// this cap keeps the newest 150 of those. The reader is told the total, not just
-	// the part this cap is responsible for.
-	const omitted = renderable.length - visible.length + ui.omittedMessageCount;
+	// the part this cap is responsible for. Computed from the full capped window
+	// rather than the staged subset, so the count holds steady while the backfill
+	// runs.
+	const omitted = renderable.length - capped.length + ui.omittedMessageCount;
 	pruneExpandedThinkingKeys(visible);
 
 	const entries: TranscriptEntry[] = [];
@@ -2354,6 +2378,10 @@ function renderMessages(): void {
 	pendingMessageRender = { byKey, omitted, resultMap, separatorLabels };
 	transcriptView.update(entries);
 	pendingMessageRender = undefined;
+	if (visible.length < capped.length) {
+		// More of the window to build: widen it next frame.
+		scheduleRender();
+	}
 }
 
 /**
@@ -2950,6 +2978,29 @@ function ensureToolBodyMounted(element: HTMLElement): void {
 	if (!html) return;
 	element.append(...sanitizedNodes(html));
 	element.dataset.toolBody = "mounted";
+}
+
+/**
+ * Swaps an expanded card's body in place while its output streams.
+ *
+ * Only the body roots (`tool-output` / `tool-diff`) are replaced — the header,
+ * the section's class list, and every other section of the message stay
+ * untouched, so a chunk costs one subtree swap instead of a full message
+ * rebuild. The card stays mounted: a later collapse keeps this latest body,
+ * and re-expanding finds it already current.
+ */
+function refreshExpandedToolBody(section: HTMLElement, toolId: string): void {
+	const html = toolBodyHtml(toolResults.get(toolId), liveTools.get(toolId));
+	if (!html) return;
+	for (const child of [...section.children]) {
+		if (
+			child.classList.contains("tool-output") ||
+			child.classList.contains("tool-diff")
+		) {
+			child.remove();
+		}
+	}
+	section.append(...sanitizedNodes(html));
 }
 
 function enhanceRenderedNodes(root: Element): void {

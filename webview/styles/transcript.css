@@ -315,18 +315,19 @@
 
 /* Reasoning binds tightly to the answer that follows it. Keep the direction
    explicit: prose → thinking retains the normal full-line activity clearance,
-   while thinking → prose uses the balanced half-line padding from both blocks. */
+   while thinking → prose lets the answer's own half-line padding set the
+   distance from the reasoning box's edge. */
 .thinking-before-text + .assistant-text {
 	margin-top: 0;
 }
 
-/* Both paths keep one full line between reasoning and the next visible block:
-   thinking → text gets half a line from each block's padding, while
-   thinking → tool gets thinking's bottom half plus the activity-section gap. */
+/* Both boundaries read as one step: thinking → text is the answer's own
+   half-line padding measured from the reasoning box's edge, while
+   thinking → tool adds the activity-section gap on top of that edge. */
 
 /* A tool round can split reasoning and its answer into adjacent assistant RPC
-   messages. Cancel only the extra message-level flex gap; keep both blocks'
-   half-line padding so this boundary matches thinking → tool visually. */
+   messages. Cancel only the extra message-level flex gap; what remains reads
+   as the same boundary as thinking → tool within one message. */
 .message-slot.assistant-ends-thinking + .message-slot.assistant-starts-text {
 	margin-top: calc(-1 * var(--pi-line-half));
 }
@@ -695,9 +696,12 @@
 }
 
 /* Horizontal padding matches `.assistant-text` so reasoning and prose share a
-   left column — pi pads `.thinking-text` on all sides for the same reason. */
+   left column. The vertical inset is the container's own — 4px, the literal
+   scale the tool box's horizontal 10px already set — not a grid unit: the
+   distances to neighbouring blocks belong to the boundary rules around the
+   box, so the edge can hug its content. */
 .thinking-text {
-	padding: var(--pi-line-half) 11px;
+	padding: 4px 11px;
 	color: var(--pi-theme-thinking-text);
 	font-family: var(--vscode-font-family);
 	font-style: italic;
@@ -715,10 +719,12 @@
 
 /* Both halves stay in the DOM and swap with `display`, so collapsing costs no
    re-render. A collapsed block's body is empty until the reader expands it
-   (see `thinkingBlockHtml`); `display` then decides which half shows. */
+   (see `thinkingBlockHtml`); `display` then decides which half shows. Same
+   inset as `.thinking-text`, so toggling moves only the body, never the
+   edges. */
 .thinking-collapsed {
 	display: none;
-	padding: var(--pi-line-half) 11px;
+	padding: 4px 11px;
 	color: var(--pi-theme-thinking-text);
 	font-family: var(--vscode-font-family);
 	font-style: italic;
@@ -904,35 +910,62 @@
 
    The breath is the dynamic half of the status; the static halves are the
    border tint itself and the screen-reader note the box carries
-   (`toolStatusLabel`). The declaration sitting under the animation is that
-   tint: key frames outrank it while the breath runs, and it is what a still
-   frame falls back on, so `prefers-reduced-motion` drops the animation
-   without silencing the state. An expanded box keeps breathing — the halo
-   occupies no line box, so the expanded header needs no exception here. */
-.tool-call.running {
-	animation: tool-breathe 1.8s ease-in-out infinite alternate;
-	/* The static half: overshadowed by the breath, left behind when it stops. */
-	border-color: var(--pi-theme-tool-pending-border);
+   (`toolStatusLabel`). Both the breathing edge and the halo ride
+   pseudo-element overlays whose `opacity` animates, not `border-color` and
+   `box-shadow` on the box itself: opacity runs on the compositor, so ten
+   parallel running cards cost ten cheap layer updates instead of ten full
+   paints per frame. The box's own border stays the settled green — the
+   overlay's ring at partial opacity over it is what reads as the faint end —
+   and when `prefers-reduced-motion` drops the animation, the ring's opacity
+   rests at 1: a still frame shows the full-strength pending edge. An expanded
+   box keeps breathing — the halo occupies no line box, so the expanded
+   header needs no exception here. */
+.tool-call.running::before,
+.tool-call.running::after {
+	content: "";
+	position: absolute;
+	/* Over the box's own 1px border, so the ring sits exactly on the edge the
+	   reader already sees rather than inside it. */
+	inset: -1px;
+	border-radius: var(--pi-radius-content);
+	pointer-events: none;
 }
 
-@keyframes tool-breathe {
+.tool-call.running::before {
+	border: 1px solid var(--pi-theme-tool-pending-border);
+	animation: tool-breathe-edge 1.8s ease-in-out infinite alternate;
+}
+
+.tool-call.running::after {
+	box-shadow: 0 0 0 3px
+		color-mix(in srgb, var(--pi-theme-tool-pending-border) 25%, transparent);
+	opacity: 0;
+	animation: tool-breathe-halo 1.8s ease-in-out infinite alternate;
+}
+
+@keyframes tool-breathe-edge {
 	from {
-		border-color: color-mix(
-			in srgb,
-			var(--pi-theme-tool-pending-border) 45%,
-			transparent
-		);
-		box-shadow: 0 0 0 0 transparent;
+		opacity: 0.45;
 	}
+
 	to {
-		border-color: var(--pi-theme-tool-pending-border);
-		box-shadow: 0 0 0 3px
-			color-mix(in srgb, var(--pi-theme-tool-pending-border) 25%, transparent);
+		opacity: 1;
+	}
+}
+
+@keyframes tool-breathe-halo {
+	from {
+		opacity: 0;
+	}
+
+	to {
+		opacity: 1;
 	}
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.tool-call.running {
+	.tool-call.running::before,
+	.tool-call.running::after {
 		animation: none;
 	}
 }

@@ -570,6 +570,19 @@
 	background: var(--pi-page-background);
 }
 
+/* The shared `.icon-button:hover` swaps whatever background it finds for a 12%
+   wash of the foreground — translucent, exactly what the opaque chip above
+   exists to prevent: the moment the pointer arrives, code slides visibly behind
+   the icon. Hover deepens the same opaque paint instead — a touch of foreground
+   mixed in reads as pressed, and nothing ever shows through. */
+.copy-code-button:hover:not(:disabled) {
+	background: color-mix(
+		in srgb,
+		var(--pi-page-background) 92%,
+		var(--vscode-foreground) 8%
+	);
+}
+
 .assistant-text blockquote,
 .skill-body blockquote {
 	padding-left: 10px;

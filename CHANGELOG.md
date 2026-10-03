@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.2
+
+- Stay attached through scroll events the reader did not cause. A layout
+  change that shrank the transcript — the composer collapsing after a send, an
+  image settling for its fallback — pulled the pinned offset back, and the
+  bare scroll event reporting it read as an upward gesture: the view detached
+  and stayed detached for the rest of the reply. A scroll landing on the
+  bottom edge is now the browser holding a pinned viewport in place, not a
+  hand on the wheel; a send re-pins through a render of its own rather than
+  waiting for the next one; a view returning from hidden or resized while
+  attached re-pins over the drift it never saw; a fresh build — a session
+  switch or a just-opened view — pins to the newest message outright and
+  keeps pinning outright through the settling that follows, the backfill,
+  the image loads, the composer finding its height, until the reader takes
+  over; and a native nudge during a send's eased climb retargets it instead
+  of ending it.
+
+- When the reader has scrolled away from the newest messages, a circular chip
+  floats in the transcript's lower corner and asks, with one click, to be
+  taken back: it follows the bottom again and eases there the same way a send
+  does. It hides itself while attached, within reach of the bottom edge, or
+  before the reader could mistake it for part of the conversation — it is
+  chrome, and it never reflows the text it hovers over.
+
 ## 0.9.1
 
 - Spend the transcript's frames on the content, not the bookkeeping. An

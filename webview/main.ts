@@ -265,6 +265,7 @@ const elements = {
 	app: element<HTMLElement>("app"),
 	sessionHeader: element<HTMLElement>("session-header"),
 	transcript: element<HTMLElement>("transcript"),
+	jumpToBottom: element<HTMLButtonElement>("jump-to-bottom"),
 	messages: element<HTMLElement>("messages"),
 	emptyState: element<HTMLElement>("empty-state"),
 	emptyDetail: element<HTMLElement>("empty-detail"),
@@ -490,7 +491,15 @@ const scrollAnchor = new ScrollAnchor({
 	shouldAnimate: () => !reducedMotionQuery.matches,
 });
 const submitFollowCoordinator = new SubmitFollowCoordinator({
-	onFollow: () => scrollAnchor.follow(),
+	// Every coordinator follow lands on a render: `follow` alone clears the
+	// anchor's recorded position, and until the next render pins the viewport a
+	// single native scroll event reads as a reader gesture and undoes it. The
+	// ack and composer-resize paths have no render of their own, so scheduling
+	// here is what closes that gap.
+	onFollow: () => {
+		scrollAnchor.follow();
+		scheduleRender();
+	},
 });
 
 const transcriptView = new TranscriptView<Element>({
@@ -750,13 +759,30 @@ elements.input.addEventListener("blur", () =>
 elements.input.addEventListener("scroll", syncPromptHighlightScroll);
 window.addEventListener("resize", syncPromptHighlightScroll);
 
-// A scroll event stays layout-read-free. Native wheel/touch/scrollbar movement
-// owns scrollTop until it has been quiet for a short interval; only then do we
-// measure prompt bounds and, if the reader reached the bottom, resume following.
+// The jump chip's one condition: detached AND far enough from the bottom for
+// the trip to be worth a click. Every state change reaches it through the
+// callers below — scroll events, render passes, resize — so the ScrollAnchor
+// itself carries no chip bookkeeping.
+const JUMP_BUTTON_GAP_PX = 48;
+
+function syncJumpToBottomButton(): void {
+	elements.jumpToBottom.classList.toggle(
+		"is-visible",
+		!scrollAnchor.isFollowing &&
+			scrollAnchor.distanceFromBottomPx > JUMP_BUTTON_GAP_PX,
+	);
+}
+
+// A scroll event stays layout-read-free apart from the chip's gap check — one
+// read against the layout the browser just finished for the scroll itself.
+// Native wheel/touch/scrollbar movement owns scrollTop until it has been quiet
+// for a short interval; only then do we measure prompt bounds and, if the
+// reader reached the bottom, resume following.
 elements.transcript.addEventListener(
 	"scroll",
 	() => {
 		if (scrollAnchor.noteScroll()) scheduleTranscriptScrollSettle();
+		syncJumpToBottomButton();
 	},
 	{ passive: true },
 );
@@ -832,7 +858,28 @@ elements.transcript.addEventListener("touchend", clearTouchAnchor, {
 elements.transcript.addEventListener("touchcancel", clearTouchAnchor, {
 	passive: true,
 });
-window.addEventListener("resize", scheduleTranscriptMeasure);
+
+// Asking for the latest is the same contract as a send: follow, then pin in
+// this frame so the chip hides before the eased climb starts. Pending
+// follow-through acks stay queued — their follow agrees with this one. Blur
+// so the keyboard's next Space scrolls the transcript instead of re-clicking
+// a control that has just hidden itself.
+elements.jumpToBottom.addEventListener("click", () => {
+	scrollAnchor.follow();
+	scrollAnchor.stickToBottomIfFollowing();
+	syncJumpToBottomButton();
+	elements.jumpToBottom.blur();
+});
+window.addEventListener("resize", () => {
+	scheduleTranscriptMeasure();
+	// Rewrap resizes the transcript's height under a still-following viewport,
+	// and the clamp a shrink produces arrives as a bare scroll event. Re-pinning
+	// in the same frame keeps the attachment honest across the whole gesture;
+	// renders coalesce, so a drag costs one pass per frame. Detached, the gap
+	// still moved, so the chip re-reads it directly.
+	if (scrollAnchor.isFollowing) scheduleRender();
+	else syncJumpToBottomButton();
+});
 
 elements.pinnedPromptBody.addEventListener("click", () =>
 	pinnedPrompt.revealActivePrompt(),
@@ -1130,6 +1177,14 @@ document.addEventListener("visibilitychange", () => {
 	// retried only from a render pass, and nothing here is guaranteed to schedule
 	// one. The host is waiting on the `composerFocused` reply.
 	composerFocusRequests.attempt();
+	// No frame ran while the view was hidden, but its geometry kept changing:
+	// images finished loading, diagrams mounted, the composer reflowed, and a
+	// resync may have replaced nodes. A viewport that was attached owes itself a
+	// re-pin once frames run again, before any clamp the drift produced can be
+	// mistaken for a reader gesture. A detached one drifted too — its gap moved
+	// with no scroll event to report it, and the chip re-reads that gap here.
+	if (scrollAnchor.isFollowing) scheduleRender();
+	else syncJumpToBottomButton();
 });
 
 window.addEventListener("resize", () => selectorController.reposition());
@@ -1458,10 +1513,16 @@ function applySnapshot(
 		// A path refused while the old session was open may name a file that exists by
 		// now, and this is the moment the transcript is rebuilt from scratch.
 		mediaSources.clearRefusals();
-		// Nothing in a different session's transcript can be reused, and the reader
-		// expects a fresh session to start at its newest message.
+		// Nothing in a different session's transcript can be reused.
 		transcriptView.clear();
-		scrollAnchor.follow();
+	}
+	if (sessionChanged || transcriptView.size === 0) {
+		// A fresh build starts from an offset that means nothing — wherever the
+		// previous session was scrolled, or scrollTop 0 in a webview that has never
+		// drawn. The reader expects the newest message in the first frame, not an
+		// eased climb across content nobody has seen: one that hands every native
+		// clamp on the way a chance to be read as a reader gesture.
+		scrollAnchor.follow({ snap: true });
 	}
 	scheduleRender();
 }
@@ -1941,6 +2002,7 @@ function renderStreamingFrame(): void {
 	if (!message) {
 		renderMessages();
 		scrollAnchor.stickToBottomIfFollowing();
+		syncJumpToBottomButton();
 		return;
 	}
 	const key = messageKey(message);
@@ -1949,6 +2011,7 @@ function renderStreamingFrame(): void {
 		renderMessages();
 	}
 	scrollAnchor.stickToBottomIfFollowing();
+	syncJumpToBottomButton();
 }
 
 function render(): void {
@@ -2029,8 +2092,10 @@ function render(): void {
 	refreshRelativeTimes();
 	// Bottom-pinning happens after every DOM write in this pass, so the height it
 	// reads is final. Whether it runs at all is the ScrollAnchor's decision, which
-	// was already made from scroll events and reader gestures.
+	// was already made from scroll events and reader gestures. The chip reads the
+	// same final metrics right after — a pin can retire it without a scroll event.
 	scrollAnchor.stickToBottomIfFollowing();
+	syncJumpToBottomButton();
 	scheduleTranscriptMeasure();
 }
 

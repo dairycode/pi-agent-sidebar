@@ -171,6 +171,27 @@ test("an upward gesture detaches before any scrolling happens", async () => {
 	}
 });
 
+test("the gap from the bottom reads from live metrics for the jump chip", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+
+		// While following and pinned the gap is zero, so the chip's detached
+		// half of its condition already fails. The number matters once the
+		// reader scrolls away: the chip shows only past a threshold, so the
+		// getter must track the viewport, not a stale record.
+		viewport.scrollHeight = 9000;
+		viewport.scrollTop = 600;
+		assert.equal(anchor.distanceFromBottomPx, 8000);
+
+		viewport.scrollTop = 8000;
+		assert.equal(anchor.distanceFromBottomPx, 600);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("downward gestures re-attach only after native scrolling settles", async () => {
 	const loaded = await loadScrollAnchor();
 	try {
@@ -492,6 +513,185 @@ test("an upward scroll through the attach window stays detached", async () => {
 			false,
 			"moving away from the bottom must not re-attach",
 		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a native clamp onto a pinned bottom edge keeps following", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+
+		// Pinned: the pin recorded scrollTop 600 as ours.
+		assert.equal(anchor.stickToBottomIfFollowing(), true);
+		assert.equal(viewport.scrollTop, 600);
+
+		// Content above the viewport shrank by 40px. The browser pulls the pinned
+		// offset back to the new maximum, so the scroll event reports a position
+		// we did not assign — but the landing is exactly the bottom edge, which is
+		// the position the pin was holding. A layout event must not read as an
+		// upward reader gesture: detaching here would end following for the rest
+		// of the session, because nothing but a reader gesture re-attaches.
+		viewport.scrollHeight = 960;
+		viewport.scrollTop = 560;
+		anchor.noteScroll();
+
+		assert.equal(
+			anchor.isFollowing,
+			true,
+			"a landing on the bottom edge is the pin holding, not a gesture",
+		);
+		assert.equal(anchor.isReaderScrolling, false);
+
+		// The landing was re-recorded as ours: a repeated event at the same
+		// position is recognised, and the next pin owns the viewport again.
+		anchor.noteScroll();
+		assert.equal(anchor.isFollowing, true);
+		assert.equal(anchor.stickToBottomIfFollowing(), true);
+		assert.equal(viewport.scrollTop, 560);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a clamp onto the bottom during reader scrolling re-attaches after settling", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		const anchor = new loaded.module.ScrollAnchor({ viewport });
+
+		// The reader owns the viewport after scrolling up.
+		viewport.scrollTop = 500; // 100px above the bottom
+		anchor.noteScroll();
+		assert.equal(anchor.isFollowing, false);
+
+		// Content above collapsed: the maximum drops below the reader's offset
+		// and the browser clamps it down onto the bottom edge. The raw position
+		// delta reads upward, but the landing faces the bottom.
+		viewport.scrollHeight = 880;
+		viewport.scrollTop = 480;
+		anchor.noteScroll();
+
+		assert.equal(
+			anchor.finishUserScroll(),
+			true,
+			"an arrival on the bottom edge is an arrival however the clamp moved us",
+		);
+		assert.equal(anchor.isFollowing, true);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("the first pin after a fresh-build follow jumps without easing", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport();
+		let requestedFrame = false;
+		const anchor = new loaded.module.ScrollAnchor({
+			viewport,
+			requestFrame: () => {
+				requestedFrame = true;
+				return 1;
+			},
+			cancelFrame: () => {},
+		});
+
+		// A session switch: the offset still points into the previous session's
+		// content, and the fresh build's bottom is far away. The first pin must
+		// land there outright — easing would cross messages nobody has seen and
+		// hand every native clamp on the way a chance to end the follow.
+		anchor.follow({ snap: true });
+		viewport.scrollHeight = 9000;
+		viewport.scrollTop = 600;
+		assert.equal(anchor.stickToBottomIfFollowing(), true);
+
+		assert.equal(viewport.scrollTop, 8600);
+		assert.equal(
+			requestedFrame,
+			false,
+			"the fresh-build pin must not animate",
+		);
+		assert.equal(anchor.isFollowing, true);
+
+		// The meaningless offset outlives the first pin: images finish loading,
+		// the composer settles, the backfill widens the window — each moves the
+		// bottom again, and each must pin outright too, until the reader takes
+		// the viewport over with a gesture.
+		viewport.scrollHeight = 12000;
+		assert.equal(anchor.stickToBottomIfFollowing(), true);
+		assert.equal(viewport.scrollTop, 11600);
+		assert.equal(
+			requestedFrame,
+			false,
+			"settling layout after a fresh build must not animate either",
+		);
+
+		// A reader gesture hands control back: the next follow eases again.
+		anchor.noteUserIntent(-40);
+		assert.equal(anchor.isFollowing, false);
+		anchor.follow();
+		viewport.scrollTop = 9000;
+		assert.equal(anchor.stickToBottomIfFollowing(), true);
+		assert.ok(
+			viewport.scrollTop < 11600,
+			"a follow without snap keeps its eased climb",
+		);
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("a native nudge mid-climb is absorbed once, a sustained one detaches", async () => {
+	const loaded = await loadScrollAnchor();
+	try {
+		const viewport = fakeViewport({ scrollHeight: 2400 });
+		let nextFrame;
+		const anchor = new loaded.module.ScrollAnchor({
+			viewport,
+			requestFrame: (callback) => {
+				nextFrame = callback;
+				return 1;
+			},
+			cancelFrame: () => {
+				nextFrame = undefined;
+			},
+		});
+		const runFrame = (timestamp) => {
+			const callback = nextFrame;
+			nextFrame = undefined;
+			assert.ok(callback, "an animation frame should be pending");
+			callback(timestamp);
+		};
+
+		// Climbing from 600 to the bottom at 2000.
+		viewport.scrollTop = 600;
+		anchor.stickToBottomIfFollowing();
+
+		// One native adjustment — a clamp, an anchoring correction — lands far
+		// from both the expected offset and the bottom. The climb absorbs it and
+		// retargets from where the viewport actually is.
+		viewport.scrollTop = 1200;
+		anchor.noteScroll();
+		assert.equal(anchor.isFollowing, true);
+		runFrame(0);
+		assert.ok(
+			viewport.scrollTop > 1200,
+			"the climb should resume from the adjusted position",
+		);
+
+		// A second unexpected offset with none of ours in between is something
+		// sustainably driving the scroll — the reader takes over.
+		viewport.scrollTop = 700;
+		anchor.noteScroll();
+		assert.equal(
+			anchor.isFollowing,
+			false,
+			"a sustained driver of the scroll is the reader",
+		);
+		assert.equal(nextFrame, undefined, "the climb must stop");
 	} finally {
 		await loaded.dispose();
 	}

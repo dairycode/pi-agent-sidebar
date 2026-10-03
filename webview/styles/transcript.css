@@ -1,3 +1,15 @@
+/* The frame owns the grid cell the transcript used to hold directly: one
+   minmax(0, 1fr) row hands the transcript the full cell height without giving
+   back the min-size floor, and position: relative lets the jump chip float
+   over the scroller instead of scrolling away inside it. */
+.transcript-frame {
+	position: relative;
+	display: grid;
+	grid-template-rows: minmax(0, 1fr);
+	min-width: 0;
+	min-height: 0;
+}
+
 .transcript {
 	position: relative;
 	min-height: 0;
@@ -9,6 +21,60 @@
 	   message nodes across renders: anchoring needs a stable node to anchor to,
 	   and the previous full rebuild replaced every one of them each frame. */
 	overflow-anchor: auto;
+}
+
+/* Floating “back to the latest” chip, out of flow: its show/hide can never
+   reflow the transcript. Hidden state rides visibility — not display — so the
+   fade transition survives, and a hidden control also drops out of the tab
+   order without a script. At rest the chip is translucent over a backdrop
+   blur, so the transcript it parks on reads as ghosted texture rather than a
+   collision; hover returns to opaque paint — the lesson the copy chip taught:
+   once the pointer is on it, transcript text must not slide visibly behind
+   the icon. */
+.jump-to-bottom {
+	position: absolute;
+	right: 14px;
+	bottom: 14px;
+	z-index: 5;
+	display: inline-grid;
+	place-items: center;
+	width: var(--pi-control-size);
+	height: var(--pi-control-size);
+	padding: 0;
+	border: 1px solid var(--pi-border);
+	border-radius: var(--pi-radius-control);
+	color: var(--vscode-foreground);
+	background: color-mix(in srgb, var(--pi-raised) 55%, transparent);
+	backdrop-filter: blur(8px);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+	opacity: 0;
+	visibility: hidden;
+	transform: translateY(6px);
+	transition: opacity 0.16s ease, transform 0.16s ease,
+		visibility 0s linear 0.16s;
+}
+
+.jump-to-bottom.is-visible {
+	opacity: 1;
+	visibility: visible;
+	transform: translateY(0);
+	transition: opacity 0.16s ease, transform 0.16s ease, visibility 0s;
+}
+
+.jump-to-bottom:hover:not(:disabled) {
+	background: var(--pi-raised);
+}
+
+.jump-to-bottom:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.jump-to-bottom {
+		transition: none;
+		transform: none;
+	}
 }
 
 /* One real layout box per message keeps reconciliation and flex spacing aligned:

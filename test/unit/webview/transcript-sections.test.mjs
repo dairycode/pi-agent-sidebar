@@ -67,6 +67,31 @@ test("a collapsed tool box clips from its first frame, body or not", async () =>
 	);
 });
 
+test("the jump chip floats out of flow and hides through visibility, not display", async () => {
+	const css = await readFile("webview/styles/transcript.css", "utf8");
+	// Absolute inside the frame: show/hide can never reflow the transcript.
+	assert.match(
+		css,
+		/\.jump-to-bottom \{[^}]*position: absolute;[^}]*\}/u,
+		"the chip must float over the scroller, never inside its flow",
+	);
+	// display:none would cut the fade; visibility keeps the transition and
+	// drops the hidden control out of the tab order without a script.
+	assert.match(
+		css,
+		/\.jump-to-bottom \{[^}]*opacity: 0;[^}]*visibility: hidden;[^}]*\}/u,
+	);
+	assert.match(
+		css,
+		/\.jump-to-bottom\.is-visible \{[^}]*visibility: visible;[^}]*\}/u,
+	);
+	// The only motion is the chip itself; readers who ask for less get none.
+	assert.match(
+		css,
+		/@media \(prefers-reduced-motion: reduce\) \{\s*\.jump-to-bottom \{\s*transition: none;\s*transform: none;\s*\}\s*\}/u,
+	);
+});
+
 test("a running call breathes on its border, the header carries only the output column", async () => {
 	const css = await readFile("webview/styles/transcript.css", "utf8");
 	// The call's status lives on the box: a running border breathes between a

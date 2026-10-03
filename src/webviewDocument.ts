@@ -54,27 +54,30 @@ export function createWebviewDocument(
 			</div>
 		</header>
 
-		<main id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off">
-			<div id="connection-banner" class="connection-banner" hidden></div>
-			<div id="pinned-prompt-slot" class="pinned-prompt-slot">
-				<div id="pinned-prompt" class="pinned-prompt" hidden>
-					<button id="pinned-prompt-body" class="pinned-prompt-body" type="button" title="Scroll to this message" aria-label="Scroll to this message">
-						<span id="pinned-prompt-text" class="pinned-prompt-text"></span>
-					</button>
-					<button id="pinned-prompt-toggle" class="pinned-prompt-toggle icon-button" type="button" hidden aria-expanded="false" aria-controls="pinned-prompt-text" title="Expand this message" aria-label="Expand this message"><i class="codicon codicon-chevron-down" aria-hidden="true"></i></button>
+		<div id="transcript-frame" class="transcript-frame">
+			<main id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off">
+				<div id="connection-banner" class="connection-banner" hidden></div>
+				<div id="pinned-prompt-slot" class="pinned-prompt-slot">
+					<div id="pinned-prompt" class="pinned-prompt" hidden>
+						<button id="pinned-prompt-body" class="pinned-prompt-body" type="button" title="Scroll to this message" aria-label="Scroll to this message">
+							<span id="pinned-prompt-text" class="pinned-prompt-text"></span>
+						</button>
+						<button id="pinned-prompt-toggle" class="pinned-prompt-toggle icon-button" type="button" hidden aria-expanded="false" aria-controls="pinned-prompt-text" title="Expand this message" aria-label="Expand this message"><i class="codicon codicon-chevron-down" aria-hidden="true"></i></button>
+					</div>
 				</div>
-			</div>
-			<section id="empty-state" class="empty-state">
-				<svg class="empty-logo" viewBox="0 0 256 256" width="54" height="54" aria-hidden="true">
-					<rect class="empty-logo-plate" width="256" height="256" rx="48"/>
-					<path class="empty-logo-glyph" d="M48 64h160v32h-24v112h-32V96h-48v112H72V96H48V64Z"/>
-					<path class="empty-logo-mark" d="M104 112h48v32h-48z" opacity=".9"/>
-				</svg>
-				<div class="empty-wordmark">pi agent</div>
-				<p id="empty-detail" class="empty-detail">Starting in this workspace...</p>
-			</section>
-			<div id="messages" class="messages"></div>
-		</main>
+				<section id="empty-state" class="empty-state">
+					<svg class="empty-logo" viewBox="0 0 256 256" width="54" height="54" aria-hidden="true">
+						<rect class="empty-logo-plate" width="256" height="256" rx="48"/>
+						<path class="empty-logo-glyph" d="M48 64h160v32h-24v112h-32V96h-48v112H72V96H48V64Z"/>
+						<path class="empty-logo-mark" d="M104 112h48v32h-48z" opacity=".9"/>
+					</svg>
+					<div class="empty-wordmark">pi agent</div>
+					<p id="empty-detail" class="empty-detail">Starting in this workspace...</p>
+				</section>
+				<div id="messages" class="messages"></div>
+			</main>
+			<button id="jump-to-bottom" class="jump-to-bottom" type="button" title="Scroll to latest" aria-label="Scroll to latest"><i class="codicon codicon-arrow-down" aria-hidden="true"></i></button>
+		</div>
 
 		<aside id="history-panel" class="history-panel" role="region" aria-label="Session history" hidden>
 			<div class="history-search" role="search">

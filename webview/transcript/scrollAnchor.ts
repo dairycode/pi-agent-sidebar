@@ -65,6 +65,8 @@ const PROGRAMMATIC_TOLERANCE_PX = 1;
 export class ScrollAnchor {
 	private following = true;
 	private expectedScrollTop: number | undefined;
+	private snapUntilGesture = false;
+	private absorbedUnexpectedCount = 0;
 	private animationFrame: number | undefined;
 	private animationTargetScrollTop: number | undefined;
 	private previousFrameTime: number | undefined;
@@ -85,6 +87,16 @@ export class ScrollAnchor {
 	/** True while new content should pull the viewport down with it. */
 	public get isFollowing(): boolean {
 		return this.following;
+	}
+
+	/**
+	 * Pixels between the viewport's bottom edge and the content's. Reads scroll
+	 * metrics — call it where layout is already current (after a scroll event,
+	 * inside a render pass), not on arbitrary hot paths.
+	 */
+	public get distanceFromBottomPx(): number {
+		const { scrollHeight, scrollTop, clientHeight } = this.options.viewport;
+		return scrollHeight - scrollTop - clientHeight;
 	}
 
 	/** True while native user scrolling exclusively owns scrollTop. */
@@ -112,17 +124,18 @@ export class ScrollAnchor {
 			deltaY > 0 &&
 			this.following &&
 			!this.readerControlsViewport &&
-			this.distanceFromBottom() <= this.bottomThresholdPx
+			this.distanceFromBottomPx <= this.bottomThresholdPx
 		) {
 			return false;
 		}
 		this.readerControlsViewport = true;
 		this.readerScrollDirection = deltaY > 0 ? 1 : -1;
 		if (deltaY < 0) this.readerReachedBottom = false;
-		else if (this.distanceFromBottom() <= this.bottomThresholdPx) {
+		else if (this.distanceFromBottomPx <= this.bottomThresholdPx) {
 			this.readerReachedBottom = true;
 		}
 		this.following = false;
+		this.snapUntilGesture = false;
 		this.cancelAnimation();
 		return true;
 	}
@@ -135,7 +148,7 @@ export class ScrollAnchor {
 	 */
 	public noteScroll(): boolean {
 		const { scrollTop } = this.options.viewport;
-		const distanceFromBottom = this.distanceFromBottom();
+		const distanceFromBottom = this.distanceFromBottomPx;
 		const previousDistanceFromBottom = this.lastDistanceFromBottom;
 		const previousScrollTop = this.lastScrollTop;
 		this.lastDistanceFromBottom = distanceFromBottom;
@@ -144,7 +157,36 @@ export class ScrollAnchor {
 		// A delayed event from our own assignment must not steal ownership after a
 		// newer gesture. The explicit gesture state remains intact for its debounce.
 		if (this.isAtExpectedScrollTop(scrollTop)) {
+			this.absorbedUnexpectedCount = 0;
 			return this.readerControlsViewport;
+		}
+
+		// A native position fix on a pinned viewport — a clamp after content above
+		// shrank, an anchoring adjustment, scroll restoration — reports an offset we
+		// did not ask for, but it lands exactly on the bottom edge, because the
+		// pinned bottom is the position being held. Reading that as a gesture would
+		// detach the transcript on a pure layout event with nothing to re-attach it,
+		// so the landing is re-recorded as ours instead. A reader scroll-away
+		// cannot take this branch: its resting point sits above the threshold.
+		if (this.following && distanceFromBottom <= this.bottomThresholdPx) {
+			this.expectedScrollTop = scrollTop;
+			return false;
+		}
+
+		// While an animation is carrying the viewport to the bottom, a native
+		// position fix lands off the bottom and off the expected offset — a clamp
+		// from a composer restoring its height, an anchoring adjustment. One such
+		// event is absorbed: the climb retargets from where the viewport actually
+		// is. A second consecutive one is something sustainably driving the scroll
+		// — a scrollbar drag, held keys — and the reader takes over.
+		if (
+			this.following &&
+			this.animationTargetScrollTop !== undefined &&
+			this.absorbedUnexpectedCount === 0
+		) {
+			this.absorbedUnexpectedCount = 1;
+			this.expectedScrollTop = scrollTop;
+			return false;
 		}
 
 		if (this.readerControlsViewport) {
@@ -162,6 +204,11 @@ export class ScrollAnchor {
 			}
 			if (distanceFromBottom <= this.bottomThresholdPx) {
 				this.readerReachedBottom = true;
+				// The same native clamp can pull a reader-owned viewport the last
+				// pixels onto the edge. The landing faces the bottom whatever sign
+				// the raw delta carried, and `finishUserScroll` only hands ownership
+				// back to a viewport it believes was moving down.
+				this.readerScrollDirection = 1;
 			}
 			this.following = false;
 			this.cancelAnimation();
@@ -186,6 +233,7 @@ export class ScrollAnchor {
 					? 1
 					: -1;
 		this.following = false;
+		this.snapUntilGesture = false;
 		this.cancelAnimation();
 		return true;
 	}
@@ -200,12 +248,13 @@ export class ScrollAnchor {
 		const shouldFollow =
 			this.readerScrollDirection > 0 &&
 			(this.readerReachedBottom ||
-				this.distanceFromBottom() <= this.attachWindowPx);
+				this.distanceFromBottomPx <= this.attachWindowPx);
 		this.readerControlsViewport = false;
 		this.readerReachedBottom = false;
 		this.readerScrollDirection = 0;
 		if (!shouldFollow) return false;
 		this.following = true;
+		this.snapUntilGesture = false;
 		this.expectedScrollTop = this.options.viewport.scrollTop;
 		return true;
 	}
@@ -216,6 +265,7 @@ export class ScrollAnchor {
 		this.readerReachedBottom = false;
 		this.readerScrollDirection = 0;
 		this.following = false;
+		this.snapUntilGesture = false;
 		this.cancelAnimation();
 	}
 
@@ -237,12 +287,21 @@ export class ScrollAnchor {
 		viewport.scrollTop += deltaY;
 		this.expectedScrollTop = viewport.scrollTop;
 		this.lastScrollTop = viewport.scrollTop;
-		this.lastDistanceFromBottom = this.distanceFromBottom();
+		this.lastDistanceFromBottom = this.distanceFromBottomPx;
 		return true;
 	}
 
-	/** Forces following again, for actions that imply "show me the latest". */
-	public follow(): void {
+	/**
+	 * Forces following again, for actions that imply "show me the latest".
+	 *
+	 * `snap` holds every stick to a direct pin — no easing — until the reader
+	 * takes the viewport over with a gesture. A fresh build's offset is
+	 * meaningless, and it stays meaningless for more than one frame: the
+	 * backfill, image loads, and the composer settling all move the bottom
+	 * after the first pin, and easing any of them reads as the transcript
+	 * sliding instead of landing.
+	 */
+	public follow(options?: { snap?: boolean }): void {
 		this.readerControlsViewport = false;
 		this.readerReachedBottom = false;
 		this.readerScrollDirection = 0;
@@ -251,6 +310,7 @@ export class ScrollAnchor {
 		this.expectedScrollTop = undefined;
 		this.lastDistanceFromBottom = undefined;
 		this.lastScrollTop = undefined;
+		this.snapUntilGesture = Boolean(options?.snap);
 	}
 
 	/**
@@ -269,6 +329,12 @@ export class ScrollAnchor {
 			0,
 			viewport.scrollHeight - viewport.clientHeight,
 		);
+		if (this.snapUntilGesture) {
+			this.cancelAnimation();
+			viewport.scrollTop = targetScrollTop;
+			this.expectedScrollTop = viewport.scrollTop;
+			return true;
+		}
 		if (
 			this.canAnimate() &&
 			targetScrollTop - viewport.scrollTop > SMOOTH_SCROLL_SETTLE_PX
@@ -364,6 +430,7 @@ export class ScrollAnchor {
 		this.animationFrame = undefined;
 		this.animationTargetScrollTop = undefined;
 		this.previousFrameTime = undefined;
+		this.absorbedUnexpectedCount = 0;
 	}
 
 	private isAtExpectedScrollTop(scrollTop: number): boolean {
@@ -371,10 +438,5 @@ export class ScrollAnchor {
 			this.expectedScrollTop !== undefined &&
 			Math.abs(scrollTop - this.expectedScrollTop) <= PROGRAMMATIC_TOLERANCE_PX
 		);
-	}
-
-	private distanceFromBottom(): number {
-		const { scrollHeight, scrollTop, clientHeight } = this.options.viewport;
-		return scrollHeight - scrollTop - clientHeight;
 	}
 }

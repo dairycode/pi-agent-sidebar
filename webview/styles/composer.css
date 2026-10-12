@@ -1,6 +1,12 @@
+/* Side insets mirror `.composer-shell`'s, so the box lands on the transcript's
+   structural rail instead of spanning flush to the body edge — with the composer
+   directly below, three left edges would stack. The 8px inner padding then puts
+   widget text on the same line as the status row and toolbar inside that
+   composer. */
 .widget-area {
 	max-height: min(120px, 20vh);
-	padding: 7px 9px;
+	margin: 0 8px;
+	padding: 7px 8px;
 	overflow: auto;
 	border: 1px solid var(--pi-border-subtle);
 	border-radius: var(--pi-radius-content);
@@ -17,7 +23,10 @@
 	min-width: 0;
 	max-width: 100%;
 	max-height: min(240px, 58vh);
-	padding: 7px 7px 9px;
+	/* Side insets mirror `.messages`' own 8px padding, so the composer's border
+	   sits on the transcript's structural rail instead of floating 1px outside
+	   every box edge above it. */
+	padding: 7px 8px 9px;
 	overflow-x: hidden;
 	overflow-y: auto;
 	border-top: 1px solid var(--pi-border-subtle);
@@ -116,13 +125,15 @@
 }
 
 /* Align status metadata with the toolbar controls rather than the textarea text.
-   These rows are siblings of `.composer`, so they need their own inset. */
+   These rows are siblings of `.composer`, so they need their own inset — the
+   toolbar's 8px padding plus the composer's 1px border, or the rows land 1px
+   left of the controls they are meant to line up with. */
 .composer-status-row {
 	display: flex;
 	align-items: center;
 	min-width: 0;
 	min-height: 16px;
-	margin: 0 8px 5px;
+	margin: 0 9px 5px;
 	gap: 8px;
 }
 
@@ -141,7 +152,7 @@
    visual edge as the controls below. */
 .attachment-list {
 	display: flex;
-	margin: 0 8px 5px;
+	margin: 0 9px 5px;
 	overflow-x: auto;
 	gap: 4px;
 }
@@ -237,12 +248,16 @@
    (43.85, with `min-height` covering the remainder). The old 11px/4px split looked
    even while typing but not at rest: a textarea is top-aligned, so the leftover
    10px of the minimum height all pooled below the text — 11px above against
-   14.15px below. */
+   14.15px below.
+
+   Horizontal is derived too: 10px inside the composer's 1px border plus the
+   shell's 8px inset puts typed text on the same 19px column a tool box's text
+   sits on, so a sent prompt does not shift when it becomes a message. */
 .prompt-highlights,
 #prompt-input {
 	width: 100%;
 	min-height: 44px;
-	padding: 12.5px 11px;
+	padding: 12.5px 10px;
 	font: inherit;
 	letter-spacing: 0;
 	line-height: 1.45;

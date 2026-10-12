@@ -13,8 +13,18 @@
 .transcript {
 	position: relative;
 	min-height: 0;
+	/* Claims the body's right 8px gutter so the overlay scrollbar paints on the
+	   window edge itself instead of floating 8px inside it. The scrollbar takes
+	   no layout width — colour-only theming below keeps the platform's overlay
+	   behaviour — so the claim shifts no rails: the content rules inside just
+	   re-add the 8px to hold the 16px rail. */
+	margin-right: -8px;
 	overflow-x: hidden;
 	overflow-y: auto;
+	/* The platform's native scrollbar, themed in colour only: a themed thumb on
+	   a transparent track. Width and display stay untouched — styling those
+	   switches Chromium off its platform overlay behaviour, and the native
+	   scrollbar is the baseline the DOM-thumb alternative is measured against. */
 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 	/* Let the browser hold the reader's position when content above the viewport
 	   changes height. Only worth asking for because the transcript now reuses
@@ -105,13 +115,14 @@
    that the scrolling message behind it showed through, so a half-clipped line
    peeked out above the pinned text and read as a misplaced overlay.
 
-   The side insets mirror `.messages`' own 8px padding, and the 9px left padding
-   is `.user-message`'s 11px less this row's 2px accent border — so the pinned
-   text lands on exactly the column the real message body uses. */
+   The side insets mirror `.messages`' side paddings (8px left, 16px right
+   re-adding the claimed gutter), and the row's 2px accent border plus 9px
+   left padding mirror `.user-message`'s own 2px border and 9px padding — so
+   the pinned text lands on exactly the column the real message body uses. */
 .pinned-prompt {
 	position: absolute;
 	top: 0;
-	right: 8px;
+	right: 16px;
 	left: 8px;
 	display: flex;
 	min-width: 0;
@@ -231,7 +242,9 @@
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	padding: 28px 20px 76px;
+	/* Right padding re-adds the gutter the scroller claims, so the centred mark
+	   stays centred in the window. */
+	padding: 28px 28px 76px 20px;
 	text-align: center;
 }
 
@@ -293,7 +306,10 @@
 	display: flex;
 	flex-direction: column;
 	min-width: 0;
-	padding: var(--pi-line) 8px calc(var(--pi-line) * 2);
+	/* Right padding re-adds the 8px gutter the scroller claims, keeping the
+	   message column on the 16px rail; left is the plain 8px rail. The overlay
+	   scrollbar rides outside this padding, on the window edge. */
+	padding: var(--pi-line) 16px calc(var(--pi-line) * 2) 8px;
 	gap: var(--pi-line-half);
 }
 
@@ -322,7 +338,9 @@
 	align-self: stretch;
 	width: 100%;
 	max-width: none;
-	padding: var(--pi-line-half) 11px;
+	/* 9px, not 11px: the 2px accent border takes the difference, so the message
+	   text sits on the same 19px column as a tool box's text. */
+	padding: var(--pi-line-half) 11px var(--pi-line-half) 9px;
 	border-left: 2px solid var(--pi-theme-accent);
 	border-radius: var(--pi-radius-content);
 	background: var(--pi-theme-user-message-bg);
@@ -342,10 +360,12 @@
 	line-height: var(--pi-line-ratio);
 }
 
-/* pi pads the assistant turn on all sides, so prose starts on the same column
-   as a tool box's text rather than hugging the sidebar edge. */
+/* Prose sits on the same left rail as the blocks' borders: every structural
+   left edge in the transcript — prose, thinking, the border of a tool box,
+   skill card, or code fence — lands on one line, and a block's own text is
+   what indents inside it. */
 .assistant-text {
-	padding: var(--pi-line-half) 11px 0;
+	padding: var(--pi-line-half) 0 0;
 }
 
 /* pi sends a text block before tool calls even when the model produced only
@@ -529,8 +549,8 @@
    sets `color` at equal specificity, so a bare `.custom-message` would lose the
    colour to source order. */
 .system-message.custom-message {
-	/* 10px rather than 11px: the 1px border takes the difference, so an extension
-	   message stays on the same left column as the prose around it. */
+	/* 10px rather than 11px: the 1px border takes the difference, so the text
+	   sits on the same 19px column as the text of every other box. */
 	padding: var(--pi-line-half) 10px;
 	border: 1px solid var(--pi-theme-custom-message-border);
 	border-radius: var(--pi-radius-content);
@@ -584,7 +604,9 @@
 .skill-body pre {
 	position: relative;
 	max-width: 100%;
-	padding: var(--pi-line-half) 34px var(--pi-line-half) 11px;
+	/* 10px, not 11px: the 1px border takes the difference, so the code sits on
+	   the same 19px column as a tool box's text. */
+	padding: var(--pi-line-half) 34px var(--pi-line-half) 10px;
 	overflow: auto;
 	border: 1px solid var(--pi-theme-md-code-block-border);
 	border-radius: var(--pi-radius-content);
@@ -651,7 +673,9 @@
 
 .assistant-text blockquote,
 .skill-body blockquote {
-	padding-left: 10px;
+	/* 9px, not 10px: the 2px quote border takes the difference, so the quoted
+	   text sits on the same 19px column as a tool box's text. */
+	padding-left: 9px;
 	border-left: 2px solid var(--pi-theme-md-quote-border);
 	color: var(--pi-theme-md-quote);
 	font-style: italic;
@@ -780,7 +804,7 @@
    distances to neighbouring blocks belong to the boundary rules around the
    box, so the edge can hug its content. */
 .thinking-text {
-	padding: 4px 11px;
+	padding: 4px 0;
 	color: var(--pi-theme-thinking-text);
 	font-family: var(--vscode-font-family);
 	font-style: italic;
@@ -803,7 +827,7 @@
    edges. */
 .thinking-collapsed {
 	display: none;
-	padding: 4px 11px;
+	padding: 4px 0;
 	color: var(--pi-theme-thinking-text);
 	font-family: var(--vscode-font-family);
 	font-style: italic;
@@ -930,8 +954,8 @@
    where it went (see `pi-theme.css`). */
 .tool-call {
 	min-width: 0;
-	/* 10px, not the 11px `.assistant-text` uses: the border takes the other 1px,
-	   and the box's text has to stay on the column of the prose above it. */
+	/* 10px, not 11px: the border takes the other 1px, so the box's text sits on
+	   the same 19px column as the text of every other box. */
 	padding: var(--pi-line-half) 10px;
 	border: 1px solid var(--pi-theme-tool-success-border);
 	border-radius: var(--pi-radius-content);
@@ -1214,8 +1238,8 @@
    instead of only highlighting three words inside it. */
 .skill-block {
 	min-width: 0;
-	/* 10px, not 11px: the border takes the other 1px, so the card's text stays on
-	   the column of the messages around it — the same offset
+	/* 10px, not 11px: the border takes the other 1px, so the card's text sits on
+	   the same 19px column as the text of every other box — the same offset
 	   `.system-message.custom-message`, the other card in this family, uses. */
 	padding: var(--pi-line-half) 10px;
 	border: 1px solid var(--pi-theme-custom-message-border);
@@ -1357,6 +1381,11 @@
 }
 
 .connection-banner {
+	/* Side insets mirror `.messages`' side paddings, so the banner spans exactly
+	   the message column it floats over — any wider and scrolling boxes would peek
+	   out beside it. Its 2px error border plus 9px padding then put the text on
+	   the same 27px column as the boxes below (the `.toast` pattern). */
+	margin-inline: 8px 16px;
 	position: sticky;
 	top: 0;
 	z-index: 3;

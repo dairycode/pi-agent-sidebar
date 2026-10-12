@@ -193,7 +193,12 @@ button {
 	width: 100%;
 	max-width: 100%;
 	height: 100vh;
-	overflow: hidden;
+	/* Clipped vertically only: `overflow-x` stays visible so the transcript can
+	   claim the body's right 8px gutter and park its overlay scrollbar on the
+	   window edge itself (see `.transcript`). The page cannot scroll — html and
+	   body are overflow: hidden — so the vertical clip is layout insurance, not
+	   scroll control. */
+	overflow: visible clip;
 	min-width: 0;
 }
 
@@ -205,7 +210,12 @@ button {
 	justify-content: space-between;
 	min-width: 0;
 	height: 38px;
-	padding: 0 2px 0 4px;
+	/* The title is this row's only text, so its inset targets the transcript's
+	   text rail, not the structural one: body's 8px gutter + 5px + the 6px status
+	   dot + the 8px gap land the first glyph at 27px — the same column a message's
+	   text starts at, with the dot hanging outside the rail like a list marker.
+	   The right inset stays tight on purpose: header actions hug the view edge. */
+	padding: 0 2px 0 5px;
 	overflow: hidden;
 	border-bottom: 1px solid var(--pi-border-subtle);
 	background: var(--pi-page-background);

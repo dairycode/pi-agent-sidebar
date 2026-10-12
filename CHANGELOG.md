@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0
+
+- Put the transcript's scrollbar where the window already is. The scroller now
+  claims the body's right gutter, so the platform's own overlay scrollbar
+  paints on the window edge instead of floating 8px inside it — the same
+  scrollbox a reader expects in any sidebar pane. The claim is geometry-only:
+  the scrollbar keeps its native overlay behaviour (colour theming stays
+  colour-only, and width/display overrides stay off it), and every content
+  rule inside re-adds the claimed gutter, so no rail, column, or centred
+  mark moved.
+
+- Give the transcript one rail system instead of a pile of near-miss insets.
+  Every structural left edge — assistant prose, thinking, the border of a
+  tool box, skill card, or code fence — now lands on one line, and a block's
+  text indents inside its own border by a constant 11px, so the text of every
+  box sits on one shared column. The same column holds the user message
+  (whose 2px accent border and padding were rebalanced to reach it), the
+  connection banner, and the typed prompt in the composer, so a sent prompt
+  no longer shifts sideways on its way to becoming a message. The session
+  title's first glyph, the widget box, the status and attachment rows, and
+  the pinned-prompt dock were pulled onto the matching edges of the same
+  grid, and narrow sidebars (≤320px) carry a 5px-gutter variant of the whole
+  system rather than a loose collection of breakpoint overrides.
+
 ## 0.9.2
 
 - Stay attached through scroll events the reader did not cause. A layout

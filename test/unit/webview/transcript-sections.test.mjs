@@ -183,7 +183,67 @@ test("a new user turn gets a full-line boundary without moving the composer", as
 	);
 	assert.match(
 		composerCss,
-		/\.composer-shell\s*\{[^}]*padding: 7px 7px 9px;/su,
+		/\.composer-shell\s*\{[^}]*padding: 7px 8px 9px;/su,
+	);
+});
+
+test("the native overlay scrollbar rides the window edge and the rails stay put", async () => {
+	const [transcriptCss, composerCss, responsiveCss] = await Promise.all([
+		readFile("webview/styles/transcript.css", "utf8"),
+		readFile("webview/styles/composer.css", "utf8"),
+		readFile("webview/styles/responsive.css", "utf8"),
+	]);
+	assert.match(
+		transcriptCss,
+		/\.transcript\s*\{[^}]*scrollbar-color: var\(--vscode-scrollbarSlider-background\) transparent;/su,
+		"colour-only theming keeps the platform's own scrollbar behaviour — overlay, auto-hide, geometry",
+	);
+	assert.match(
+		transcriptCss,
+		/\.transcript\s*\{[^}]*margin-right: -8px;/su,
+		"the scroller claims the body's right gutter so the overlay scrollbar paints on the window edge",
+	);
+	assert.doesNotMatch(
+		transcriptCss,
+		/::-webkit-scrollbar|scrollbar-width|scrollbar-gutter/u,
+		"any width or display override would switch Chromium off its native scrollbar behaviour",
+	);
+	assert.match(
+		transcriptCss,
+		/\.messages\s*\{[^}]*padding: var\(--pi-line\) 16px calc\(var\(--pi-line\) \* 2\) 8px;/su,
+		"the message column re-adds the claimed gutter, holding the 16px rail against the window",
+	);
+	assert.match(
+		transcriptCss,
+		/\.connection-banner\s*\{[^}]*margin-inline: 8px 16px;/su,
+		"the banner spans exactly the message column it floats over",
+	);
+	assert.match(
+		composerCss,
+		/\.widget-area\s*\{[^}]*margin: 0 8px;[^}]*padding: 7px 8px;/su,
+		"the widget box sits right above the composer, so it shares the composer's frame",
+	);
+	// Narrow sidebars shrink the gutter to 5px: the scroller claims 5 and the
+	// content rules re-add it against the window edge (rail = 5px body + 6px).
+	assert.match(
+		responsiveCss,
+		/\.transcript\s*\{[^}]*margin-right: -5px;/su,
+		"the narrow-width claim must match the narrower gutter",
+	);
+	assert.match(
+		responsiveCss,
+		/\.messages\s*\{\s*padding-inline: 6px 11px;\s*\}/u,
+		"the narrow message column re-adds the claimed 5px on the right",
+	);
+	assert.match(
+		responsiveCss,
+		/\.connection-banner\s*\{\s*margin-inline: 6px 11px;\s*\}/u,
+		"the narrow banner rides the message column inside the scroller",
+	);
+	assert.match(
+		responsiveCss,
+		/\.widget-area\s*\{\s*margin-inline: 6px;\s*\}/u,
+		"the widget box sits outside the scroller and stays symmetric",
 	);
 });
 

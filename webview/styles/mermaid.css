@@ -32,7 +32,9 @@
    diagram problem rather than as the feature not working. */
 .mermaid-error {
 	margin: 0 0 calc(var(--pi-line) / 2);
-	padding-left: 7px;
+	/* 9px, not 7px: the 2px error border takes the difference, so the note sits
+	   on the same 19px column as a tool box's text. */
+	padding-left: 9px;
 	border-left: 2px solid var(--pi-theme-error);
 	color: var(--pi-theme-dim);
 	font-size: var(--pi-font-chrome);

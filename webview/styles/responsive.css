@@ -27,15 +27,43 @@
 		padding-left: 3px;
 	}
 
+	/* The gutter is 5px here, so the scroller claims 5 and the content rules
+	   below re-add it against the window edge (left rail = 5px body + 6px;
+	   right = 6px + 5px claimed). */
+	.transcript {
+		margin-right: -5px;
+	}
+
 	.messages {
+		padding-inline: 6px 11px;
+	}
+
+	/* The rail here is body's 5px plus `.messages`' 6px; the same 6px inset keeps
+	   the composer's border on it (the desktop 8px would land 2px outside). */
+	.composer-shell {
 		padding-inline: 6px;
+	}
+
+	/* Both ride the transcript/message column, but only the banner is inside the
+	   scroller: it re-adds the claimed 5px and lands on the same 11px rail as
+	   the messages, while the widget box stays symmetric at 6px. */
+	.connection-banner {
+		margin-inline: 6px 11px;
+	}
+
+	.widget-area {
+		margin-inline: 6px;
 	}
 
 	/* Tracks the narrower message column so the docked row stays exactly as wide
 	   as the prompt it stands in for. */
 	.pinned-prompt {
-		right: 6px;
+		right: 11px;
 		left: 6px;
+	}
+
+	.empty-state {
+		padding-right: 25px;
 	}
 
 	.resource-drop-overlay {

@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.1
+
+- Draw the transcript's scrollbar on the page. A wired mouse flips macOS's
+  native bar to an always-visible, space-taking one mid-session, and no CSS
+  holds the overlay behaviour back — so the transcript now retires the native
+  scrollbar and mounts its own thumb: it appears on any scroll, fades on rest,
+  widens under the pointer, and drags, in both input modes.
+
+- Dress the sent user message in the transcript's tool-box surface, in the
+  tool family's blue: a full frame and translucent fill instead of the grey
+  wash with an accent left rule. The pinned prompt follows as the same card
+  peeking back out of the top edge — three blue sides, rounded lower corners.
+
+- Fit mermaid diagrams to the sidebar column instead of scrolling past it. A
+  diagram wider than the column now scales down proportionally, and sequence
+  diagrams are laid out with tighter spacing and wrapped labels so the drawn
+  width stays near the column in the first place. A click on the diagram swaps
+  to the size its author drew it at — the frame scrolls there — for the dense
+  ones a shrink would render unreadable.
+
+- Round session costs to two decimals. A total like `$4.5479` now reads
+  `$4.55`; sub-cent costs keep four decimals so they do not round to `$0.00`
+  and read as free.
+
 ## 1.0.0
 
 - Put the transcript's scrollbar where the window already is. The scroller now

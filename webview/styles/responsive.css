@@ -34,6 +34,11 @@
 		margin-right: -5px;
 	}
 
+	/* The thumb strip rides whatever gutter the scroller currently claims. */
+	.transcript-scrollbar {
+		right: -5px;
+	}
+
 	.messages {
 		padding-inline: 6px 11px;
 	}

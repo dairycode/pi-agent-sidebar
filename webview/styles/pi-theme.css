@@ -92,7 +92,6 @@
 	   `pending` tint (see the mix below), which is what fixed the glare
 	   legibility the old dark slab lacked. */
 	--pi-theme-selected-bg-hue: #3a3a4a;
-	--pi-theme-user-message-bg-hue: #333b55;
 	--pi-theme-custom-message-label: #9575cd;
 	/* The family's border is that label colour muted (departure 6): the label is
 	   tuned to carry text, and as a hairline it lands heavier than a card edge
@@ -164,10 +163,11 @@
 	--pi-theme-tool-border-strength: 100%;
 	/* 100% for the same reason. */
 	--pi-theme-custom-message-border-strength: 100%;
-	/* Message surfaces mix at a lower register than tool states — they hold
-	   prose, so the tint must stay quieter — but 30% left the user box at 1.08:1
-	   in glare. 45% keeps hover and search (selectedBg shares this knob) under
-	   VS Code's native hover contrast. */
+	/* Selected rows mix at a lower register than tool states — the tint sits
+	   under prose, so it must stay quieter. 30% sat at 1.08:1 in glare; 45%
+	   keeps hover and search under VS Code's native hover contrast. The user
+	   message shared this knob until it moved to the tool family's `pending`
+	   tint. */
 	--pi-theme-message-bg-strength: 45%;
 }
 
@@ -200,11 +200,10 @@ body.vscode-high-contrast-light {
 	   separating. Here the surface is what the state reads through, and a
 	   near-white neutral over a near-white sidebar went grey and
 	   indistinguishable — pending, success and error all landed as the same
-	   pale box. These keep pi's hue directions (cool grey-blue for user and
-	   pending, green for success, red for error) with enough chroma to be
-	   visible at the mix strengths below. */
+   pale box. These keep pi's hue directions (cool grey-blue for pending,
+   green for success, red for error) with enough chroma to be visible at the
+   mix strengths below. */
 	--pi-theme-selected-bg-hue: #d0d0e0;
-	--pi-theme-user-message-bg-hue: #e6eaf3;
 	--pi-theme-custom-message-label: #7e57c2;
 	/* The label colour muted (departure 6): the label is tuned to carry text, and
 	   lands heavy as a hairline. Now the same value as the dark palette's, so the
@@ -339,11 +338,6 @@ body {
 	--pi-theme-selected-bg: color-mix(
 		in srgb,
 		var(--pi-theme-selected-bg-hue) var(--pi-theme-message-bg-strength),
-		transparent
-	);
-	--pi-theme-user-message-bg: color-mix(
-		in srgb,
-		var(--pi-theme-user-message-bg-hue) var(--pi-theme-message-bg-strength),
 		transparent
 	);
 	/* Extension custom messages and skill cards share one surface, and it is the

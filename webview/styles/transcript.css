@@ -33,6 +33,63 @@
 	overflow-anchor: auto;
 }
 
+/* The DOM thumb that replaces the native scrollbar. macOS flips the native one
+   to an always-visible, space-taking bar the moment a mouse is wired, and no
+   CSS holds the overlay behaviour back — overlay versus classic is the OS's
+   call. A thumb the page draws is the one scrollbar whose behaviour is its
+   own, so it overlays under both input modes and this rule is what retires the
+   native bar (set only while the thumb is mounted). */
+.transcript.is-overlay-scrolled {
+	scrollbar-width: none;
+}
+
+/* The strip is the hover and drag zone, not a visible track. It ends 2px inside
+   the frame while every content box stops 8px inside it, so it only ever
+   covers padding — never a click target. Pointer events stay on while the
+   thumb is hidden: hovering the edge is what reveals the thumb again, exactly
+   like the platform overlay it replaces. */
+.transcript-scrollbar {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	right: -8px;
+	width: 10px;
+	display: none;
+}
+
+.transcript-scrollbar.is-overflowing {
+	display: block;
+}
+
+.transcript-scrollbar-thumb {
+	position: absolute;
+	top: 0;
+	right: 1px;
+	width: 5px;
+	border-radius: 3px;
+	background: var(--vscode-scrollbarSlider-background);
+	opacity: 0;
+	/* The platform's fade is 250ms ease-in-out (`kAnimationDuration` in
+	   Chromium's mac scrollbar animator), and that curve is what makes the
+	   disappearance read as gentle rather than abrupt. */
+	transition:
+		opacity 250ms ease-in-out,
+		width 250ms ease-in-out;
+}
+
+.transcript-scrollbar.is-active .transcript-scrollbar-thumb {
+	opacity: 1;
+	/* Appearing is the one direction the platform does not animate — the thumb
+	   is at full strength on the first scroll frame — so the lit state drops
+	   the opacity transition while keeping the width one. */
+	transition: opacity 0ms, width 250ms ease-in-out;
+}
+
+.transcript-scrollbar:hover .transcript-scrollbar-thumb,
+.transcript-scrollbar.is-dragging .transcript-scrollbar-thumb {
+	width: 7px;
+}
+
 /* Floating “back to the latest” chip, out of flow: its show/hide can never
    reflow the transcript. Hidden state rides visibility — not display — so the
    fade transition survives, and a hidden control also drops out of the tab
@@ -113,12 +170,16 @@
    up to the edge reads as that message parking there rather than as a wider bar
    sliding over it. Top stays flush: inset from the top, the row left an 8px gap
    that the scrolling message behind it showed through, so a half-clipped line
-   peeked out above the pinned text and read as a misplaced overlay.
+   peeked out above the pinned text and read as a misplaced overlay. The flush
+   top is also what turns the frame into the message's own silhouette: three
+   blue sides and rounded lower corners read as the message peeking back out of
+   the top edge — the same card the reader just scrolled past.
 
    The side insets mirror `.messages`' side paddings (8px left, 16px right
-   re-adding the claimed gutter), and the row's 2px accent border plus 9px
-   left padding mirror `.user-message`'s own 2px border and 9px padding — so
-   the pinned text lands on exactly the column the real message body uses. */
+   re-adding the claimed gutter), and the row's 1px border plus 10px left
+   padding total the same 11px text inset `.user-message` reaches with its own
+   1px border and 10px padding — so the pinned text lands on exactly the column
+   the real message body uses. */
 .pinned-prompt {
 	position: absolute;
 	top: 0;
@@ -133,9 +194,10 @@
 	   it reaches the control. */
 	padding: 7px 8px;
 	padding-right: calc(8px + var(--pi-control-size) + 4px);
-	padding-left: 9px;
-	border-bottom: 1px solid var(--pi-border-subtle);
-	border-left: 2px solid var(--pi-theme-accent);
+	padding-left: 10px;
+	border: 1px solid var(--pi-theme-tool-pending-border);
+	border-top: 0;
+	border-radius: 0 0 var(--pi-radius-content) var(--pi-radius-content);
 	/* Same tint as the real `.user-message`, but composited rather than
 	   translucent: messages scroll directly behind this row, so a see-through
 	   background would show them bleeding through the pinned text. Painting the
@@ -143,12 +205,12 @@
 	   a real message resolves to while staying fully opaque. */
 	background:
 		linear-gradient(
-			var(--pi-theme-user-message-bg),
-			var(--pi-theme-user-message-bg)
+			var(--pi-theme-tool-pending-bg),
+			var(--pi-theme-tool-pending-bg)
 		),
 		var(--vscode-sideBar-background, var(--vscode-editor-background));
-	box-shadow: 0 2px 6px
-		color-mix(in srgb, var(--vscode-widget-shadow, #000) 16%, transparent);
+	box-shadow: 0 4px 12px
+		color-mix(in srgb, var(--vscode-widget-shadow, #000) 24%, transparent);
 }
 
 .pinned-prompt[hidden] {
@@ -329,21 +391,24 @@
 	overflow-wrap: break-word;
 }
 
-/* pi paints the user turn as a filled block with no border. Translucency makes
-   that tint alone too weak to hold an edge in a narrow sidebar, so a left rule
-   carries the boundary instead. Not a departure from pi's language: its own
-   exported HTML uses `border-left` to mark a distinguished block
-   (`.system-prompt.provider-prompt`). */
+/* The user turn wears the transcript's tool-box surface, in the tool family's
+   blue: a full frame and a translucent fill, the pairing every card in the
+   timeline wears, instead of the old fill-plus-left-rule treatment. */
 .user-message {
 	align-self: stretch;
 	width: 100%;
 	max-width: none;
-	/* 9px, not 11px: the 2px accent border takes the difference, so the message
-	   text sits on the same 19px column as a tool box's text. */
-	padding: var(--pi-line-half) 11px var(--pi-line-half) 9px;
-	border-left: 2px solid var(--pi-theme-accent);
+	/* 10px, not 11px: the border takes the other 1px, so the message text sits
+	   on the same 19px column as a tool box's text. */
+	padding: var(--pi-line-half) 10px;
+	border: 1px solid var(--pi-theme-tool-pending-border);
 	border-radius: var(--pi-radius-content);
-	background: var(--pi-theme-user-message-bg);
+	background: var(--pi-theme-tool-pending-bg);
+	/* A translucent border over a translucent fill: at the default `border-box`
+	   the border composites over the box's own background and reads as a duller
+	   version of it. Clipping the fill to the padding box leaves the border over
+	   the sidebar. */
+	background-clip: padding-box;
 	white-space: pre-wrap;
 	/* The reader's own words, so the same width the composer types at
 	   (`composer.css`): pasted text keeps the indentation it had in the editor

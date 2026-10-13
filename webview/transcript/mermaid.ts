@@ -19,6 +19,8 @@
  *    library's own markup is not re-sanitized.
  */
 
+import { objectValue } from "../../shared/jsonValues.js";
+
 /** The subset of the mermaid API this module drives. */
 export interface MermaidApi {
 	initialize(configuration: Record<string, unknown>): void;
@@ -394,7 +396,12 @@ function mermaidConfiguration(api: MermaidApi): Record<string, unknown> {
 		theme: "base",
 		themeVariables: mermaidThemeVariables(readStyle, fontFamily),
 	};
-	return { ...configuration, ...nativeWidthConfiguration(api) };
+	const nativeWidth = nativeWidthConfiguration(api);
+	return {
+		...configuration,
+		...nativeWidth,
+		sequence: sequenceDiagramConfiguration(nativeWidth),
+	};
 }
 
 /**
@@ -439,19 +446,97 @@ export function readNativeWidthConfiguration(
 	return configuration;
 }
 
+/**
+ * Sequence-diagram layout values, tightened from the library defaults.
+ *
+ * The defaults — 50px outer margins, 150px actor boxes, 50px actor gaps — are
+ * tuned for wide pages, and with them a two-actor sequence runs past the
+ * column before any label wraps, so the fit-to-column frame has to shrink
+ * every label to compensate. Tighter spacing plus `wrap` keeps the drawn
+ * width near the column in the first place, which is what leaves the shrink
+ * legible.
+ */
+const SEQUENCE_LAYOUT: Record<string, unknown> = {
+	diagramMarginX: 8,
+	actorMargin: 32,
+	width: 120,
+	boxMargin: 6,
+	messageMargin: 32,
+	noteMargin: 8,
+	wrap: true,
+};
+
+/**
+ * The sequence entry of the merged configuration, exported for its own test.
+ *
+ * `useMaxWidth` stays false either way — the frame scales the drawn size, the
+ * library does not squeeze it into the column — and the tightened layout rides
+ * after whatever the discovery pass found, so a future mermaid that grows its
+ * own keys under `sequence` keeps them.
+ */
+export function sequenceDiagramConfiguration(
+	nativeWidth: Record<string, unknown>,
+): Record<string, unknown> {
+	return {
+		...objectValue(nativeWidth.sequence),
+		useMaxWidth: false,
+		...SEQUENCE_LAYOUT,
+	};
+}
+
+const NATIVE_CLASS = "mermaid-diagram--native";
+const FULL_SIZE_TITLE = "View at full size";
+const FIT_TITLE = "Fit the column";
+const TOGGLE_SIZE_LABEL = "Toggle between fitted and full-size diagram";
+
 function mountDiagram(block: HTMLElement, svg: string): void {
 	const element = diagramElement(svg);
 	if (!element) {
 		showDiagramError(block, "the rendered diagram was empty");
 		return;
 	}
-	const diagram = document.createElement("div");
+	normalizeDiagramSizing(element);
+	element.setAttribute("role", "img");
+	element.setAttribute("aria-label", "Mermaid diagram");
+	const diagram = document.createElement("button");
+	diagram.type = "button";
 	diagram.className = "mermaid-diagram";
-	diagram.setAttribute("role", "img");
-	diagram.setAttribute("aria-label", "Mermaid diagram");
+	diagram.title = FULL_SIZE_TITLE;
+	diagram.setAttribute("aria-pressed", "false");
+	diagram.setAttribute("aria-label", TOGGLE_SIZE_LABEL);
 	diagram.append(element);
+	// The stylesheet fits a wide diagram to the column, which a dense one can
+	// only pay for in label size; this click is the way back to the size mermaid
+	// drew it at, with the frame scrolling instead. For a diagram that already
+	// fits, the two states render alike, so the toggle is simply inert.
+	diagram.addEventListener("click", () => {
+		const native = diagram.classList.toggle(NATIVE_CLASS);
+		diagram.setAttribute("aria-pressed", String(native));
+		diagram.title = native ? FIT_TITLE : FULL_SIZE_TITLE;
+	});
 	block.append(diagram, diagramSourceDisclosure(block));
 	block.dataset.mermaidState = RENDERED_STATE;
+}
+
+/**
+ * Hands the sizing to the stylesheet.
+ *
+ * mermaid stamps the drawn size on the element it renders — width and height
+ * attributes and, on some diagram types, inline styles — and describes the
+ * drawing area in its `viewBox`. The frame derives the rendered size from that
+ * viewBox, so a diagram wider than the column scales down proportionally
+ * instead of scrolling past it. Inline styles outrank the stylesheet, so they
+ * go; the attributes stay, since they are what `height: auto` reads its ratio
+ * from. Without a viewBox there is no ratio to fit by — the stylesheet's
+ * max-width would shrink the box and clip the drawing — so the guard leaves
+ * such an svg on mermaid's own inline sizing rather than pretend to fit it;
+ * mermaid emits a viewBox on every diagram, so this is purely defensive.
+ */
+function normalizeDiagramSizing(svg: SVGElement): void {
+	if (!svg.hasAttribute("viewBox")) return;
+	for (const property of ["width", "height", "max-width"]) {
+		svg.style.removeProperty(property);
+	}
 }
 
 /**

@@ -2,9 +2,11 @@
  *
  * The SVG is built by the library and carries its own colours, so nothing here
  * styles the diagram itself — this is the frame around it. The width is the one
- * decision: a diagram keeps the size its author drew it at and the frame scrolls,
- * because scaling a 900px flowchart down to a 300px sidebar column renders its
- * labels unreadably small. */
+ * decision: a diagram wider than the column scales down to fit it, with the
+ * SVG's own viewBox keeping the shrink proportional, and a click swaps to the
+ * size its author drew it at, which the frame scrolls. Scaling alone would
+ * render a 900px flowchart's 12px labels unreadably small in a 300px column,
+ * so the drawn size stays one click away rather than being the default. */
 .mermaid-block {
 	margin-block: var(--pi-line);
 }
@@ -15,17 +17,39 @@
 	margin-block: 0;
 }
 
+/* A button, not a bare frame: the click is the only way back to the drawn size
+   once the column fit has shrunk a diagram. The reset strips the UA button
+   chrome so the frame reads as part of the transcript, as the div it replaced
+   did. */
 .mermaid-diagram {
+	display: block;
+	width: 100%;
 	overflow-x: auto;
+	border: 0;
+	padding: 0;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
 	padding-block: var(--pi-line-half);
 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+	cursor: zoom-in;
 }
 
 .mermaid-diagram svg {
 	display: block;
-	/* `none`, not `100%`: see the width note above. */
-	max-width: none;
+	/* Fit the column, proportionally: the viewBox is the ratio, the drawn
+	   width/height attributes the intrinsic size. `--native` undoes it. */
+	max-width: 100%;
 	height: auto;
+}
+
+.mermaid-diagram--native {
+	cursor: zoom-out;
+}
+
+.mermaid-diagram--native svg {
+	max-width: none;
 }
 
 /* Failures keep the fence visible and say why, so a typo in a diagram reads as a
@@ -47,8 +71,9 @@
 	font-size: var(--pi-font-chrome);
 }
 
-/* The disclosure is the only control a diagram adds, so it carries the same focus
-   ring as the transcript's other clickable blocks rather than the browser's. */
+/* A diagram adds two controls: this disclosure for its source, and the frame
+   above for its drawn size. Both carry the same focus ring as the transcript's
+   other clickable blocks rather than the browser's. */
 .mermaid-source > summary:focus-visible {
 	outline: 1px solid var(--pi-focus-ring);
 	outline-offset: 2px;

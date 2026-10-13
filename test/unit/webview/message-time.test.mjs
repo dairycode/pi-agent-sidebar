@@ -143,6 +143,9 @@ test("usage formatting keeps null distinguishable from zero", async () => {
 		assert.equal(formatTokenCount(undefined, "en-US"), "—");
 
 		assert.equal(formatCost(0.45, "en-US"), "$0.45");
+		// An ordinary total is pinned at two decimals rather than trailing the four
+		// digits the formatter used to allow.
+		assert.equal(formatCost(4.5479, "en-US"), "$4.55");
 		// A sub-cent cost keeps enough precision to not read as free.
 		assert.equal(formatCost(0.0002, "en-US"), "$0.0002");
 		assert.equal(formatCost(null, "en-US"), "—");

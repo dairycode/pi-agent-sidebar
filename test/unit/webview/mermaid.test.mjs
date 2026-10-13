@@ -318,6 +318,47 @@ test("every diagram type that can keep its natural width is discovered", async (
 	}
 });
 
+test("sequence diagrams get the tightened layout, not a library-side squeeze", async () => {
+	const loaded = await loadMermaid();
+	try {
+		const { sequenceDiagramConfiguration } = loaded.module;
+
+		// Whatever the discovery pass found under `sequence` is kept, and the entry
+		// stays `useMaxWidth: false`: the frame scales the drawn size, mermaid does
+		// not squeeze it into the column.
+		assert.deepEqual(
+			sequenceDiagramConfiguration({
+				sequence: { useMaxWidth: false, mirrorActors: true },
+			}),
+			{
+				useMaxWidth: false,
+				mirrorActors: true,
+				diagramMarginX: 8,
+				actorMargin: 32,
+				width: 120,
+				boxMargin: 6,
+				messageMargin: 32,
+				noteMargin: 8,
+				wrap: true,
+			},
+		);
+
+		// A library without a sequence entry still gets the layout.
+		assert.deepEqual(sequenceDiagramConfiguration({}), {
+			useMaxWidth: false,
+			diagramMarginX: 8,
+			actorMargin: 32,
+			width: 120,
+			boxMargin: 6,
+			messageMargin: 32,
+			noteMargin: 8,
+			wrap: true,
+		});
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("a library that will not hand over its config still draws", async () => {
 	const loaded = await loadMermaid();
 	try {

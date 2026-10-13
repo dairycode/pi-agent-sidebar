@@ -196,17 +196,22 @@ test("the native overlay scrollbar rides the window edge and the rails stay put"
 	assert.match(
 		transcriptCss,
 		/\.transcript\s*\{[^}]*scrollbar-color: var\(--vscode-scrollbarSlider-background\) transparent;/su,
-		"colour-only theming keeps the platform's own scrollbar behaviour — overlay, auto-hide, geometry",
+		"colour-only theming keeps the platform's own scrollbar behaviour for the fallback path — before the drawn thumb mounts, the native overlay still looks right",
 	);
 	assert.match(
 		transcriptCss,
 		/\.transcript\s*\{[^}]*margin-right: -8px;/su,
-		"the scroller claims the body's right gutter so the overlay scrollbar paints on the window edge",
+		"the scroller claims the body's right gutter so the scrollbar paints on the window edge",
 	);
 	assert.doesNotMatch(
-		transcriptCss,
+		transcriptCss.replace(/\.transcript\.is-overlay-scrolled\s*\{[^}]*\}/u, ""),
 		/::-webkit-scrollbar|scrollbar-width|scrollbar-gutter/u,
-		"any width or display override would switch Chromium off its native scrollbar behaviour",
+		"outside the drawn thumb's own retirement rule, no width or display override may switch Chromium off its native scrollbar behaviour",
+	);
+	assert.match(
+		transcriptCss,
+		/\.transcript\.is-overlay-scrolled\s*\{\s*scrollbar-width: none;\s*\}/u,
+		"the drawn thumb retires the native scrollbar only while it is mounted, so a failed module never leaves the transcript scrollbar-less",
 	);
 	assert.match(
 		transcriptCss,
@@ -239,6 +244,11 @@ test("the native overlay scrollbar rides the window edge and the rails stay put"
 		responsiveCss,
 		/\.connection-banner\s*\{\s*margin-inline: 6px 11px;\s*\}/u,
 		"the narrow banner rides the message column inside the scroller",
+	);
+	assert.match(
+		responsiveCss,
+		/\.transcript-scrollbar\s*\{\s*right: -5px;\s*\}/u,
+		"the thumb strip rides whatever gutter the scroller claims",
 	);
 	assert.match(
 		responsiveCss,

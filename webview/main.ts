@@ -31,6 +31,7 @@ import {
 	type MessageIdentity,
 } from "./transcript/messageIdentity.js";
 import { ScrollAnchor } from "./transcript/scrollAnchor.js";
+import { mountOverlayScrollbar } from "./transcript/overlayScrollbar.js";
 import { thinkingGroupKeyIndex } from "./transcript/thinkingGroups.js";
 import { enhanceMermaidBlocks } from "./transcript/mermaid.js";
 import {
@@ -265,6 +266,7 @@ const elements = {
 	app: element<HTMLElement>("app"),
 	sessionHeader: element<HTMLElement>("session-header"),
 	transcript: element<HTMLElement>("transcript"),
+	transcriptFrame: element<HTMLElement>("transcript-frame"),
 	jumpToBottom: element<HTMLButtonElement>("jump-to-bottom"),
 	messages: element<HTMLElement>("messages"),
 	emptyState: element<HTMLElement>("empty-state"),
@@ -489,6 +491,16 @@ const scrollAnchor = new ScrollAnchor({
 	requestFrame: (callback) => frameCoordinator.requestScrollFrame(callback),
 	cancelFrame: (handle) => frameCoordinator.cancelScrollFrame(handle),
 	shouldAnimate: () => !reducedMotionQuery.matches,
+});
+// The transcript's scrollbar is drawn by the page, not the platform: a wired
+// mouse flips macOS to an always-visible, space-taking scrollbar mid-session,
+// and no CSS can hold the overlay behaviour the transcript is tuned around.
+// The frame is the strip's positioned host; the thumb rides the gutter the
+// transcript claims, exactly where the native overlay used to paint.
+mountOverlayScrollbar({
+	viewport: elements.transcript,
+	content: elements.messages,
+	frame: elements.transcriptFrame,
 });
 const submitFollowCoordinator = new SubmitFollowCoordinator({
 	// Every coordinator follow lands on a render: `follow` alone clears the

@@ -171,7 +171,7 @@ const SAMPLE_MESSAGES = [
 		content: [
 			{
 				type: "text",
-				text: "## Diagram\n\nA mermaid fence renders as a diagram, with the source kept one click away:\n\n```mermaid\nflowchart LR\n  prompt[Ask a question with a label long enough to wrap] --> runtime{pi}\n  runtime -->|edits| files[(files)]\n  runtime -->|answers| transcript[first line<br/>second line]\n```\n\nA diagram keeps its natural width and the frame scrolls, because a 900px flowchart scaled into a 300px column is unreadable at any zoom.",
+				text: "## Diagram\n\nA mermaid fence renders as a diagram, with the source kept one click away:\n\n```mermaid\nflowchart LR\n  prompt[Ask a question with a label long enough to wrap] --> runtime{pi}\n  runtime -->|edits| files[(files)]\n  runtime -->|answers| transcript[first line<br/>second line]\n```\n\nA diagram wider than the column scales down to fit it; click the diagram to read it at its drawn size, where the frame scrolls instead.",
 			},
 		],
 	},

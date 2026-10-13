@@ -213,9 +213,13 @@ export function formatTokenCount(value: unknown, locale?: string): string {
 
 export function formatCost(value: unknown, locale?: string): string {
 	if (typeof value !== "number" || !Number.isFinite(value)) return "—";
-	// Two option sets, not one: a sub-cent cost needs four decimals to be visible at
-	// all. Keyed apart so each is built once.
-	const variant = value > 0 && value < 0.01 ? "cost-subcent" : "cost";
+	// Two option sets, not one: a sub-cent cost needs four decimals to stay
+	// visible at all, while an ordinary total reads best pinned at exactly two —
+	// minimum and maximum move together, so `$4.5479` rounds to `$4.55` instead
+	// of trailing four digits. Keyed apart so each is built once.
+	const subcent = value > 0 && value < 0.01;
+	const digits = subcent ? 4 : 2;
+	const variant = subcent ? "cost-subcent" : "cost";
 	try {
 		return memoized(
 			numberFormatters,
@@ -227,11 +231,11 @@ export function formatCost(value: unknown, locale?: string): string {
 					// Chromium's ICU renders plain USD as "US$" in en locales; the narrow
 					// symbol pins it to "$" across runtimes (Node already formats "$").
 					currencyDisplay: "narrowSymbol",
-					minimumFractionDigits: value > 0 && value < 0.01 ? 4 : 2,
-					maximumFractionDigits: 4,
+					minimumFractionDigits: digits,
+					maximumFractionDigits: digits,
 				}),
 		).format(value);
 	} catch {
-		return `$${value.toFixed(4)}`;
+		return `$${value.toFixed(digits)}`;
 	}
 }

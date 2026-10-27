@@ -168,17 +168,17 @@ test("a running call breathes on its border, the header carries only the output 
 });
 
 test("a new user turn gets a full-line boundary without moving the composer", async () => {
-	const [transcriptCss, composerCss, mainSource] = await Promise.all([
+	const [transcriptCss, composerCss, transcriptSource] = await Promise.all([
 		readFile("webview/styles/transcript.css", "utf8"),
 		readFile("webview/styles/composer.css", "utf8"),
-		readFile("webview/main.ts", "utf8"),
+		readFile("webview/transcript/dom.ts", "utf8"),
 	]);
 	assert.match(
 		transcriptCss,
 		/\.message-slot:not\(\.user-turn\) \+ \.message-slot\.user-turn\s*\{\s*margin-top: var\(--pi-line-half\);\s*\}/u,
 	);
 	assert.match(
-		mainSource,
+		transcriptSource,
 		/classList\.toggle\("user-turn", message\.role === "user"\)/u,
 	);
 	assert.match(

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.0.2
+
+- Split the sidebar into focused controllers and renderers for host messages,
+  RPC events, sessions, the transcript, and the composer. Protocol parsing,
+  host-side message routing, and native extension dialogs now live in their own
+  modules, keeping the client easier to maintain without changing pi's RPC
+  contract.
+
+- Initialize message-handling dependencies before accepting host messages, and
+  prevent Enter in the fork picker from submitting a previously selected prompt
+  that the current search has filtered out.
+
+- Add a real-browser regression test covering startup, streaming replies,
+  session switching, tool output, reasoning expansion, and scroll following.
+  Expand unit coverage for the extracted controllers and renderers, snapshot
+  identity preservation, and streaming Markdown code fences.
+
 ## 1.0.1
 
 - Draw the transcript's scrollbar on the page. A wired mouse flips macOS's

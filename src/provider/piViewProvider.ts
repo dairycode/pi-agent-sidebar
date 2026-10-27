@@ -16,7 +16,6 @@ import {
 	type PiCapabilityName,
 } from "../rpc/piCapabilities.js";
 import { shouldSnapshotFileReference } from "../../shared/composerReferences.js";
-import { assertNever } from "../../shared/assertNever.js";
 import {
 	MAX_MISSED_REPLIES,
 	MissedReplyQueue,
@@ -62,7 +61,8 @@ import {
 } from "../services/workspaceResources.js";
 import { WorkspaceFileSearch } from "../services/workspaceFileSearch.js";
 import { TranscriptMedia } from "../services/transcriptMedia.js";
-import { notificationDestination } from "./notificationPolicy.js";
+import { ExtensionUiController } from "./extensionUiController.js";
+import { WebviewMessageRouter } from "./webviewMessageRouter.js";
 import {
 	assertSessionMutationAllowed,
 	assertSessionMutationIdle,
@@ -175,6 +175,8 @@ export class PiViewProvider
 	private readonly workspaceResources: WorkspaceResources;
 	private readonly composerReferenceStore: ComposerReferenceStore;
 	private readonly workspaceFileSearch = new WorkspaceFileSearch();
+	private readonly extensionUiController: ExtensionUiController;
+	private readonly webviewMessageRouter: WebviewMessageRouter;
 	private readonly transcriptMedia = new TranscriptMedia(
 		() =>
 			(vscode.workspace.workspaceFolders ?? []).map((entry) => entry.uri.fsPath),
@@ -190,6 +192,74 @@ export class PiViewProvider
 			this.selectWorkspaceFolder(),
 		);
 		this.composerReferenceStore = new ComposerReferenceStore(output);
+		this.extensionUiController = new ExtensionUiController({
+			output,
+			isCurrentClient: (client) => this.client === client,
+			post: async (message) => {
+				await this.post(message as HostToWebviewMessage);
+			},
+			notify: (client, response) => this.notifyExtensionUiResponse(client, response),
+			setTitle: (title) => {
+				if (this.view) this.view.title = title;
+			},
+		});
+		this.webviewMessageRouter = new WebviewMessageRouter({
+			onReady: async () => {
+				this.webviewReady = true;
+				await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
+				const wasRunning = Boolean(this.client?.isRunning);
+				await this.ensureClient();
+				if (wasRunning) await this.refreshSnapshot();
+			},
+			onComposerFocused: (requestId) => {
+				if (requestId === this.pendingComposerFocusRequestId) {
+					this.pendingComposerFocusRequestId = undefined;
+				}
+			},
+			respondToAction: (actionId, operation) => this.respondToAction(actionId, operation),
+			onSubmit: (message) => this.submitPrompt(message.text, message.attachmentIds, message.references, message.delivery),
+			onAbort: () => this.abortPrompt(),
+			onNewSession: async () => {
+				this.assertNoSessionMutationPending();
+				if (!(await this.createNewSession(false))) throw new SessionMutationCancelledError("New session was cancelled by a pi extension.");
+			},
+			onCloneSession: async () => {
+				this.assertNoSessionMutationPending();
+				await this.cloneSession();
+			},
+			onListForkCandidates: () => this.sendForkCandidates(),
+			onForkSession: async (entryId) => {
+				this.assertNoSessionMutationPending();
+				await this.forkSession(entryId);
+			},
+			onSwitchSession: (sessionPath) => this.switchSession(sessionPath),
+			onDeleteSession: (sessionPath) => this.deleteSession(sessionPath),
+			onRenameSession: (name) => this.applySessionName(name),
+			onSetModel: (provider, modelId) => this.setModel(provider, modelId),
+			onSetThinking: (level) => this.setThinkingLevel(level),
+			onCompact: () => this.compactSession(),
+			onRestart: () => this.startClient(true),
+			onListSessions: () => this.sendSessionList(),
+			onListCommands: () => this.sendCommandList(),
+			onListWorkspaceFiles: (requestId, query) => this.sendWorkspaceFileList(requestId, query),
+			onResolveMedia: (requestId, sources) => this.sendResolvedMedia(requestId, sources),
+			onPickAttachments: () => this.pickAttachments(),
+			onAddResources: (resources) => this.addResources(resources),
+			onPasteImages: async (images) => {
+				await this.attachmentStore.storePastedImages(images);
+				await this.syncAttachments();
+			},
+			onRemoveAttachment: async (id) => {
+				await this.attachmentStore.remove(id);
+				await this.syncAttachments();
+			},
+			onRemoveComposerReference: (id, revision) => this.removeComposerReference(id, revision),
+			onOpenComposerReference: (id) => this.openComposerReference(id),
+			onOpenExternal: (href) => this.openExternal(href),
+			onOpenResource: (uri, line) => this.workspaceResources.openResource(uri, line),
+			onOpenWorkspacePath: (workspacePath, line) => this.workspaceResources.openWorkspacePath(workspacePath, line),
+			onShowLogs: () => this.output.show(true),
+		});
 		void this.attachmentStore.initialize().catch((error: unknown) => {
 			this.output.appendLine(`[attachments] ${toErrorMessage(error)}`);
 		});
@@ -589,193 +659,15 @@ export class PiViewProvider
 			return;
 		}
 		try {
-			switch (message.type) {
-				case "ready": {
-					this.webviewReady = true;
-					await Promise.all([this.syncAttachments(), this.syncComposerReferences()]);
-					const wasRunning = Boolean(this.client?.isRunning);
-					await this.ensureClient();
-					if (wasRunning) await this.refreshSnapshot();
-					break;
-				}
-				case "composerFocused": {
-					if (message.requestId === this.pendingComposerFocusRequestId) {
-						this.pendingComposerFocusRequestId = undefined;
-					}
-					break;
-				}
-				case "submit": {
-					await this.respondToAction(message.actionId, () =>
-						this.submitPrompt(
-							message.text,
-							message.attachmentIds,
-							message.references,
-							message.delivery,
-						),
-					);
-					break;
-				}
-				case "abort": {
-					await this.respondToAction(message.actionId, () => this.abortPrompt());
-					break;
-				}
-				case "newSession": {
-					await this.respondToAction(message.actionId, async () => {
-						this.assertNoSessionMutationPending();
-						if (!(await this.createNewSession(false))) {
-							throw new SessionMutationCancelledError(
-								"New session was cancelled by a pi extension.",
-							);
-						}
-					});
-					break;
-				}
-				case "cloneSession": {
-					await this.respondToAction(message.actionId, async () => {
-						this.assertNoSessionMutationPending();
-						await this.cloneSession();
-					});
-					break;
-				}
-				case "listForkCandidates": {
-					await this.respondToAction(message.actionId, () =>
-						this.sendForkCandidates(),
-					);
-					break;
-				}
-				case "forkSession": {
-					await this.respondToAction(message.actionId, async () => {
-						this.assertNoSessionMutationPending();
-						await this.forkSession(message.entryId);
-					});
-					break;
-				}
-				case "switchSession": {
-					await this.respondToAction(message.actionId, () =>
-						this.switchSession(message.path),
-					);
-					break;
-				}
-				case "deleteSession": {
-					await this.respondToAction(message.actionId, () =>
-						this.deleteSession(message.path),
-					);
-					break;
-				}
-				case "renameSession": {
-					await this.respondToAction(message.actionId, () =>
-						this.applySessionName(message.name),
-					);
-					break;
-				}
-				case "setModel": {
-					await this.respondToAction(message.actionId, () =>
-						this.setModel(message.provider, message.modelId),
-					);
-					break;
-				}
-				case "setThinking": {
-					await this.respondToAction(message.actionId, () =>
-						this.setThinkingLevel(message.level),
-					);
-					break;
-				}
-				case "compact": {
-					await this.respondToAction(message.actionId, () => this.compactSession());
-					break;
-				}
-				case "restart": {
-					await this.respondToAction(message.actionId, async () =>
-						this.startClient(true),
-					);
-					break;
-				}
-				case "listSessions": {
-					await this.sendSessionList();
-					break;
-				}
-				case "listCommands": {
-					await this.sendCommandList();
-					break;
-				}
-				case "listWorkspaceFiles": {
-					await this.sendWorkspaceFileList(message.requestId, message.query);
-					break;
-				}
-				case "resolveMedia": {
-					await this.sendResolvedMedia(message.requestId, message.sources);
-					break;
-				}
-				case "pickAttachments": {
-					await this.pickAttachments();
-					break;
-				}
-				case "addResources": {
-					await this.respondToAction(message.actionId, () =>
-						this.addResources(message.resources),
-					);
-					break;
-				}
-				case "pasteImages": {
-					await this.respondToAction(message.actionId, async () => {
-						await this.attachmentStore.storePastedImages(message.images);
-						await this.syncAttachments();
-					});
-					break;
-				}
-				case "removeAttachment": {
-					await this.attachmentStore.remove(message.id);
-					await this.syncAttachments();
-					break;
-				}
-				case "removeComposerReference": {
-					await this.removeComposerReference(message.id, message.revision);
-					break;
-				}
-				case "openComposerReference": {
-					await this.openComposerReference(message.id);
-					break;
-				}
-				case "openExternal": {
-					await this.openExternal(message.href);
-					break;
-				}
-				case "openResource": {
-					await this.workspaceResources.openResource(message.uri, message.line);
-					break;
-				}
-				case "openWorkspacePath": {
-					await this.workspaceResources.openWorkspacePath(
-						message.path,
-						message.line,
-					);
-					break;
-				}
-				case "showLogs": {
-					this.output.show(true);
-					break;
-				}
-				default:
-					assertNever(message);
-			}
+			await this.webviewMessageRouter.dispatch(message);
 		} catch (error) {
 			if (error instanceof RuntimeUnavailableError) return;
 			const detail = toErrorMessage(error);
 			this.output.appendLine(`[webview] ${detail}`);
 			if ("actionId" in message && typeof message.actionId === "string") {
-				await this.post({
-					type: "actionResult",
-					actionId: message.actionId,
-					ok: false,
-					error: detail,
-				});
+				await this.post({ type: "actionResult", actionId: message.actionId, ok: false, error: detail });
 				return;
 			}
-			// `ready` is the one message whose failure is about the pi process itself.
-			// Every other failure here belongs to a command the user can retry, so it gets
-			// a notice instead: reporting those on `connection` marked the in-flight reply
-			// aborted and left Restart as the banner's only button, for something as small
-			// as clicking a `mailto:` link.
 			if (message.type === "ready") {
 				await this.post({ type: "connection", phase: "error", detail });
 				return;
@@ -1338,7 +1230,7 @@ export class PiViewProvider
 				});
 			}
 			if (event.type === "extension_ui_request") {
-				void this.handleExtensionUiRequest(client, event).catch(
+				void this.extensionUiController.handle(client, event).catch(
 					(error: unknown) => {
 						this.output.appendLine(`[extension-ui] ${toErrorMessage(error)}`);
 					},
@@ -1349,136 +1241,6 @@ export class PiViewProvider
 		});
 	}
 
-	private async handleExtensionUiRequest(
-		client: PiRpcClient,
-		event: JsonRecord,
-	): Promise<void> {
-		const id = typeof event.id === "string" ? event.id : undefined;
-		const method = typeof event.method === "string" ? event.method : "";
-		if (!id || this.client !== client) return;
-
-		try {
-			if (method === "notify") {
-				const message =
-					typeof event.message === "string" ? event.message : "Pi notification";
-				const destination = notificationDestination(event.notifyType);
-				if (destination === "error") void vscode.window.showErrorMessage(message);
-				else if (destination === "warning")
-					void vscode.window.showWarningMessage(message);
-				else this.output.appendLine(`[pi notification] ${message}`);
-				return;
-			}
-			if (method === "set_editor_text" && typeof event.text === "string") {
-				if (this.client === client) {
-					await this.post({ type: "setComposerText", text: event.text });
-				}
-				return;
-			}
-			if (
-				method === "setTitle" &&
-				typeof event.title === "string" &&
-				this.client === client &&
-				this.view
-			) {
-				this.view.title = event.title;
-				return;
-			}
-			// setStatus is fire-and-forget on pi's side and the webview no longer
-			// renders it: the composer status row is reserved for queue counts and
-			// transient run states, where a persistent "LSP Active: ..." was only
-			// noise. Dropped here so the payload never crosses into the webview.
-			if (method === "setStatus") return;
-			if (method === "setWidget") {
-				if (this.client === client) await this.post({ type: "rpcEvent", event });
-				return;
-			}
-
-			if (method === "select") {
-				const options = Array.isArray(event.options)
-					? event.options.filter((item): item is string => typeof item === "string")
-					: [];
-				const value = await vscode.window.showQuickPick(options, {
-					title: typeof event.title === "string" ? event.title : "Pi",
-					ignoreFocusOut: true,
-				});
-				await this.notifyExtensionUiResponse(
-					client,
-					extensionUiValueResponse(id, value),
-				);
-				return;
-			}
-			if (method === "confirm") {
-				const accepted = await vscode.window.showInformationMessage(
-					typeof event.message === "string" ? event.message : "Continue?",
-					{
-						modal: true,
-						detail: typeof event.title === "string" ? event.title : undefined,
-					},
-					"Confirm",
-				);
-				await this.notifyExtensionUiResponse(client, {
-					type: "extension_ui_response",
-					id,
-					confirmed: accepted === "Confirm",
-				});
-				return;
-			}
-			if (method === "input") {
-				const value = await vscode.window.showInputBox({
-					title: typeof event.title === "string" ? event.title : "Pi input",
-					placeHolder:
-						typeof event.placeholder === "string" ? event.placeholder : undefined,
-					ignoreFocusOut: true,
-				});
-				await this.notifyExtensionUiResponse(
-					client,
-					extensionUiValueResponse(id, value),
-				);
-				return;
-			}
-			if (method === "editor") {
-				const document = await vscode.workspace.openTextDocument({
-					content: typeof event.prefill === "string" ? event.prefill : "",
-					language: "markdown",
-				});
-				await vscode.window.showTextDocument(document, { preview: true });
-				const choice = await vscode.window.showInformationMessage(
-					typeof event.title === "string" ? event.title : "Edit the pi response",
-					{
-						detail: "Edit the opened document, then submit or cancel this request.",
-					},
-					"Submit",
-					"Cancel",
-				);
-				await this.notifyExtensionUiResponse(
-					client,
-					extensionUiValueResponse(
-						id,
-						choice === "Submit" ? document.getText() : undefined,
-					),
-				);
-				return;
-			}
-			await this.notifyExtensionUiResponse(client, {
-				type: "extension_ui_response",
-				id,
-				cancelled: true,
-			});
-		} catch (error) {
-			this.output.appendLine(`[extension-ui] ${toErrorMessage(error)}`);
-			try {
-				await this.notifyExtensionUiResponse(client, {
-					type: "extension_ui_response",
-					id,
-					cancelled: true,
-				});
-			} catch (responseError) {
-				this.output.appendLine(
-					`[extension-ui] Failed to cancel request: ${toErrorMessage(responseError)}`,
-				);
-			}
-		}
-	}
 
 	private async notifyExtensionUiResponse(
 		client: PiRpcClient,
@@ -2008,22 +1770,4 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Builds the reply for a pi extension-UI request that either produced a value or
- * was dismissed.
- *
- * `select`, `input`, and `editor` all share this shape: VS Code returns
- * `undefined` when the user cancels, and pi expects `cancelled: true` rather
- * than a missing value. Keeping it in one place stops the three call sites from
- * drifting into subtly different envelopes.
- */
-function extensionUiValueResponse(
-	id: string,
-	value: string | undefined,
-): JsonRecord {
-	return value === undefined
-		? { type: "extension_ui_response", id, cancelled: true }
-		: { type: "extension_ui_response", id, value };
 }

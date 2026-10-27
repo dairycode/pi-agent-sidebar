@@ -290,6 +290,49 @@ test("streaming block markers become structure without leaking temporary text", 
 	}
 });
 
+test("streaming fences preserve mixed backticks and tildes as code content", async () => {
+	const loaded = await loadRenderer();
+	try {
+		for (const [marker, suffix] of [["```", "`~"], ["~~~", "~`"]]) {
+			const parts = loaded.module.streamingMarkdownParts(`${marker}\nhello\n${suffix}`);
+			assert.equal(parts.activeHtml, `<pre><code class="hljs">hello\n${suffix}</code></pre>`);
+		}
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("mixed fence characters do not close a streaming code block", async () => {
+	const loaded = await loadRenderer();
+	try {
+		for (const [marker, candidate] of [["```", "`~~"], ["~~~", "~``"]]) {
+			const parts = loaded.module.streamingMarkdownParts(`${marker}\nhello\n${candidate}\nworld`);
+			assert.equal(parts.appendMode, "code");
+			assert.equal(parts.activeHtml, `<pre><code class="hljs">hello\n${candidate}\nworld</code></pre>`);
+		}
+	} finally {
+		await loaded.dispose();
+	}
+});
+
+test("closing fences are found after shorter or different fence-like code lines", async () => {
+	const loaded = await loadRenderer();
+	try {
+		for (const [marker, candidate] of [
+			["````", "```"],
+			["~~~~", "~~~"],
+			["```", "~~~"],
+			["~~~", "```"],
+		]) {
+			const parts = loaded.module.streamingMarkdownParts(`${marker}\n${candidate}\n\n${marker}\n`);
+			assert.equal(parts.activeHtml, `<pre><code class="hljs">${candidate}\n</code></pre>`);
+			assert.equal(parts.appendMode, "none");
+		}
+	} finally {
+		await loaded.dispose();
+	}
+});
+
 test("reference definitions reset the streaming prefix cache", async () => {
 	const loaded = await loadRenderer();
 	try {

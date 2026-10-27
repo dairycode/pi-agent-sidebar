@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { transcriptHarness } from "../../helpers/transcript-harness.mjs";
 import test from "node:test";
 import { loadBundledModule } from "../../helpers/load-bundled-module.mjs";
 
@@ -272,34 +272,20 @@ test("an empty or unusable previous snapshot adopts nothing", async () => {
 	}
 });
 
-/**
- * `applySnapshot` cannot be loaded here (it is reachable only through
- * `main.ts`, which runs `acquireVsCodeApi()` and touches the document at import
- * time), so this asserts the one property the unit tests cannot: ordering. The
- * adoption reads the outgoing array, so it is correct only before the swap —
- * after it, it would compare the incoming messages with themselves and adopt
- * nothing, silently reverting the whole fix. Odd as a source assertion is, it is
- * the same tradeoff `transcript-sections.test.mjs` documents for its own
- * `main.ts` check.
- */
-test("applySnapshot adopts identities before it swaps the array", async () => {
-	const source = await readFile("webview/main.ts", "utf8");
-	const body = /function applySnapshot\(([\s\S]*?)\n\}/u.exec(source)?.[1];
-	assert.ok(body, "applySnapshot must exist in main.ts");
-	const adoptedAt = body.indexOf(
-		"adoptSnapshotMessageIdentities(message.messages)",
-	);
-	const swappedAt = body.indexOf("ui.messages = message.messages");
-	assert.notEqual(adoptedAt, -1, "applySnapshot must adopt snapshot identities");
-	assert.notEqual(
-		swappedAt,
-		-1,
-		"applySnapshot must still install the messages",
-	);
-	assert.ok(
-		adoptedAt < swappedAt,
-		"identity must be adopted from the outgoing messages, so before the swap",
-	);
+/** Exercise the actual controller now that snapshot adoption is independently loadable. */
+test("applySnapshot adopts identities before it swaps the array", async (t) => {
+	const { controller, state, children, builds } = await transcriptHarness(t);
+	state.messages = [userMessage("first", 1), userMessage("second", 2)];
+	controller.render();
+	const previousNodes = [...children];
+	const next = reparsed(state.messages);
+	builds.length = 0;
+	controller.adoptSnapshot(next);
+	controller.reconcileSnapshot(false, false);
+	controller.render();
+	assert.equal(state.messages, next);
+	assert.deepEqual(children, previousNodes);
+	assert.equal(builds.length, 0);
 });
 
 /**

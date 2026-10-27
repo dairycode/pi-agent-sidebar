@@ -1,84 +1,52 @@
+import { createComposerRenderer } from "./composer/renderer.js";
+import { createHeaderRenderer } from "./ui/headerRenderer.js";
+import { createRuntimeRenderer } from "./ui/runtimeRenderer.js";
+import { createUiState } from "./app/state.js";
+import { createSessionPanels } from "./session/panels.js";
+import { SessionController } from "./session/controller.js";
 import DOMPurify from "dompurify";
 import { formatComposerReferenceLocation } from "../shared/composerReferences.js";
-import { assertNever } from "../shared/assertNever.js";
+import { RpcEventReducer } from "./rpcEventReducer.js";
+import { HostMessageHandler } from "./hostMessageHandler.js";
 import { handleImagePaste } from "./attachments/imagePaste.js";
 import type { ManagedComposerReference } from "./composer/model.js";
-import { commandHighlightRanges } from "./composer/commandHighlights.js";
 import { ComposerController } from "./composer/controller.js";
 import { ComposerFocusRequests } from "./composer/focusRequest.js";
 import { MentionController } from "./composer/mentions.js";
-import { StreamingUsageTracker } from "./streamUsage.js";
-import { StreamingMessagePlayback } from "./transcript/streaming.js";
+import { createTranscriptDom } from "./transcript/dom.js";
+import { TranscriptController, hasEquivalentTail } from "./transcript/controller.js";
 import {
 	formatAbsoluteTime,
-	formatCost,
-	formatDaySeparator,
 	formatRelativeTime,
-	formatTokenCount,
-	isNewLocalDay,
 	nextRefreshDelayMs,
-	normalizeEpochMs,
 } from "./transcript/messageTime.js";
-import { numberValue, objectValue, stringValue } from "../shared/jsonValues.js";
-import { contentText } from "../shared/messageContent.js";
-import { PinnedPromptController } from "./transcript/pinnedPrompt.js";
+import { StreamingUsageTracker } from "./streamUsage.js";
+import { createTranscriptViewport } from "./transcript/viewport.js";
 import {
 	MediaSources,
 	type ResolvedMediaSource,
 } from "./transcript/mediaSources.js";
 import {
-	adoptSnapshotIdentities,
-	type MessageIdentity,
-} from "./transcript/messageIdentity.js";
-import { ScrollAnchor } from "./transcript/scrollAnchor.js";
-import { mountOverlayScrollbar } from "./transcript/overlayScrollbar.js";
-import { thinkingGroupKeyIndex } from "./transcript/thinkingGroups.js";
-import { enhanceMermaidBlocks } from "./transcript/mermaid.js";
-import {
 	SubmitFollowCoordinator,
 	snapshotAcknowledgesSubmit,
 } from "./transcript/submitFollow.js";
-import {
-	TranscriptView,
-	type TranscriptEntry,
-} from "./transcript/transcriptView.js";
-import { ProgressiveWindow } from "./transcript/progressiveWindow.js";
-import { insertReply, withLiveReply } from "./transcript/transcriptOrder.js";
-import { WORKSPACE_PATH_PATTERN } from "./transcript/workspacePaths.js";
-import {
-	assistantMessageSections,
-	friendlyToolName,
-	isRenderableMessage,
-	messageHtml,
-	messageRenderSignature,
-	streamingMarkdownParts,
-	toolBodyHtml,
-} from "./transcript/renderer.js";
+import { friendlyToolName } from "./transcript/renderer.js";
 import {
 	containsDroppedResources,
 	extractDroppedResources,
 } from "./resourceDrop.js";
-import { TRANSCRIPT_SANITIZE_OPTIONS } from "./sanitizerPolicy.js";
-import { ModalController } from "./ui/modalController.js";
-import { positionPopupAbove, positionPopupBelow } from "./ui/popupPosition.js";
-import { SelectController } from "./ui/selectController.js";
+import { positionPopupAbove } from "./ui/popupPosition.js";
 import { FrameCoordinator } from "./ui/frameCoordinator.js";
+import { TRANSCRIPT_SANITIZE_OPTIONS } from "./sanitizerPolicy.js";
 import { LiveStatusAnnouncer } from "./ui/liveStatus.js";
+import { SelectController } from "./ui/selectController.js";
+import { ModalController } from "./ui/modalController.js";
 import {
 	MAX_COMPOSER_REFERENCE_COUNT,
-	type AttachmentRef,
-	type ForkCandidate,
 	type HostToWebviewMessage,
 	type JsonRecord,
-	type PiCapabilities,
 	type PiCommand,
-	type PiContentBlock,
 	type PiMessage,
-	type PiModel,
-	type PiState,
-	type PiStats,
-	type PiTimeContext,
-	type SessionSummary,
 	type SubmitDelivery,
 	type WebviewToHostMessage,
 	type WorkspaceReferenceSuggestion,
@@ -93,17 +61,6 @@ declare function acquireVsCodeApi<T = unknown>(): {
 interface PersistedState {
 	draft: string;
 	composerReferences?: ManagedComposerReference[];
-}
-
-interface LiveTool {
-	id: string;
-	name: string;
-	args: JsonRecord;
-	status: "running" | "success" | "error";
-	result?: unknown;
-	startedAt: number;
-	/** Bumped only when the visible collapsed card needs rebuilding. */
-	revision: number;
 }
 
 interface PendingAction {
@@ -122,86 +79,9 @@ interface PendingAction {
 	submittedAtMs?: number;
 }
 
-interface UiState {
-	connection: "starting" | "ready" | "disconnected" | "error" | "no-workspace";
-	connectionDetail: string;
-	workspaceName: string;
-	state: PiState;
-	stats?: PiStats;
-	messages: PiMessage[];
-	/**
-	 * How many older messages the host left out of the snapshot it sent. Counted
-	 * together with the messages this cap drops, because from the reader's side
-	 * both are just history that is not on screen.
-	 */
-	omittedMessageCount: number;
-	/**
-	 * Text of the session's first user message, when the snapshot's window no
-	 * longer carries it. Feeds the title only; never rendered as an entry.
-	 */
-	titleSeed: string;
-	streamingMessage?: PiMessage;
-	/**
-	 * Index in `ui.messages` the in-flight reply belongs at once it settles.
-	 *
-	 * pi does not wait for this view's reveal animation: a drained follow-up (or
-	 * a steering message) can arrive while the reply it followed is still showing
-	 * its buffered tail. That reply is not in `ui.messages` yet, so it has to be
-	 * spliced back in ahead of the newer message — both while it streams and when
-	 * it settles — instead of being appended past it. Set when the reply starts
-	 * (and by a snapshot that resumes one), then corrected when pi finalises it.
-	 */
-	streamingIndex: number;
-	models: PiModel[];
-	thinkingLevels: string[];
-	commands: PiCommand[];
-	attachments: AttachmentRef[];
-	sessions: SessionSummary[];
-	capabilities: PiCapabilities;
-	timeContext: PiTimeContext;
-	/**
-	 * `hostNowMs` minus the webview's own clock at the moment a snapshot arrived.
-	 * Remote SSH puts pi on a different machine, so relative times are computed
-	 * against the host's clock rather than the webview's.
-	 */
-	clockSkewMs: number;
-	queue: { steering: string[]; followUp: string[] };
-	busy: boolean;
-}
-
 const vscode = acquireVsCodeApi<PersistedState>();
+const ui = createUiState();
 
-const ui: UiState = {
-	connection: "starting",
-	connectionDetail: "Starting pi...",
-	workspaceName: "",
-	state: {},
-	messages: [],
-	omittedMessageCount: 0,
-	titleSeed: "",
-	streamingIndex: 0,
-	models: [],
-	thinkingLevels: ["off"],
-	commands: [],
-	attachments: [],
-	sessions: [],
-	// Optimistic until the host reports otherwise, matching the host-side
-	// tracker: a capability is only hidden once pi says it is unsupported.
-	capabilities: {
-		clone: true,
-		fork: true,
-		forkMessages: true,
-	},
-	timeContext: { locale: "", hostNowMs: 0 },
-	clockSkewMs: 0,
-	queue: { steering: [], followUp: [] },
-	busy: false,
-};
-
-const liveTools = new Map<string, LiveTool>();
-const toolResults = new Map<string, PiMessage>();
-/** Last streamed source text per live streaming section, for exact change checks. */
-const streamingSectionSource = new WeakMap<HTMLElement, string>();
 const pendingActions = new Map<string, PendingAction>();
 
 /**
@@ -223,44 +103,8 @@ const extensionStatuses = new Map<string, string>();
 const extensionWidgets = new Map<string, string[]>();
 /** Single transcript-wide timer for relative time labels. */
 let relativeTimeTimer: ReturnType<typeof setTimeout> | undefined;
-/** Debounces expensive prompt-bound measurements until native scrolling stops. */
-let transcriptScrollSettleTimer: ReturnType<typeof setTimeout> | undefined;
-let renderedPromptText: string | undefined;
-/**
- * The inputs the composer highlights were last drawn from — reference identities
- * and the command names, not the ranges they produce.
- *
- * Deliberately the inputs: `commandHighlightRanges` scans the whole draft, which
- * can be 200K characters, and that scan is the cost this guard exists to skip.
- */
-let renderedPromptInputSignature: string | undefined;
-/**
- * The attachment chips currently on screen, keyed by what each chip shows.
- *
- * Rendering them is not free of consequences: rebuilding the list strands keyboard
- * focus on `body` and replaces every remove button under the pointer, and render()
- * runs on every streaming frame even though attachments only change when one is
- * added or removed.
- */
-let renderedAttachmentSignature: string | undefined;
 let resourceDragDepth = 0;
-/**
- * Prompts the active session can fork from, as last reported by the host.
- *
- * Cleared when the picker closes: the list is only valid for the session it was
- * fetched from, and a stale entry id would be rejected by the host anyway.
- */
-let forkCandidates: ForkCandidate[] = [];
-let activeForkEntryId: string | undefined;
-let renderedForkEntryIds: string[] = [];
-let forkLoading = false;
-
 const MAX_SESSION_NAME_LENGTH = 200;
-const MAX_HIGHLIGHTED_COMPOSER_LENGTH = 200_000;
-/** Older messages are dropped from the DOM rather than rendered off-screen. */
-const MAX_RENDERED_MESSAGES = 150;
-const ANSI_ESCAPE_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/gu;
-const ORPHAN_SGR_PATTERN = /\[(?:\d{1,3}(?:;\d{1,3})*)m/gu;
 
 const elements = {
 	app: element<HTMLElement>("app"),
@@ -432,76 +276,46 @@ const mentionController = new MentionController({
 	isProtectedOffset: (offset) =>
 		Boolean(composerController.referenceAtOffset(offset)),
 });
+const sessionPanels = createSessionPanels({
+	elements, state: ui, runAction, openRenamePrompt, applyRelativeTime, createCodicon,
+	requestSessions: () => post({ type: "listSessions" }),
+	composerHasContent: () => elements.input.value.trim().length > 0 || ui.attachments.length > 0 || composerController.references.length > 0,
+	closeComposerPopups: () => {
+		selectorController.close(false);
+		dismissCommandPalette();
+		mentionController.dismiss();
+	},
+});
+const { renderSessions, toggleSessionMenu, dismissSessionMenu, closeSessionMenu,
+	focusSessionMenuItem, toggleHistory, dismissHistory, closeHistory,
+	openForkPicker, dismissForkPicker, closeForkPicker, renderForkCandidates, moveActiveFork } = sessionPanels;
+
+const composerRenderer = createComposerRenderer({
+	elements, state: ui, composer: composerController, selectors: selectorController,
+	createCodicon, post, scheduleRender, isSubmitPending, showSendHint, hideSendHint,
+	dismissPopups: () => { dismissCommandPalette(); mentionController.dismiss(); },
+});
+const { renderComposerHighlights, syncPromptHighlightScroll } = composerRenderer;
+const headerRenderer = createHeaderRenderer({
+	elements, state: ui, isSubmitPending, dismissSessionMenu, dismissForkPicker,
+	restart: () => { runAction("restart"); }, createCodicon,
+});
 resizeInput();
 renderComposerHighlights();
 
-/**
- * Sticky label naming the turn the transcript is scrolled into.
- *
- * The prompt list is read lazily rather than captured once: renderMessages()
- * replaces every message node, so a cached NodeList would go stale on each
- * render.
- */
-const pinnedPrompt = new PinnedPromptController({
-	viewport: elements.transcript,
-	prompts: () => [
-		...elements.messages.querySelectorAll<HTMLElement>(".user-message"),
-	],
-	row: elements.pinnedPrompt,
-	text: elements.pinnedPromptText,
-	toggle: elements.pinnedPromptToggle,
-});
-
-/**
- * Owns the "should new content pull the view down" decision for the transcript.
- *
- * Streaming appends to the transcript every frame, so this is what keeps an
- * upward scroll from being undone by the next delta.
- */
-const reducedMotionQuery = window.matchMedia(
-	"(prefers-reduced-motion: reduce)",
-);
-const expandedThinkingKeys = new Set<string>();
-let pendingThinkingToggleAnchor:
-	{ thinkingKey: string; viewportTop: number } | undefined;
-const streamingPlayback: StreamingMessagePlayback =
-	new StreamingMessagePlayback({
-		// Grouping is read from the target rather than from the displayed message: the
-		// section key it produces has to hold for every block of a run and for every
-		// frame of its reveal, and the first displayed frame is still the empty shell
-		// pi opens an assistant message with.
-		shouldAnimateThinking: (message, thinkingIndex) =>
-			expandedThinkingKeys.has(
-				`${messageKey(message)}-thinking-${thinkingGroupKeyIndex(
-					messageBlocks(streamingPlayback.target ?? message),
-					thinkingIndex,
-				)}`,
-			),
-	});
 const frameCoordinator = new FrameCoordinator({
 	requestFrame: (callback) => window.requestAnimationFrame(callback),
 	cancelFrame: (handle) => window.cancelAnimationFrame(handle),
-	measure: () => pinnedPrompt.sync(),
-	advance: advanceStreamingPlayback,
+	measure: () => transcriptViewport.measure(),
+	advance: (timestamp) => transcriptController.advance(timestamp),
 	render,
-	renderAdvance: renderStreamingFrame,
+	renderAdvance: () => transcriptController.renderStreamingFrame(),
 });
-const scrollAnchor = new ScrollAnchor({
-	viewport: elements.transcript,
-	requestFrame: (callback) => frameCoordinator.requestScrollFrame(callback),
-	cancelFrame: (handle) => frameCoordinator.cancelScrollFrame(handle),
-	shouldAnimate: () => !reducedMotionQuery.matches,
+const transcriptViewport = createTranscriptViewport({
+	elements, frames: frameCoordinator, scheduleRender,
+	cancelSubmitFollow: () => submitFollowCoordinator.cancelAll(),
 });
-// The transcript's scrollbar is drawn by the page, not the platform: a wired
-// mouse flips macOS to an always-visible, space-taking scrollbar mid-session,
-// and no CSS can hold the overlay behaviour the transcript is tuned around.
-// The frame is the strip's positioned host; the thumb rides the gutter the
-// transcript claims, exactly where the native overlay used to paint.
-mountOverlayScrollbar({
-	viewport: elements.transcript,
-	content: elements.messages,
-	frame: elements.transcriptFrame,
-});
+const { anchor: scrollAnchor, syncJumpButton: syncJumpToBottomButton, scheduleMeasure: scheduleTranscriptMeasure } = transcriptViewport;
 const submitFollowCoordinator = new SubmitFollowCoordinator({
 	// Every coordinator follow lands on a render: `follow` alone clears the
 	// anchor's recorded position, and until the next render pins the viewport a
@@ -514,23 +328,26 @@ const submitFollowCoordinator = new SubmitFollowCoordinator({
 	},
 });
 
-const transcriptView = new TranscriptView<Element>({
+const transcriptDom = createTranscriptDom({
+	controller: () => transcriptController, state: ui, anchor: scrollAnchor,
+	sanitizedNodes, createCodicon, bindImageReflow, enhanceImages: enhanceTranscriptImages,
+	scheduleMeasure: scheduleTranscriptMeasure,
+});
+const { createMessageNode, patchStreamingMessage, toggleExpandable, refreshExpandedToolBody } = transcriptDom;
+const transcriptController = new TranscriptController({
+	state: ui,
 	container: elements.messages,
-	createNode: (entry, previous) => createMessageNode(entry, previous),
+	createNode: createMessageNode,
+	patchStreaming: patchStreamingMessage,
+	scheduleRender,
+	scheduleMeasure: scheduleTranscriptMeasure,
+	pinToBottom: () => scrollAnchor.stickToBottomIfFollowing(),
+	syncJumpButton: syncJumpToBottomButton,
+	followFresh: () => scrollAnchor.follow({ snap: true }),
+	clearMediaRefusals: () => mediaSources.clearRefusals(),
+	now: hostNow,
 });
-
-/**
- * Stages a fresh build of a big window across frames: the tail renders in the
- * first pass so the reader lands on the newest messages immediately, and the
- * history backfills above the fold a window-worth at a time. A full render
- * schedules the next pass — `renderStreamingFrame` would rather patch a
- * streaming message and leave the backfill stalled.
- */
-const progressiveWindow = new ProgressiveWindow({
-	threshold: 60,
-	initial: 40,
-	chunk: 40,
-});
+const { liveTools, toolResults, playback: streamingPlayback } = transcriptController;
 
 /**
  * Answer cache for the image paths a transcript names.
@@ -543,96 +360,6 @@ const mediaSources = new MediaSources((requestId, sources) =>
 	post({ type: "resolveMedia", requestId, sources }),
 );
 
-/**
- * Stable per-message identity for transcript keys and render signatures.
- *
- * Two different things are needed, and conflating them breaks the transcript in
- * opposite directions:
- *
- * - `key` identifies the *slot*. It must survive pi replacing a message object,
- *   which happens on every streaming delta and again at `message_end`. A key
- *   that changes per delta would make the reconciler drop and rebuild the node
- *   each frame, losing the disclosure state the reader had opened.
- * - `version` marks *content*. It must change whenever the object is replaced,
- *   or the render signature would look unchanged and the streaming message
- *   would never repaint.
- *
- * Keyed by object identity because pi replaces messages rather than mutating
- * them, which makes identity both cheaper and more exact than hashing content.
- * A snapshot is the one case that replaces every object at once, so identity has
- * to be re-established there deliberately — see `adoptSnapshotMessageIdentities`.
- */
-const messageIdentities = new WeakMap<PiMessage, MessageIdentity>();
-let nextMessageKey = 0;
-
-function messageIdentity(message: PiMessage): MessageIdentity {
-	const existing = messageIdentities.get(message);
-	if (existing) return existing;
-	nextMessageKey += 1;
-	const identity: MessageIdentity = { key: nextMessageKey, version: 0 };
-	messageIdentities.set(message, identity);
-	return identity;
-}
-
-/**
- * Carries a message's slot identity to the object that supersedes it.
- *
- * Called wherever pi hands over a new object for a message already on screen:
- * each streaming delta, the authoritative copy at `message_end`, and the
- * aborted copy when a run is interrupted. Without this the node would be
- * rebuilt from scratch at each handover.
- */
-function inheritMessageIdentity(
-	from: PiMessage | undefined,
-	to: PiMessage,
-): void {
-	if (!from || from === to) return;
-	const previous = messageIdentities.get(from);
-	if (!previous) return;
-	messageIdentities.set(to, {
-		key: previous.key,
-		version: previous.version + 1,
-	});
-}
-
-/** Identity marker for render signatures: changes on any content replacement. */
-function messageSignaturePart(message: PiMessage): string {
-	const identity = messageIdentity(message);
-	return `${identity.key}.${identity.version}`;
-}
-
-function messageKey(message: PiMessage): string {
-	return `message-${messageIdentity(message).key}`;
-}
-
-/** A message's content blocks; pi sends a string only for non-assistant roles. */
-function messageBlocks(message: PiMessage): readonly PiContentBlock[] {
-	return Array.isArray(message.content) ? message.content : [];
-}
-
-/**
- * Inputs shared by every node built in one `renderMessages` pass.
- *
- * Held here rather than threaded through `TranscriptEntry` so entries stay small
- * enough to compare cheaply.
- */
-interface MessageRenderContext {
-	/** Keyed lookup, so building a node costs no scan of the visible list. */
-	byKey: ReadonlyMap<string, PiMessage>;
-	omitted: number;
-	resultMap: ReadonlyMap<string, PiMessage>;
-	/** Day-separator entries, keyed like any other transcript entry. */
-	separatorLabels: ReadonlyMap<string, string>;
-}
-
-let pendingMessageRender: MessageRenderContext | undefined;
-
-window.addEventListener(
-	"message",
-	(event: MessageEvent<HostToWebviewMessage>) => {
-		handleHostMessage(event.data);
-	},
-);
 
 window.addEventListener("keydown", (event) => {
 	if (modalController.isOpen) {
@@ -771,135 +498,6 @@ elements.input.addEventListener("blur", () =>
 elements.input.addEventListener("scroll", syncPromptHighlightScroll);
 window.addEventListener("resize", syncPromptHighlightScroll);
 
-// The jump chip's one condition: detached AND far enough from the bottom for
-// the trip to be worth a click. Every state change reaches it through the
-// callers below — scroll events, render passes, resize — so the ScrollAnchor
-// itself carries no chip bookkeeping.
-const JUMP_BUTTON_GAP_PX = 48;
-
-function syncJumpToBottomButton(): void {
-	elements.jumpToBottom.classList.toggle(
-		"is-visible",
-		!scrollAnchor.isFollowing &&
-			scrollAnchor.distanceFromBottomPx > JUMP_BUTTON_GAP_PX,
-	);
-}
-
-// A scroll event stays layout-read-free apart from the chip's gap check — one
-// read against the layout the browser just finished for the scroll itself.
-// Native wheel/touch/scrollbar movement owns scrollTop until it has been quiet
-// for a short interval; only then do we measure prompt bounds and, if the
-// reader reached the bottom, resume following.
-elements.transcript.addEventListener(
-	"scroll",
-	() => {
-		if (scrollAnchor.noteScroll()) scheduleTranscriptScrollSettle();
-		syncJumpToBottomButton();
-	},
-	{ passive: true },
-);
-
-// Gesture listeners exist so an upward drag detaches the transcript from its
-// bottom edge on the very first event, before any scrolling has happened.
-// Waiting for the resulting scroll event would let one streaming frame pin the
-// view back to the bottom mid-gesture, which is what made scrolling up feel
-// like it was fighting back.
-elements.transcript.addEventListener(
-	"wheel",
-	(event) => {
-		if (event.deltaY < 0) submitFollowCoordinator.cancelAll();
-		if (scrollAnchor.noteUserIntent(event.deltaY)) {
-			scheduleTranscriptScrollSettle();
-		}
-	},
-	{ passive: true },
-);
-
-// A scrollbar drag has no wheel/touch intent event. The scrollbar itself targets
-// the viewport, while clicks on transcript content target descendants.
-elements.transcript.addEventListener(
-	"pointerdown",
-	(event) => {
-		if (event.target === elements.transcript)
-			submitFollowCoordinator.cancelAll();
-	},
-	{ passive: true },
-);
-elements.transcript.addEventListener("keydown", (event) => {
-	if (
-		event.key === "ArrowUp" ||
-		event.key === "PageUp" ||
-		event.key === "Home" ||
-		(event.key === " " && event.shiftKey)
-	) {
-		submitFollowCoordinator.cancelAll();
-	}
-});
-
-let touchAnchorY: number | undefined;
-elements.transcript.addEventListener(
-	"touchstart",
-	(event) => {
-		touchAnchorY = event.touches[0]?.clientY;
-	},
-	{ passive: true },
-);
-elements.transcript.addEventListener(
-	"touchmove",
-	(event) => {
-		const currentY = event.touches[0]?.clientY;
-		if (currentY === undefined || touchAnchorY === undefined) return;
-		// Dragging a finger down moves content down, which scrolls up: the sign is
-		// inverted relative to the wheel convention noteUserIntent expects.
-		const deltaY = touchAnchorY - currentY;
-		if (deltaY < 0) submitFollowCoordinator.cancelAll();
-		if (scrollAnchor.noteUserIntent(deltaY)) {
-			scheduleTranscriptScrollSettle();
-		}
-		touchAnchorY = currentY;
-	},
-	{ passive: true },
-);
-const clearTouchAnchor = () => {
-	touchAnchorY = undefined;
-	if (scrollAnchor.isReaderScrolling) scheduleTranscriptScrollSettle();
-};
-elements.transcript.addEventListener("touchend", clearTouchAnchor, {
-	passive: true,
-});
-elements.transcript.addEventListener("touchcancel", clearTouchAnchor, {
-	passive: true,
-});
-
-// Asking for the latest is the same contract as a send: follow, then pin in
-// this frame so the chip hides before the eased climb starts. Pending
-// follow-through acks stay queued — their follow agrees with this one. Blur
-// so the keyboard's next Space scrolls the transcript instead of re-clicking
-// a control that has just hidden itself.
-elements.jumpToBottom.addEventListener("click", () => {
-	scrollAnchor.follow();
-	scrollAnchor.stickToBottomIfFollowing();
-	syncJumpToBottomButton();
-	elements.jumpToBottom.blur();
-});
-window.addEventListener("resize", () => {
-	scheduleTranscriptMeasure();
-	// Rewrap resizes the transcript's height under a still-following viewport,
-	// and the clamp a shrink produces arrives as a bare scroll event. Re-pinning
-	// in the same frame keeps the attachment honest across the whole gesture;
-	// renders coalesce, so a drag costs one pass per frame. Detached, the gap
-	// still moved, so the chip re-reads it directly.
-	if (scrollAnchor.isFollowing) scheduleRender();
-	else syncJumpToBottomButton();
-});
-
-elements.pinnedPromptBody.addEventListener("click", () =>
-	pinnedPrompt.revealActivePrompt(),
-);
-
-elements.pinnedPromptToggle.addEventListener("click", () =>
-	pinnedPrompt.toggleExpanded(),
-);
 const promptHighlightResizeObserver = new ResizeObserver(
 	syncPromptHighlightScroll,
 );
@@ -911,8 +509,7 @@ const composerToolsResizeObserver = new ResizeObserver(() => {
 	// The row's width is one of the fold's two inputs, and the only one no render
 	// pass can see change: dropping the measured signature makes the next call do
 	// the work again.
-	composerToolsFoldSignature = undefined;
-	reflowComposerTools();
+	composerRenderer.resizeTools();
 	selectorController.reposition();
 	if (!elements.commandPanel.hidden) positionCommandPanel();
 	mentionController.reposition();
@@ -1159,7 +756,7 @@ elements.forkSearch.addEventListener("keydown", (event) => {
 	event.preventDefault();
 	// Enter with nothing highlighted does nothing: the first row is not an obvious
 	// default, and a fork is not silently undoable.
-	if (activeForkEntryId) submitFork(activeForkEntryId);
+	sessionPanels.submitActiveFork();
 });
 elements.runtimeMeta.addEventListener("click", () => toggleUsagePanel());
 document.addEventListener("pointerdown", (event) => {
@@ -1307,322 +904,7 @@ elements.messages.addEventListener("keydown", (event) => {
 	toggleExpandable(expandable);
 });
 
-post({ type: "ready" });
 
-function handleHostMessage(message: HostToWebviewMessage): void {
-	switch (message.type) {
-		case "bootstrap": {
-			ui.connection =
-				message.phase === "no-workspace" ? "no-workspace" : "starting";
-			ui.connectionDetail = message.detail ?? "Starting pi...";
-			ui.workspaceName = message.workspaceName ?? ui.workspaceName;
-			scheduleRender();
-			break;
-		}
-		case "snapshot": {
-			applySnapshot(message);
-			break;
-		}
-		case "rpcEvent": {
-			reduceRpcEvent(message.event);
-			break;
-		}
-		case "actionResult": {
-			handleActionResult(
-				message.actionId,
-				message.ok,
-				message.error,
-				message.cancelled,
-			);
-			break;
-		}
-		case "sessionList": {
-			ui.sessions = message.sessions;
-			renderSessions();
-			break;
-		}
-		case "forkCandidates": {
-			forkLoading = false;
-			forkCandidates = message.candidates;
-			// A late reply must not repopulate a picker the reader already closed.
-			if (!elements.forkPanel.hidden) renderForkCandidates();
-			break;
-		}
-		case "capabilities": {
-			// The host downgrades a capability the moment pi rejects the command as
-			// unknown, so the entry point disappears instead of failing repeatedly.
-			ui.capabilities = message.capabilities;
-			scheduleRender();
-			break;
-		}
-		case "commandList": {
-			ui.commands = message.commands;
-			if (!elements.commandPanel.hidden) renderCommands();
-			scheduleRender();
-			break;
-		}
-		case "workspaceFileList": {
-			mentionController.applyResults(
-				message.requestId,
-				message.query,
-				message.entries,
-			);
-			break;
-		}
-		case "mediaResolved": {
-			applyResolvedMedia(message.requestId, message.resolved);
-			break;
-		}
-		case "attachments": {
-			ui.attachments = message.attachments;
-			scheduleRender();
-			break;
-		}
-		case "composerReferences": {
-			const changedReference = composerController
-				.applyIncoming(message.references)
-				.at(-1);
-			const requestId = message.focusRequestId;
-			const focusRequest =
-				typeof requestId === "number"
-					? composerFocusRequests.accept(requestId)
-					: undefined;
-			if (focusRequest) {
-				dismissHistory();
-				if (focusRequest === "announce") {
-					if (changedReference) {
-						announcer.announce(
-							`Referenced ${formatComposerReferenceLocation(changedReference)}`,
-						);
-					} else if (composerController.references.length > 0) {
-						announcer.announce(
-							`Pi Agent input focused with ${composerController.references.length} ${composerController.references.length === 1 ? "reference" : "references"}`,
-						);
-					} else {
-						announcer.announce("Pi Agent input focused");
-					}
-				}
-			}
-			scheduleRender();
-			break;
-		}
-		case "notice": {
-			showToast(message.detail, message.kind);
-			break;
-		}
-		case "connection": {
-			applyConnection(message.phase, message.detail);
-			break;
-		}
-		case "setComposerText": {
-			composerController.setText(message.text);
-			break;
-		}
-		default:
-			assertNever(message);
-	}
-}
-
-/**
- * Re-establishes message identity across a snapshot.
- *
- * The window is twice the render cap so that a reader who scrolls a little past
- * the capped window still finds those nodes intact, and each message gets its own
- * copy of the identity: sharing one object between two messages would make a
- * later in-place bump silently affect a message it does not belong to.
- */
-function adoptSnapshotMessageIdentities(next: readonly PiMessage[]): void {
-	adoptSnapshotIdentities({
-		previous: ui.messages,
-		next,
-		windowSize: MAX_RENDERED_MESSAGES * 2,
-		identityOf: (message) => messageIdentities.get(message),
-		adopt: (message, identity) => {
-			messageIdentities.set(message, { ...identity });
-		},
-	});
-}
-
-function applySnapshot(
-	message: Extract<HostToWebviewMessage, { type: "snapshot" }>,
-): void {
-	const sessionChanged = Boolean(
-		ui.state.sessionId && ui.state.sessionId !== message.state.sessionId,
-	);
-	ui.state = message.state;
-	ui.omittedMessageCount = message.omittedMessageCount ?? 0;
-	ui.titleSeed = message.titleSeed ?? "";
-	// Before the swap: identity lives on the object, so replacing the array without
-	// this step rebuilds every rendered message and closes what the reader opened.
-	adoptSnapshotMessageIdentities(message.messages);
-	ui.messages = message.messages;
-	ui.stats = message.stats;
-	// snapshot 是全量权威统计，流式实时增量以此为零点重新累计。
-	streamingUsage.reset();
-	ui.models = message.models;
-	ui.thinkingLevels = message.thinkingLevels;
-	ui.commands = message.commands;
-	ui.workspaceName = message.workspaceName;
-	if (message.capabilities) ui.capabilities = message.capabilities;
-	if (message.timeContext) {
-		ui.timeContext = message.timeContext;
-		// Measured once per snapshot: the difference between pi's clock and this
-		// webview's is what makes relative times correct over Remote SSH.
-		ui.clockSkewMs = message.timeContext.hostNowMs - Date.now();
-	}
-	ui.busy = Boolean(message.state.isStreaming || message.state.isCompacting);
-	clearUnansweredSubmit(message.messages);
-	// Read before the reset below: it says whether pi has already finalised the
-	// reply this view is revealing, which is what decides where that reply lives
-	// after the swap.
-	const finishing = streamingPlayback.isFinishing;
-	const liveReply = ui.streamingMessage;
-	const listedReply =
-		finishing && liveReply
-			? findLastMessage(ui.messages, (candidate) =>
-					isSameMessage(candidate, liveReply),
-				)
-			: undefined;
-	if (listedReply && liveReply) {
-		// A snapshot cannot carry the reply pi is still streaming — `state.messages`
-		// only receives a message at `message_end` — but it does carry the final copy
-		// of one that just ended. The list is authoritative and already holds it, so
-		// the slot is handed over rather than resumed: drawing both would render the
-		// same reply twice, under two identities.
-		streamingPlayback.reset();
-		ui.streamingIndex = message.messages.indexOf(listedReply);
-		settleStreamingMessage(listedReply);
-	} else if (
-		liveReply &&
-		!sessionChanged &&
-		(finishing || message.state.isStreaming)
-	) {
-		// A reply this snapshot has no copy of is still being revealed: leave the
-		// playback and the text alone and let it finish. Nothing newer than the reply
-		// can be in pi's list yet, so it belongs after everything in it.
-		// A session switch is the exception: the reply belongs to the session it
-		// streamed in, and keeping it would glue it onto the next session's
-		// transcript — and write it into that list at settle. Dropped here, the new
-		// session's own stream (if any) rebuilds playback from its next delta.
-		ui.streamingIndex = ui.messages.length;
-	} else {
-		streamingPlayback.reset();
-		ui.streamingMessage = undefined;
-	}
-	liveTools.clear();
-	toolResults.clear();
-	for (const existingMessage of ui.messages) {
-		if (existingMessage.role === "toolResult" && existingMessage.toolCallId) {
-			toolResults.set(existingMessage.toolCallId, existingMessage);
-		}
-	}
-	if (sessionChanged) {
-		expandedThinkingKeys.clear();
-		pendingThinkingToggleAnchor = undefined;
-		submitFollowCoordinator.cancelAll();
-		extensionStatuses.clear();
-		extensionWidgets.clear();
-		// A path refused while the old session was open may name a file that exists by
-		// now, and this is the moment the transcript is rebuilt from scratch.
-		mediaSources.clearRefusals();
-		// Nothing in a different session's transcript can be reused.
-		transcriptView.clear();
-	}
-	if (sessionChanged || transcriptView.size === 0) {
-		// A fresh build starts from an offset that means nothing — wherever the
-		// previous session was scrolled, or scrollTop 0 in a webview that has never
-		// drawn. The reader expects the newest message in the first frame, not an
-		// eased climb across content nobody has seen: one that hands every native
-		// clamp on the way a chance to be read as a reader gesture.
-		scrollAnchor.follow({ snap: true });
-	}
-	scheduleRender();
-}
-
-/**
- * The last message satisfying `matches`.
- *
- * A reverse loop rather than `findLast`: the configured lib target predates it.
- */
-function findLastMessage(
-	messages: readonly PiMessage[],
-	matches: (message: PiMessage) => boolean,
-): PiMessage | undefined {
-	for (let index = messages.length - 1; index >= 0; index -= 1) {
-		const message = messages[index];
-		if (message && matches(message)) return message;
-	}
-	return undefined;
-}
-
-/**
- * Whether two objects are the same message pi listed twice.
- *
- * pi stamps every message it creates, and a reply keeps one timestamp from its
- * first partial through to the copy a snapshot carries, so the timestamp is the
- * evidence that a message this view is streaming is the one now listed. Content
- * is the fallback for a message that arrived without one, as in the dedupe that
- * keeps a re-delivered prompt out of the transcript.
- */
-function isSameMessage(left: PiMessage, right: PiMessage): boolean {
-	if (left.role !== right.role) return false;
-	if (left.timestamp && right.timestamp)
-		return left.timestamp === right.timestamp;
-	return contentText(left.content) === contentText(right.content);
-}
-
-function applyConnection(
-	phase: "starting" | "ready" | "disconnected" | "error",
-	detail?: string,
-): void {
-	ui.connection = phase;
-	ui.connectionDetail = phase === "ready" ? "" : (detail ?? "");
-	if (phase === "starting") {
-		extensionStatuses.clear();
-		extensionWidgets.clear();
-	}
-	if (phase === "disconnected" || phase === "error")
-		finishInterruptedRun(detail);
-	announcer.announce(
-		phase === "ready" ? "Pi is ready" : detail || `Pi is ${phase}`,
-	);
-	scheduleRender();
-}
-
-function finishInterruptedRun(detail?: string): void {
-	submitFollowCoordinator.cancelAll();
-	ui.busy = false;
-	const bufferedMessage = streamingPlayback.completeImmediately();
-	const activeMessage = bufferedMessage ?? ui.streamingMessage;
-	if (activeMessage) {
-		const interrupted = { ...activeMessage, stopReason: "aborted" };
-		inheritMessageIdentity(ui.streamingMessage, interrupted);
-		// Back where the reply sat while streaming, not at the end: a follow-up that
-		// arrived during the reveal belongs after it, as in the ordinary settle.
-		if (!hasEquivalentTail(ui.messages, interrupted)) {
-			insertReply(ui.messages, interrupted, ui.streamingIndex);
-		}
-		ui.streamingMessage = undefined;
-	}
-	for (const tool of liveTools.values()) {
-		if (tool.status === "running") {
-			tool.status = "error";
-			if (tool.result === undefined) {
-				tool.result = {
-					content: [
-						{
-							type: "text",
-							text: detail || "Pi disconnected before this tool completed.",
-						},
-					],
-				};
-			}
-			tool.revision += 1;
-		}
-	}
-	extensionStatuses.clear();
-	extensionWidgets.clear();
-}
 
 /**
  * Clears a submit the host never answered.
@@ -1749,414 +1031,136 @@ function handleActionResult(
  * 回复结束后刷新；两者的合成与重置规则见 StreamingUsageTracker。
  */
 const streamingUsage = new StreamingUsageTracker();
+const { renderQueue, renderWidgets, renderRuntimeMeta, toggleUsagePanel, dismissUsagePanel } = createRuntimeRenderer({
+	elements, state: ui, usage: streamingUsage, statuses: extensionStatuses, widgets: extensionWidgets,
+});
+const sessionController = new SessionController({
+	state: ui,
+	transcript: transcriptController,
+	usage: streamingUsage,
+	clearUnansweredSubmit,
+	cancelFollow: () => submitFollowCoordinator.cancelAll(),
+	clearExtensionUi: () => { extensionStatuses.clear(); extensionWidgets.clear(); },
+	scheduleRender,
+	announce: (message) => announcer.announce(message),
+	now: Date.now,
+});
 
-function reduceRpcEvent(event: JsonRecord): void {
-	let needsImmediateRender = true;
-	switch (event.type) {
-		case "agent_start":
-			ui.busy = true;
-			announcer.announce("Pi started working");
-			// 新一轮 agent 运行：实时用量从最近一次 snapshot 之上重新累计。
-			streamingUsage.startAgentRun();
-			break;
-		case "agent_settled":
-			ui.busy = false;
-			announcer.announce("Pi finished responding");
-			break;
-		case "message_start": {
-			const message = asMessage(event.message);
-			if (!message) break;
-			if (message.role === "assistant") {
-				const overlappingMessage = streamingPlayback.completeImmediately();
-				if (overlappingMessage) settleStreamingMessage(overlappingMessage);
-				// Where this reply sits in pi's order: after everything already in the
-				// transcript, ahead of whatever pi delivers while it streams.
-				ui.streamingIndex = ui.messages.length;
-				ui.streamingMessage = streamingPlayback.start(message);
-				// 新一轮回复从零累计，上一轮的用量已在 message_end 提交。
-				streamingUsage.beginCall();
-				frameCoordinator.scheduleAdvance();
-				needsImmediateRender = false;
-			} else if (message.role === "user") {
-				submitFollowCoordinator.noteUserMessage(contentText(message.content));
-				if (!hasEquivalentTail(ui.messages, message)) ui.messages.push(message);
-			} else if (
-				message.role === "custom" &&
-				!hasEquivalentTail(ui.messages, message)
-			) {
-				ui.messages.push(message);
-			}
-			break;
-		}
-		case "message_update": {
-			needsImmediateRender = false;
-			// 只刷 footer 而非全量 render：这里每个流式 delta 都会触发，
-			// 全量 reconciliation 会重扫 150 条历史消息的签名。
-			if (streamingUsage.applyUpdate(event.usage)) renderRuntimeMeta();
-			if (
-				event.assistantMessageEvent !== undefined &&
-				streamingPlayback.isActive
-			) {
-				streamingPlayback.applyDelta(event);
-				frameCoordinator.scheduleAdvance();
-			} else {
-				// Older pi builds sent a cumulative message snapshot here. It still enters
-				// the same playback buffer so provider batching never becomes a visual jump.
-				const message = asMessage(event.message);
-				if (message) {
-					if (streamingPlayback.isActive) {
-						streamingPlayback.updateTarget(message);
-					} else if (event.assistantMessageEvent !== undefined) {
-						// A delta with no playback to apply it to: this view was reloaded
-						// mid-reply and missed `message_start`. The event carries the reply so
-						// far, so the delivered text is shown at once instead of waiting for
-						// `message_end` to reveal it from nothing.
-						ui.streamingIndex = ui.messages.length;
-						ui.streamingMessage = streamingPlayback.resume(message);
-					} else {
-						ui.streamingIndex = ui.messages.length;
-						ui.streamingMessage = streamingPlayback.start(message);
-					}
-					frameCoordinator.scheduleAdvance();
-				}
-			}
-			break;
-		}
-		case "message_end": {
-			const message = asMessage(event.message);
-			if (!message) break;
-			if (message.role === "assistant") {
-				// pi appends accepted messages to its own list as it takes them, so the
-				// end of the list is now exactly where this reply belongs: everything
-				// pi delivers from here on (a drained follow-up, a steering message)
-				// was appended after it. Recorded before the reveal finishes, because
-				// the settle that ends it inserts the reply back here.
-				ui.streamingIndex = ui.messages.length;
-				streamingPlayback.finish(message);
-				// 本回复完成：最终用量并入累计，下一条回复从零开始。
-				if (
-					streamingUsage.commitCall(
-						objectValue(event.message).usage,
-						stringValue(objectValue(event.message).stopReason),
-					)
-				)
-					renderRuntimeMeta();
-				frameCoordinator.scheduleAdvance();
-				needsImmediateRender = false;
-			} else if (message.role === "toolResult" && message.toolCallId) {
-				if (!toolResults.has(message.toolCallId)) ui.messages.push(message);
-				toolResults.set(message.toolCallId, message);
-				// 工具结果消息也携带 usage（如 bash 消耗的 token），并入累计。
-				if (streamingUsage.addToolUsage(objectValue(event.message).usage))
-					renderRuntimeMeta();
-				frameCoordinator.scheduleTranscriptRender();
-				needsImmediateRender = false;
-			} else if (
-				message.role === "custom" &&
-				!hasEquivalentTail(ui.messages, message)
-			) {
-				ui.messages.push(message);
-			}
-			break;
-		}
-		case "tool_execution_start": {
-			const id = stringValue(event.toolCallId);
-			if (!id) break;
-			liveTools.set(id, {
-				id,
-				name: stringValue(event.toolName) || "tool",
-				args: objectValue(event.args),
-				status: "running",
-				startedAt: Date.now(),
-				revision: 0,
-			});
-			frameCoordinator.scheduleTranscriptRender();
-			needsImmediateRender = false;
-			break;
-		}
-		case "tool_execution_update": {
-			const id = stringValue(event.toolCallId);
-			const tool = liveTools.get(id);
-			if (!tool) break;
-			const hadResult = tool.result !== undefined;
-			tool.result = event.partialResult;
-			const section = elements.messages.querySelector<HTMLElement>(
-				`.tool-call[data-tool-key="${CSS.escape(id)}"]`,
-			);
-			const isExpanded = Boolean(section?.classList.contains("expanded"));
-			// A collapsed card only needs one transition from no body to body. Further
-			// chunks replace the retained raw result without touching DOM or scanning
-			// output. An explicitly expanded card keeps showing current content — by
-			// swapping just its body: a full render here re-parses every section of
-			// the message once per output chunk, which is the per-frame cost that
-			// shows up as stutter while a chatty command streams.
-			if (!hadResult) {
-				tool.revision += 1;
-				frameCoordinator.scheduleTranscriptRender();
-			} else if (section && isExpanded) {
-				refreshExpandedToolBody(section, id);
-			}
-			needsImmediateRender = false;
-			break;
-		}
-		case "tool_execution_end": {
-			const id = stringValue(event.toolCallId);
-			const existing = liveTools.get(id);
-			const eventArgs = objectValue(event.args);
-			const status = event.isError === true ? "error" : "success";
-			const toolName = stringValue(event.toolName) || existing?.name || "tool";
-			liveTools.set(id, {
-				id,
-				name: toolName,
-				args:
-					Object.keys(eventArgs).length > 0
-						? eventArgs
-						: (existing?.args ?? {}),
-				status,
-				result: event.result,
-				startedAt: existing?.startedAt ?? Date.now(),
-				revision: (existing?.revision ?? 0) + 1,
-			});
-			announcer.announce(
-				`${friendlyToolName(toolName)} ${status === "error" ? "failed" : "completed"}`,
-			);
-			frameCoordinator.scheduleTranscriptRender();
-			needsImmediateRender = false;
-			break;
-		}
-		case "queue_update":
-			ui.queue = {
-				steering: stringArray(event.steering),
-				followUp: stringArray(event.followUp),
-			};
-			break;
-		case "compaction_start":
-			ui.busy = true;
-			extensionStatuses.set("compaction", "Compacting context...");
-			break;
-		case "compaction_end":
-			extensionStatuses.delete("compaction");
-			break;
-		case "auto_retry_start":
-			extensionStatuses.set(
-				"retry",
-				`Retrying (${numberValue(event.attempt)}/${numberValue(event.maxAttempts)})...`,
-			);
-			break;
-		case "auto_retry_end":
-			extensionStatuses.delete("retry");
-			break;
-		case "extension_error":
-			showToast(stringValue(event.error) || "A pi extension failed", "error");
-			break;
-		case "extension_ui_request":
-			reduceExtensionUiEvent(event);
-			break;
-		default:
-			break;
-	}
-	if (needsImmediateRender) scheduleRender();
-}
+const rpcEventReducer = new RpcEventReducer({
+	ui,
+	liveTools,
+	toolResults,
+	streamingPlayback,
+	streamingUsage,
+	scheduleRender,
+	scheduleTranscriptRender: () => frameCoordinator.scheduleTranscriptRender(),
+	scheduleAdvance: () => frameCoordinator.scheduleAdvance(),
+	renderRuntimeMeta,
+	settleStreamingMessage: (message) => transcriptController.settle(message),
+	noteUserMessage: (text) => submitFollowCoordinator.noteUserMessage(text),
+	hasEquivalentTail: (message) => hasEquivalentTail(ui.messages, message),
+	refreshExpandedTool: (toolId) => {
+		const section = elements.messages.querySelector<HTMLElement>(
+			`.tool-call[data-tool-key="${CSS.escape(toolId)}"]`,
+		);
+		if (section?.classList.contains("expanded")) refreshExpandedToolBody(section, toolId);
+	},
+	announce: (message) => announcer.announce(message),
+	showToast,
+	friendlyToolName,
+	setExtensionStatus: (key, value) => extensionStatuses.set(key, value),
+	clearExtensionStatus: (key) => extensionStatuses.delete(key),
+	setExtensionWidget: (key, lines) => {
+		if (lines.length > 0) extensionWidgets.set(key, lines);
+		else extensionWidgets.delete(key);
+	},
+});
 
-function reduceExtensionUiEvent(event: JsonRecord): void {
-	const method = stringValue(event.method);
-	// setStatus reports (e.g. pi's LSP extension's "LSP Active: …") are
-	// deliberately not ingested: they are persistent and noisy in the status
-	// row, which is reserved for queue counts and transient run states.
-	if (method === "setWidget") {
-		const key = stringValue(event.widgetKey);
-		const lines = stringArray(event.widgetLines)
-			.map(cleanExtensionText)
-			.filter(Boolean);
-		if (key && lines.length > 0) extensionWidgets.set(key, lines);
-		else if (key) extensionWidgets.delete(key);
-	}
-}
+const hostMessageHandler = new HostMessageHandler({
+	onBootstrap: (message) => {
+		ui.connection = message.phase === "no-workspace" ? "no-workspace" : "starting";
+		ui.connectionDetail = message.detail ?? "Starting pi...";
+		ui.workspaceName = message.workspaceName ?? ui.workspaceName;
+		scheduleRender();
+	},
+	onSnapshot: (message) => sessionController.applySnapshot(message),
+	onRpcEvent: (event) => rpcEventReducer.reduce(event),
+	onActionResult: (message) => handleActionResult(message.actionId, message.ok, message.error, message.cancelled),
+	onSessionList: (message) => {
+		ui.sessions = message.sessions;
+		renderSessions();
+	},
+	onForkCandidates: (message) => sessionPanels.applyForkCandidates(message.candidates),
+	onCapabilities: (message) => {
+		ui.capabilities = message.capabilities;
+		scheduleRender();
+	},
+	onCommandList: (message) => {
+		ui.commands = message.commands;
+		if (!elements.commandPanel.hidden) renderCommands();
+		scheduleRender();
+	},
+	onWorkspaceFileList: (message) => mentionController.applyResults(message.requestId, message.query, message.entries),
+	onMediaResolved: (message) => applyResolvedMedia(message.requestId, message.resolved),
+	onAttachments: (message) => {
+		ui.attachments = message.attachments;
+		scheduleRender();
+	},
+	onComposerReferences: (message) => {
+		const changedReference = composerController.applyIncoming(message.references).at(-1);
+		const requestId = message.focusRequestId;
+		const focusRequest = typeof requestId === "number" ? composerFocusRequests.accept(requestId) : undefined;
+		if (focusRequest) {
+			dismissHistory();
+			if (focusRequest === "announce") {
+				if (changedReference) announcer.announce(`Referenced ${formatComposerReferenceLocation(changedReference)}`);
+				else if (composerController.references.length > 0) {
+					const count = composerController.references.length;
+					announcer.announce(`Pi Agent input focused with ${count} ${count === 1 ? "reference" : "references"}`);
+				} else announcer.announce("Pi Agent input focused");
+			}
+		}
+		scheduleRender();
+	},
+	onNotice: (message) => showToast(message.detail, message.kind),
+	onConnection: (message) => sessionController.applyConnection(message.phase, message.detail),
+	onSetComposerText: (text) => composerController.setText(text),
+});
+
+// Install the listener only after all message dependencies have been initialized.
+window.addEventListener("message", (event: MessageEvent<HostToWebviewMessage>) => {
+	hostMessageHandler.handle(event.data);
+});
+post({ type: "ready" });
 
 function scheduleRender(): void {
 	frameCoordinator.scheduleRender();
 }
 
-/** Advances buffered text independently of whether the viewport follows it. */
-function advanceStreamingPlayback(timestamp: number): boolean {
-	const frame = streamingPlayback.advance(timestamp);
-	if (!frame) return streamingPlayback.needsFrame;
-	if (frame.completed) {
-		settleStreamingMessage(frame.message);
-		scheduleTranscriptMeasure();
-		return false;
-	}
-	inheritMessageIdentity(ui.streamingMessage, frame.message);
-	ui.streamingMessage = frame.message;
-	return streamingPlayback.needsFrame;
-}
-
-function settleStreamingMessage(message: PiMessage): void {
-	inheritMessageIdentity(ui.streamingMessage, message);
-	// Back where it sat while streaming rather than at the end: a follow-up pi
-	// delivered during the reveal belongs after it.
-	if (!hasEquivalentTail(ui.messages, message)) {
-		insertReply(ui.messages, message, ui.streamingIndex);
-	}
-	ui.streamingMessage = undefined;
-}
-
-/**
- * Patches only the active assistant node on character/tool frames.
- *
- * Full reconciliation scans up to 150 historical messages and recomputes their
- * signatures. That work is appropriate for snapshots and settled messages, but
- * not for every character. The active slot already has a stable key, so update
- * it directly and fall back only for its first frame or an unexpected structure.
- */
-function renderStreamingFrame(): void {
-	const message = ui.streamingMessage;
-	if (!message) {
-		renderMessages();
-		scrollAnchor.stickToBottomIfFollowing();
-		syncJumpToBottomButton();
-		return;
-	}
-	const key = messageKey(message);
-	const slot = transcriptView.nodeFor(key);
-	if (!slot || !patchStreamingMessage(slot, message, toolResults, key)) {
-		renderMessages();
-	}
-	scrollAnchor.stickToBottomIfFollowing();
-	syncJumpToBottomButton();
-}
-
 function render(): void {
-	const submitPending = isSubmitPending();
-	const hasMessages =
-		ui.messages.length > 0 || Boolean(ui.streamingMessage) || submitPending;
-	const title = deriveSessionTitle();
-	const working = ui.busy || submitPending;
-
-	elements.sessionTitle.textContent = title;
-	elements.sessionTitle.title = title;
-	elements.emptyState.hidden = hasMessages;
-	elements.emptyDetail.textContent =
-		ui.connection === "ready"
-			? `Ready in ${ui.workspaceName}`
-			: ui.connectionDetail || "Starting pi...";
-
-	elements.app.classList.toggle("is-working", working);
-	elements.connectionDot.className = `connection-dot ${ui.connection}`;
-	elements.connectionDot.title = connectionLabel();
-	elements.connectionDot.setAttribute("aria-label", connectionLabel());
-	elements.transcript.setAttribute("aria-busy", String(working));
-	renderConnectionBanner();
-	renderMessages();
-	restoreThinkingToggleAnchor();
-	renderAttachments();
+	headerRenderer.render();
+	transcriptController.render();
+	transcriptController.restoreThinkingAnchor((offset) => scrollAnchor.adjustBy(offset));
+	composerRenderer.renderAttachments();
 	renderComposerHighlights();
-	renderSelectors();
+	composerRenderer.renderSelectors();
 	renderQueue();
 	renderWidgets();
 	renderRuntimeMeta();
-	renderComposerStatusRow();
-	renderSendButton();
-
-	const enabled = ui.connection === "ready";
-	elements.input.disabled = !enabled;
-	elements.attachButton.disabled = !enabled;
-	elements.commandButton.disabled = !enabled;
-	elements.renameSessionButton.disabled = !enabled;
-	// Cloning replaces the active session, so it must wait for pi to go idle. The
-	// busy refusal arrives as a toast from the click handler below, not as a
-	// greyed-out control — every header action reads the same way mid-turn.
-	// Hidden outright when this pi build has no `clone` command.
-	elements.cloneSessionButton.hidden = !ui.capabilities.clone;
-	elements.cloneSessionButton.disabled = !enabled;
-	// Forking needs both the candidate list and the fork command itself.
-	elements.forkSessionButton.hidden =
-		!ui.capabilities.fork || !ui.capabilities.forkMessages;
-	elements.forkSessionButton.disabled = !enabled;
-	// The menu exists only for the items it holds: a trigger that opens onto
-	// nothing is worse than no trigger. An open menu also closes when the
-	// connection those items act on goes away.
-	const hasSessionMenuItems =
-		!elements.cloneSessionButton.hidden || !elements.forkSessionButton.hidden;
-	elements.sessionMenuButton.hidden = !hasSessionMenuItems;
-	elements.sessionMenuButton.disabled = !enabled;
-	if (!hasSessionMenuItems || !enabled) dismissSessionMenu();
-	// An open picker outlives neither a disconnect nor a turn starting: its entry
-	// ids belong to the session as it was when the list was fetched.
-	if (elements.forkSessionButton.hidden || !enabled || ui.busy) {
-		dismissForkPicker();
-	}
-	elements.modelSelect.disabled = !enabled || ui.models.length === 0;
-	elements.thinkingSelect.disabled = !enabled || ui.thinkingLevels.length <= 1;
-	const activeSelect = selectorController.activeKind;
-	if (activeSelect && selectorController.trigger(activeSelect).disabled) {
-		selectorController.close(false);
-	}
-	if (!enabled) {
-		dismissCommandPalette();
-		mentionController.dismiss();
-	}
-	reflowComposerTools();
+	composerRenderer.renderStatusRow();
+	composerRenderer.renderSendButton();
+	composerRenderer.renderAvailability();
+	headerRenderer.renderActions();
+	composerRenderer.finishRender();
 	composerFocusRequests.attempt();
 
-	// Relative labels can change text width, so update them before measuring the
-	// transcript's final bottom for this render pass.
+	// Pin only after all regions finish writing DOM and refreshing time labels.
 	refreshRelativeTimes();
-	// Bottom-pinning happens after every DOM write in this pass, so the height it
-	// reads is final. Whether it runs at all is the ScrollAnchor's decision, which
-	// was already made from scroll events and reader gestures. The chip reads the
-	// same final metrics right after — a pin can retire it without a scroll event.
 	scrollAnchor.stickToBottomIfFollowing();
 	syncJumpToBottomButton();
 	scheduleTranscriptMeasure();
 }
 
-/**
- * Chooses how much of the composer toolbar fits.
- *
- * Three states, widest first: both pickers labelled, both as icons, then both
- * hidden. Every control is shown at full size or not at all, and the row's gaps
- * are identical in all three — narrowing the sidebar removes controls but never
- * squeezes, truncates, or clips them.
- *
- * The last state is not optional. A VS Code sidebar drags down to roughly 170px,
- * which leaves about 128px inside the composer's padding, while five controls need
- * about 158px. Something has to go, and hiding whole controls beats slicing an
- * icon in half.
- *
- * Known limitation: while hidden, model and thinking cannot be changed from this
- * view at all — the extension registers no command for either, and the status row
- * reports only context and cost. Widening the sidebar restores both pickers.
- *
- * Measured rather than driven by a media query because label widths range from
- * "Max" to "Claude Sonnet 4.5 (latest)", so no fixed breakpoint is right for
- * every model. All reads happen in one frame, so intermediate states are never
- * painted.
- */
-/**
- * The composer tools row's own text, as of the last fold measurement.
- *
- * The fold turns on whether the row's content outgrows its width, and those are
- * its only two inputs. The width is reported by the ResizeObserver above, which
- * clears this to ask for a fresh measurement; the text is read here because
- * nothing else reports it. Caching both is what lets a render pass that changed
- * neither skip the measurement — and the measurement is not free: removing a
- * class and reading `scrollWidth` in the same turn forces a synchronous layout,
- * in a function `render()` calls on every streaming frame.
- */
-let composerToolsFoldSignature: string | undefined;
-
-function reflowComposerTools(): void {
-	const tools = elements.composerTools;
-	const signature = `${elements.modelSelectValue.textContent}\u0000${elements.thinkingSelectValue.textContent}`;
-	if (signature === composerToolsFoldSignature) return;
-	composerToolsFoldSignature = signature;
-	tools.classList.remove("is-icons", "is-minimal");
-	if (tools.scrollWidth <= tools.clientWidth) return;
-	tools.classList.add("is-icons");
-	if (tools.scrollWidth <= tools.clientWidth) return;
-	tools.classList.add("is-minimal");
-}
 
 const PREVIEWABLE_IMAGE_SELECTOR = ".message-image, .message-media";
 
@@ -2313,1126 +1317,8 @@ function applyMediaFallback(image: HTMLImageElement, source: string): void {
 	image.replaceWith(fallback);
 }
 
-/**
- * Queues the pinned label's layout reads in the coordinator's measure phase.
- *
- * A scroll and a streaming update often arrive before the same paint. Reading
- * prompt bounds before render writes the next delta avoids a forced layout and
- * keeps measurement, rendering, and bottom following inside one native frame.
- */
-function scheduleTranscriptMeasure(): void {
-	frameCoordinator.scheduleMeasure();
-}
 
-function scheduleTranscriptScrollSettle(): void {
-	if (transcriptScrollSettleTimer !== undefined) {
-		clearTimeout(transcriptScrollSettleTimer);
-	}
-	transcriptScrollSettleTimer = setTimeout(() => {
-		transcriptScrollSettleTimer = undefined;
-		if (scrollAnchor.finishUserScroll()) {
-			scrollAnchor.stickToBottomIfFollowing();
-		}
-		scheduleTranscriptMeasure();
-	}, 120);
-}
 
-function renderConnectionBanner(): void {
-	const show =
-		ui.connection === "disconnected" ||
-		ui.connection === "error" ||
-		ui.connection === "no-workspace";
-	elements.connectionBanner.hidden = !show;
-	if (!show) return;
-
-	elements.connectionBanner.replaceChildren();
-	const text = document.createElement("span");
-	text.textContent = ui.connectionDetail || "Pi is unavailable.";
-	elements.connectionBanner.append(text);
-	if (ui.connection !== "no-workspace") {
-		const restart = document.createElement("button");
-		restart.type = "button";
-		restart.className = "text-button";
-		restart.append(
-			createCodicon("refresh"),
-			document.createTextNode(" Restart"),
-		);
-		restart.addEventListener("click", () => runAction("restart"));
-		elements.connectionBanner.append(restart);
-	}
-}
-
-/**
- * Reconciles the transcript against `ui.messages` plus the in-flight reply.
- *
- * Only messages whose render signature changed are rebuilt. During streaming
- * that is the last message and nothing else, so history nodes stay in the DOM
- * untouched and the reader's scroll position keeps its anchor.
- */
-function renderMessages(): void {
-	const resultMap = toolResults;
-	const streamingMessage = ui.streamingMessage;
-	// pi opens assistant messages with an empty `content: []` and fills them
-	// via message_update deltas. Rendering that empty shell would insert a
-	// blank message slot (20px of flex gap plus the article) that shoves a
-	// bottom-anchored transcript up before the first delta arrives — the
-	// visible "jump" right as streaming starts. Skip the placeholder until a
-	// content block exists; the busy indicator already covers the gap.
-	let streamingVisible = false;
-	if (streamingMessage) {
-		const content = streamingMessage.content;
-		streamingVisible =
-			typeof content === "string"
-				? content.length > 0
-				: Array.isArray(content) && content.length > 0;
-	}
-	const live = streamingVisible ? streamingMessage : undefined;
-	// `withLiveReply` keeps the reply ahead of anything pi delivered while it was
-	// still revealing its buffered tail.
-	const allMessages = withLiveReply(ui.messages, live, ui.streamingIndex);
-	// Invisible roles (tool results, hidden custom messages) render to an empty
-	// string. Dropping them here keeps the entry list aligned one-to-one with the
-	// container's children, which is what lets reconciliation address nodes by
-	// position, and stops them consuming the render cap.
-	const renderable = allMessages.filter(isRenderableMessage);
-	const capped = renderable.slice(-MAX_RENDERED_MESSAGES);
-	// A fresh build of a big window stages its tail first (see `progressiveWindow`);
-	// an in-flight backfill keeps widening. Incremental passes on a built view are
-	// the identity.
-	const visible = progressiveWindow.window(capped, transcriptView.size === 0);
-	// History is dropped in two places: the host sends only the newest messages, and
-	// this cap keeps the newest 150 of those. The reader is told the total, not just
-	// the part this cap is responsible for. Computed from the full capped window
-	// rather than the staged subset, so the count holds steady while the backfill
-	// runs.
-	const omitted = renderable.length - capped.length + ui.omittedMessageCount;
-	pruneExpandedThinkingKeys(visible);
-
-	const entries: TranscriptEntry[] = [];
-	if (omitted > 0) {
-		entries.push({
-			key: "history-omitted",
-			signature: `omitted:${omitted}`,
-		});
-	}
-	// Keyed by identity rather than index: `slice(-150)` shifts every index by one
-	// as history grows past the cap, which would invalidate all 150 nodes on the
-	// message that crosses the boundary.
-	const byKey = new Map<string, PiMessage>();
-	const separatorLabels = new Map<string, string>();
-	const locale = ui.timeContext.locale || undefined;
-	let previousDayEpoch: number | undefined;
-	for (const message of visible) {
-		const key = messageKey(message);
-		byKey.set(key, message);
-		const epochMs = normalizeEpochMs(message.timestamp);
-		if (epochMs !== undefined) {
-			// The separator is its own entry, so a day boundary never forces the
-			// message itself to be rebuilt and reconciliation keeps addressing
-			// nodes positionally.
-			if (isNewLocalDay(previousDayEpoch, epochMs)) {
-				const label = formatDaySeparator(epochMs, hostNow(), locale);
-				const separatorKey = `day-${key}`;
-				separatorLabels.set(separatorKey, label);
-				entries.push({ key: separatorKey, signature: `day:${label}` });
-			}
-			previousDayEpoch = epochMs;
-		}
-		entries.push({
-			key,
-			// The epoch joins the signature so a corrected timestamp rebuilds the
-			// node; the relative label itself is refreshed in place instead.
-			signature: `${messageRenderSignature(
-				message,
-				resultMap,
-				liveTools,
-				message === ui.streamingMessage,
-				messageSignaturePart,
-			)}|ts${epochMs ?? "-"}|tk${thinkingVisibilitySignature(message, key)}`,
-		});
-	}
-
-	pendingMessageRender = { byKey, omitted, resultMap, separatorLabels };
-	transcriptView.update(entries);
-	pendingMessageRender = undefined;
-	if (visible.length < capped.length) {
-		// More of the window to build: widen it next frame.
-		scheduleRender();
-	}
-}
-
-/**
- * Folded into the render signature so toggling a thinking block rebuilds its
- * message with the new form. With no expansions the suffix is a constant, so
- * it adds nothing to the common no-op path.
- */
-function thinkingVisibilitySignature(
-	message: PiMessage,
-	messageKey: string,
-): string {
-	const blocks = Array.isArray(message.content) ? message.content : [];
-	let state = "";
-	let thinkingIndex = 0;
-	for (const block of blocks) {
-		if (block.type !== "thinking") continue;
-		state += expandedThinkingKeys.has(`${messageKey}-thinking-${thinkingIndex}`)
-			? "1"
-			: "0";
-		thinkingIndex += 1;
-	}
-	return state || "-";
-}
-
-/** Drops disclosure state for messages no longer retained by the transcript. */
-function pruneExpandedThinkingKeys(messages: readonly PiMessage[]): void {
-	if (expandedThinkingKeys.size === 0) return;
-	const retained = new Set<string>();
-	for (const message of messages) {
-		const key = messageKey(message);
-		const blocks = Array.isArray(message.content) ? message.content : [];
-		let thinkingIndex = 0;
-		for (const block of blocks) {
-			if (block.type !== "thinking") continue;
-			retained.add(`${key}-thinking-${thinkingIndex}`);
-			thinkingIndex += 1;
-		}
-	}
-	for (const key of expandedThinkingKeys) {
-		if (!retained.has(key)) expandedThinkingKeys.delete(key);
-	}
-}
-
-/**
- * Builds one message's DOM node, carrying over the disclosure state of the node
- * it replaces.
- *
- * Reads the pass-wide inputs from `pendingMessageRender` because TranscriptView
- * hands back only the entry it was given; keeping the entry to a key and a
- * signature is what makes reconciliation cheap to compare.
- */
-
-/**
- * Re-renders only the sections of a streaming message whose content changed.
- *
- * Streaming runs this once per delta. The message node already in the DOM is
- * the same shape as what `assistantMessageSections` will produce — the block
- * sequence only grows, never reshuffles — so the frame's work reduces to:
- *
- * 1. render each section's HTML and hash it;
- * 2. walk the previous node's sections in order, reusing any whose key and
- *    hash still match (no DOM churn, layout state and expandable state kept);
- * 3. replace or insert the remaining ones, and drop sections that ended
- *    (e.g. a text block that flushed its trailing activity timeline);
- * 4. run the post-processing passes only over the *new* nodes, since the
- *    reused ones were already enhanced and linkified when they were built.
- *
- * Returns the same node, or `undefined` when the previous DOM does not match
- * the expected shape (first frame, a settled message, a non-assistant role, or
- * any structural surprise) — the caller then falls back to a full rebuild,
- * which is the pre-existing, correct path.
- */
-function patchStreamingMessage(
-	slot: Element,
-	message: PiMessage,
-	resultMap: ReadonlyMap<string, PiMessage>,
-	messageKey: string,
-): Element | undefined {
-	const sections = assistantMessageSections(
-		message,
-		resultMap,
-		liveTools,
-		true,
-		messageKey,
-		true,
-		expandedThinkingKeys,
-	);
-	const host = slot.querySelector(":scope > .message");
-	if (!host || !host.classList.contains("assistant-message")) return undefined;
-
-	// Capture disclosure state before touching the DOM: `slot` is both the
-	// previous node and the node we hand back, so a re-read after patching
-	// would see the post-patch (collapsed) state and lose the reader's choice.
-	const snapshot = captureExpandableState(slot);
-
-	// Sections currently in the DOM, in order. The message is the ONLY child of
-	// the slot (see createMessageNode), so this is the full section list.
-	const oldSections = Array.from(host.children).filter(
-		(child): child is HTMLElement => child instanceof HTMLElement,
-	);
-	const previous = new Map<string, HTMLElement>();
-	for (const el of oldSections) {
-		const key = el.dataset.sectionKey;
-		if (key) previous.set(key, el);
-	}
-
-	const freshNodes: Element[] = [];
-	for (const section of sections) {
-		const old = previous.get(section.key);
-		if (old && old.dataset.sectionHash === section.hash) {
-			// Unchanged since the last frame: keep the node and everything the
-			// browser has computed for it. Streaming sections cannot trust the
-			// O(1) marker alone: it samples only length plus edge characters, so
-			// an equal-length rewrite in the middle (a provider correction) would
-			// slip through as "unchanged". Confirm against the last source text
-			// before skipping; static sections hash the full content and are safe.
-			if (
-				!section.streamUpdate ||
-				streamingSectionUnchanged(old, section.streamUpdate.text)
-			) {
-				continue;
-			}
-		}
-		if (old && section.streamUpdate && appendStreamingText(old, section)) {
-			continue;
-		}
-		const nodes = sanitizedNodes(section.html);
-		if (nodes.length !== 1 || !(nodes[0] instanceof Element)) {
-			return undefined;
-		}
-		const fresh = nodes[0] as HTMLElement;
-		if (section.streamUpdate) {
-			materializeStreamingText(fresh, section.streamUpdate);
-		}
-		if (old) {
-			host.replaceChild(fresh, old);
-		} else {
-			host.append(fresh);
-		}
-		if (!section.streamUpdate) freshNodes.push(fresh);
-	}
-
-	// Drop sections whose key left the list (a pending activity timeline that
-	// was flushed after a text block ended, or a tool that disappeared).
-	const wanted = new Set(sections.map((section) => section.key));
-	for (const el of oldSections) {
-		const key = el.dataset.sectionKey;
-		if (key && !wanted.has(key)) {
-			el.remove();
-		} else if (!key) {
-			// A node this path did not create: its structure is unknown, so let
-			// the caller rebuild the whole message instead of guessing.
-			return undefined;
-		}
-	}
-
-	// New nodes need the passes renderers get once; reused nodes keep theirs.
-	for (const node of freshNodes) {
-		enhanceRenderedNodes(node);
-	}
-	applyExpandableState(host, snapshot);
-
-	return slot;
-}
-
-function materializeStreamingText(
-	sectionRoot: HTMLElement,
-	update: {
-		selector?: string;
-		text: string;
-		format: "markdown" | "plain";
-	},
-): void {
-	const target = update.selector
-		? sectionRoot.querySelector<HTMLElement>(update.selector)
-		: sectionRoot;
-	if (!target) return;
-	streamingSectionSource.set(sectionRoot, update.text);
-	if (update.format === "plain") {
-		target.replaceChildren(document.createTextNode(update.text));
-		return;
-	}
-	materializeStreamingMarkdown(sectionRoot, target, update.text);
-}
-
-/**
- * True when a streaming section's text has not changed since its last patch.
- *
- * Streaming text is almost always append-only, so the length/edge-character
- * section hash already routes grown frames past this check. Only the rare
- * equal-length frame reaches here: "nothing changed" compares by reference and
- * exits in O(1), while a genuine equal-length rewrite pays one exact string
- * comparison and is re-materialized instead of being skipped as unchanged.
- */
-function streamingSectionUnchanged(
-	sectionRoot: HTMLElement,
-	currentText: string,
-): boolean {
-	const previousText = streamingSectionSource.get(sectionRoot);
-	if (previousText === undefined) return false;
-	return previousText === currentText;
-}
-
-function materializeStreamingMarkdown(
-	sectionRoot: HTMLElement,
-	target: HTMLElement,
-	text: string,
-): void {
-	const parts = streamingMarkdownParts(text);
-	const stableNodes = sanitizedNodes(parts.stableHtml);
-	const active = document.createElement("div");
-	active.className = "streaming-markdown-active";
-	active.replaceChildren(...sanitizedNodes(parts.activeHtml));
-	target.replaceChildren(...stableNodes, active);
-	sectionRoot.dataset.streamStableLength = String(parts.stableSourceLength);
-	sectionRoot.dataset.streamAppendMode = parts.appendMode;
-	enhanceStableStreamingNodes(stableNodes);
-}
-
-/** Updates only the active Markdown tail and mounts newly stable tokens once. */
-function appendStreamingText(
-	sectionRoot: HTMLElement,
-	section: {
-		hash: string;
-		streamUpdate?: {
-			selector?: string;
-			text: string;
-			format: "markdown" | "plain";
-		};
-	},
-): boolean {
-	const update = section.streamUpdate;
-	if (!update) return false;
-	const target = update.selector
-		? sectionRoot.querySelector<HTMLElement>(update.selector)
-		: sectionRoot;
-	if (!target) return false;
-	const previousLength = Number(sectionRoot.dataset.streamLength);
-	if (
-		!Number.isSafeInteger(previousLength) ||
-		previousLength < 0 ||
-		update.text.length < previousLength
-	) {
-		return false;
-	}
-
-	if (update.format === "plain") {
-		const textNode = target.firstChild;
-		if (
-			!(textNode instanceof Text) ||
-			target.childNodes.length !== 1 ||
-			textNode.data.length !== previousLength
-		) {
-			return false;
-		}
-		textNode.appendData(update.text.slice(previousLength));
-	} else {
-		const active = Array.from(target.children).find((child) =>
-			child.classList.contains("streaming-markdown-active"),
-		);
-		const stableSourceLength = Number(sectionRoot.dataset.streamStableLength);
-		if (
-			!(active instanceof HTMLElement) ||
-			!Number.isSafeInteger(stableSourceLength)
-		) {
-			materializeStreamingMarkdown(sectionRoot, target, update.text);
-		} else {
-			const suffix = update.text.slice(previousLength);
-			const appendMode = sectionRoot.dataset.streamAppendMode;
-			const didAppend =
-				appendMode === "plain"
-					? isPlainMarkdownSuffix(suffix) &&
-						appendToLastTextNode(active, suffix)
-					: appendMode === "code"
-						? isSafeCodeSuffix(suffix) && appendToCodeTail(active, suffix)
-						: false;
-			if (didAppend) {
-				sectionRoot.dataset.streamLength = String(update.text.length);
-				sectionRoot.dataset.sectionHash = section.hash;
-				return true;
-			}
-			const parts = streamingMarkdownParts(update.text, stableSourceLength);
-			if (parts.reset) {
-				materializeStreamingMarkdown(sectionRoot, target, update.text);
-			} else {
-				const stableNodes = sanitizedNodes(parts.stableHtml);
-				if (stableNodes.length > 0) {
-					active.before(...stableNodes);
-					enhanceStableStreamingNodes(stableNodes);
-				}
-				active.replaceChildren(...sanitizedNodes(parts.activeHtml));
-				sectionRoot.dataset.streamStableLength = String(
-					parts.stableSourceLength,
-				);
-				sectionRoot.dataset.streamAppendMode = parts.appendMode;
-			}
-		}
-	}
-	sectionRoot.dataset.streamLength = String(update.text.length);
-	sectionRoot.dataset.sectionHash = section.hash;
-	streamingSectionSource.set(sectionRoot, update.text);
-	return true;
-}
-
-function isPlainMarkdownSuffix(value: string): boolean {
-	return value.length > 0 && /^[\p{L}\p{M}\p{N}\p{Zs}]+$/u.test(value);
-}
-
-function isSafeCodeSuffix(value: string): boolean {
-	return value.length > 0 && !/[\r\n`~]/u.test(value);
-}
-
-function appendToCodeTail(root: Element, suffix: string): boolean {
-	const code = root.querySelector("pre > code");
-	if (!code) return false;
-	const lastChild = code.lastChild;
-	if (lastChild instanceof Text) lastChild.appendData(suffix);
-	else code.append(document.createTextNode(suffix));
-	return true;
-}
-
-function appendToLastTextNode(root: Element, suffix: string): boolean {
-	if (!suffix) return true;
-	// Marked emits formatting whitespace between block nodes. Appending to the
-	// last text node in a TreeWalker can therefore put characters after `</p>` or
-	// `</li>`; the next Markdown pass moves them back inside the block and creates
-	// the visible jump reported by readers. Always descend from the final semantic
-	// element instead, ignoring whitespace-only siblings owned by the serializer.
-	const semanticRoot = streamingAppendRoot(root);
-	const walker = document.createTreeWalker(semanticRoot, NodeFilter.SHOW_TEXT);
-	let lastText: Text | undefined;
-	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-		lastText = node as Text;
-	}
-	if (!lastText) return false;
-	lastText.appendData(suffix);
-	return true;
-}
-
-function streamingAppendRoot(root: Element): Element {
-	let current = root.lastElementChild ?? root;
-	while (current.matches("ul, ol, blockquote") && current.lastElementChild) {
-		current = current.lastElementChild;
-	}
-	return current;
-}
-
-function enhanceStableStreamingNodes(nodes: Node[]): void {
-	for (const node of nodes) {
-		if (!(node instanceof Element)) continue;
-		enhanceRenderedNodes(node);
-	}
-}
-
-function createMessageNode(
-	entry: TranscriptEntry,
-	previous: Element | undefined,
-): Element {
-	const context = pendingMessageRender;
-	if (!context)
-		throw new Error("createMessageNode called outside renderMessages");
-	if (entry.key === "history-omitted") {
-		const node = document.createElement("div");
-		node.className = "history-omitted";
-		node.textContent = `${context.omitted} earlier messages omitted`;
-		return node;
-	}
-
-	const separatorLabel = context.separatorLabels.get(entry.key);
-	if (separatorLabel !== undefined) {
-		const node = document.createElement("div");
-		node.className = "day-separator";
-		node.setAttribute("role", "separator");
-		node.textContent = separatorLabel;
-		return node;
-	}
-
-	const message = context.byKey.get(entry.key);
-	if (!message) throw new Error(`No message for transcript key ${entry.key}`);
-
-	// Streaming fast path: the node already in the DOM must not be swapped out
-	// wholesale every delta. Rebuilding it loses the browser's layout state for
-	// everything in the message (re-parsing 40KB of markdown + relaying out ~13ms
-	// per frame at the top end, inside the 16ms frame budget). Keep the node
-	// stable, rewrite only the blocks whose content actually changed, and hand
-	// it straight back so TranscriptView swaps nothing either.
-	if (previous && message === ui.streamingMessage) {
-		const patched = patchStreamingMessage(
-			previous,
-			message,
-			context.resultMap,
-			entry.key,
-		);
-		if (patched) {
-			applyMessageBoundaryClasses(patched, message);
-			return patched;
-		}
-	}
-
-	// The same stable key feeds messageHtml's per-block keys. A positional index
-	// would shift for every message once history passes the render cap, which
-	// would silently collapse reasoning blocks the reader had opened.
-	const isStreaming = message === ui.streamingMessage;
-	const html = messageHtml(
-		message,
-		context.resultMap,
-		liveTools,
-		isStreaming,
-		entry.key,
-		expandedThinkingKeys,
-	);
-
-	// One wrapper per message keeps the container's child list aligned with the
-	// entry list, which is what lets reconciliation address nodes positionally.
-	const node = document.createElement("div");
-	node.className = "message-slot";
-	applyMessageBoundaryClasses(node, message);
-	node.replaceChildren(...sanitizedNodes(html));
-	restoreExpandableState(node, previous);
-	if (!isStreaming) {
-		enhanceRenderedNodes(node);
-	}
-	return node;
-}
-
-/** Marks message edges used for spacing across RPC rows and conversation turns. */
-function applyMessageBoundaryClasses(slot: Element, message: PiMessage): void {
-	const blocks = Array.isArray(message.content) ? message.content : [];
-	const visibleBlocks = blocks.filter(
-		(block) => block.type !== "text" || (block.text ?? "").trim().length > 0,
-	);
-	const firstBlock = visibleBlocks[0];
-	const lastBlock = visibleBlocks.at(-1);
-	slot.classList.toggle("user-turn", message.role === "user");
-	slot.classList.toggle(
-		"assistant-starts-text",
-		message.role === "assistant" && firstBlock?.type === "text",
-	);
-	slot.classList.toggle(
-		"assistant-ends-thinking",
-		message.role === "assistant" && lastBlock?.type === "thinking",
-	);
-}
-
-/**
- * Carries DOM-owned disclosure state across a message rebuild.
- *
- * Thinking is deliberately absent: `expandedThinkingKeys` is its single source
- * of truth. Restoring the previous DOM class after a click would overwrite the
- * newly requested state and make the block appear impossible to open. Tool and
- * skill expansion still lives only in the DOM, so those states are preserved.
- */
-interface ExpandableSnapshot {
-	tools: Set<string>;
-	skills: Set<string>;
-}
-
-function captureExpandableState(previous: Element): ExpandableSnapshot {
-	const tools = new Set<string>();
-	for (const tool of previous.querySelectorAll<HTMLElement>(
-		".tool-call.expandable.expanded[data-tool-key]",
-	)) {
-		const key = tool.dataset.toolKey;
-		if (key) tools.add(key);
-	}
-	const skills = new Set<string>();
-	for (const skill of previous.querySelectorAll<HTMLElement>(
-		".skill-block[data-skill-key]",
-	)) {
-		const key = skill.dataset.skillKey;
-		if (key && skill.classList.contains("expanded")) skills.add(key);
-	}
-	return { tools, skills };
-}
-
-function applyExpandableState(
-	node: Element,
-	snapshot: ExpandableSnapshot,
-): void {
-	if (snapshot.tools.size === 0 && snapshot.skills.size === 0) return;
-	for (const tool of node.querySelectorAll<HTMLElement>(
-		".tool-call.expandable[data-tool-key]",
-	)) {
-		const key = tool.dataset.toolKey;
-		if (key && snapshot.tools.has(key)) {
-			ensureToolBodyMounted(tool);
-			setExpandedState(tool, true);
-		}
-	}
-	for (const skill of node.querySelectorAll<HTMLElement>(
-		".skill-block[data-skill-key]",
-	)) {
-		const key = skill.dataset.skillKey;
-		if (key && snapshot.skills.has(key)) setExpandedState(skill, true);
-	}
-}
-
-function restoreExpandableState(
-	node: Element,
-	previous: Element | undefined,
-): void {
-	if (!previous) return;
-	applyExpandableState(node, captureExpandableState(previous));
-}
-
-/**
- * Applies one expandable's state to both its class and its ARIA attribute.
- *
- * The two must move together: `aria-expanded` is the only channel a screen
- * reader has for this, and the class is the only one CSS has.
- *
- * Reasoning also gets an `aria-label`, because its two states show different
- * text and neither names the control. A tool box is left unlabelled on purpose:
- * its header already names the tool, so an `aria-label` would replace "read
- * src/file.ts" with something vaguer.
- */
-function setExpandedState(element: HTMLElement, expanded: boolean): void {
-	const isThinking = element.dataset.expandable === "thinking";
-	element.classList.toggle(isThinking ? "is-expanded" : "expanded", expanded);
-	element.setAttribute("aria-expanded", expanded ? "true" : "false");
-	if (isThinking) {
-		element.setAttribute(
-			"aria-label",
-			`Reasoning, click to ${expanded ? "collapse" : "expand"}`,
-		);
-	}
-}
-
-/**
- * Toggles the expandable a pointer or key landed on.
- *
- * Ignores a click that ends a text selection: these regions hold output a reader
- * is likely to be copying from, and collapsing the block out from under a drag
- * loses the selection. pi guards the same case in its inline handler.
- */
-function toggleExpandable(element: HTMLElement): void {
-	if (window.getSelection()?.toString()) return;
-	// Expanding content is an explicit request to inspect the current viewport.
-	// Detach before the height changes so the next streaming delta cannot pull the
-	// reader back to the bottom through the newly revealed block.
-	scrollAnchor.detach();
-	const isThinking = element.dataset.expandable === "thinking";
-	const expandedClass = isThinking ? "is-expanded" : "expanded";
-	const isExpanding = !element.classList.contains(expandedClass);
-	if (isThinking) {
-		const thinkingKey = element.dataset.thinkingKey;
-		if (thinkingKey) {
-			pendingThinkingToggleAnchor = {
-				thinkingKey,
-				viewportTop: element.getBoundingClientRect().top,
-			};
-		}
-		setThinkingVisibility(element, isExpanding);
-	} else {
-		if (isExpanding && element.dataset.expandable === "tool") {
-			ensureToolBodyMounted(element);
-		}
-		setExpandedState(element, isExpanding);
-	}
-	scheduleTranscriptMeasure();
-}
-
-/** Keeps the clicked thinking control at the same viewport position after reflow. */
-function restoreThinkingToggleAnchor(): void {
-	const pending = pendingThinkingToggleAnchor;
-	if (!pending) return;
-	pendingThinkingToggleAnchor = undefined;
-	const element = elements.messages.querySelector<HTMLElement>(
-		`.thinking-block[data-thinking-key="${CSS.escape(pending.thinkingKey)}"]`,
-	);
-	if (!element) return;
-	const offset = element.getBoundingClientRect().top - pending.viewportTop;
-	scrollAnchor.adjustBy(offset);
-}
-
-/**
- * Records a thinking toggle so the next frame re-renders the block in its new
- * form. The collapsed form omits the body and the streaming delta entirely, so
- * a toggle must reach the renderer, not just swap a class.
- */
-function setThinkingVisibility(element: HTMLElement, expanded: boolean): void {
-	const thinkingKey = element.dataset.thinkingKey;
-	if (!thinkingKey) return;
-	if (expanded) expandedThinkingKeys.add(thinkingKey);
-	else expandedThinkingKeys.delete(thinkingKey);
-	scheduleRender();
-}
-
-function ensureToolBodyMounted(element: HTMLElement): void {
-	if (element.dataset.toolBody !== "lazy") return;
-	const toolId = element.dataset.toolKey;
-	if (!toolId) return;
-	const html = toolBodyHtml(toolResults.get(toolId), liveTools.get(toolId));
-	if (!html) return;
-	element.append(...sanitizedNodes(html));
-	element.dataset.toolBody = "mounted";
-}
-
-/**
- * Swaps an expanded card's body in place while its output streams.
- *
- * Only the body roots (`tool-output` / `tool-diff`) are replaced — the header,
- * the section's class list, and every other section of the message stay
- * untouched, so a chunk costs one subtree swap instead of a full message
- * rebuild. The card stays mounted: a later collapse keeps this latest body,
- * and re-expanding finds it already current.
- */
-function refreshExpandedToolBody(section: HTMLElement, toolId: string): void {
-	const html = toolBodyHtml(toolResults.get(toolId), liveTools.get(toolId));
-	if (!html) return;
-	for (const child of [...section.children]) {
-		if (
-			child.classList.contains("tool-output") ||
-			child.classList.contains("tool-diff")
-		) {
-			child.remove();
-		}
-	}
-	section.append(...sanitizedNodes(html));
-}
-
-function enhanceRenderedNodes(root: Element): void {
-	enhanceCodeBlocks(root);
-	enhanceMermaidBlocks(root);
-	linkifyWorkspacePaths(root);
-	bindImageReflow(root);
-	enhanceTranscriptImages(root);
-}
-
-function enhanceCodeBlocks(root: ParentNode): void {
-	for (const pre of root.querySelectorAll("pre")) {
-		// `closest`, not `parentElement`: an expandable output wraps its <pre> in a
-		// preview/full pair, so the tool output is no longer the direct parent.
-		// Tool output is not a code block and must not grow a copy button.
-		if (pre.closest(".tool-output")) continue;
-		if (pre.parentElement?.classList.contains("code-block")) continue;
-		// The button must live outside the scrolling <pre> so horizontal scrolling
-		// cannot drag it along: an absolute child is positioned against the
-		// scroll container's content box, not its visible frame.
-		const wrapper = document.createElement("div");
-		wrapper.className = "code-block";
-		pre.replaceWith(wrapper);
-		wrapper.append(pre);
-		const button = document.createElement("button");
-		button.type = "button";
-		button.className = "copy-code-button icon-button";
-		button.title = "Copy code";
-		button.setAttribute("aria-label", "Copy code");
-		button.setAttribute("data-copy-code", "true");
-		button.append(createCodicon("copy"));
-		wrapper.append(button);
-	}
-}
-
-/**
- * Walk rendered assistant/user message text nodes and turn `path/to/file.ts`
- * or `path/to/file.ts:42` tokens into clickable spans. Code blocks, links,
- * and already-processed nodes are skipped so inline code stays literal.
- *
- * Scoped to one freshly built message node rather than the whole transcript:
- * walking every text node in 150 messages on each streaming frame is exactly
- * the per-frame cost that made scrolling stutter, and history has already been
- * linkified in the pass that built it.
- */
-function linkifyWorkspacePaths(root: Element): void {
-	const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-		acceptNode(node): number {
-			const parent = node.parentElement;
-			if (!parent) return NodeFilter.FILTER_REJECT;
-			// Skip code BLOCKS (pre), links, tool/thinking widgets, and
-			// already-linkified spans. Inline <code> is allowed so paths that
-			// pi wraps in backticks still become clickable.
-			if (
-				parent.closest(
-					"pre, a, .tool-call, .thinking-block, [data-workspace-path]",
-				)
-			) {
-				return NodeFilter.FILTER_REJECT;
-			}
-			WORKSPACE_PATH_PATTERN.lastIndex = 0;
-			return WORKSPACE_PATH_PATTERN.test(node.nodeValue ?? "")
-				? NodeFilter.FILTER_ACCEPT
-				: NodeFilter.FILTER_REJECT;
-		},
-	});
-	const targets: Text[] = [];
-	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-		targets.push(node as Text);
-	}
-	for (const textNode of targets) {
-		const text = textNode.nodeValue ?? "";
-		WORKSPACE_PATH_PATTERN.lastIndex = 0;
-		const fragment = document.createDocumentFragment();
-		let lastIndex = 0;
-		let match = WORKSPACE_PATH_PATTERN.exec(text);
-		while (match) {
-			const [full, filePath, lineText] = match;
-			if (match.index > lastIndex) {
-				fragment.append(text.slice(lastIndex, match.index));
-			}
-			const link = document.createElement("span");
-			link.className = "workspace-path-link";
-			link.setAttribute("role", "link");
-			link.tabIndex = 0;
-			link.dataset.workspacePath = filePath;
-			if (lineText) link.dataset.workspaceLine = lineText;
-			link.textContent = full;
-			fragment.append(link);
-			lastIndex = match.index + full.length;
-			match = WORKSPACE_PATH_PATTERN.exec(text);
-		}
-		if (lastIndex === 0) continue;
-		if (lastIndex < text.length) fragment.append(text.slice(lastIndex));
-		textNode.parentNode?.replaceChild(fragment, textNode);
-	}
-}
-
-function renderAttachments(): void {
-	const signature = ui.attachments
-		.map(
-			(attachment) =>
-				`${attachment.id}:${attachment.kind}:${attachment.label}:${attachment.path}`,
-		)
-		.join("\u0000");
-	if (signature === renderedAttachmentSignature) return;
-	renderedAttachmentSignature = signature;
-	elements.attachmentList.replaceChildren();
-	for (const attachment of ui.attachments) {
-		const chip = document.createElement("div");
-		chip.className = "attachment-chip";
-		chip.title = attachment.path;
-		const icon = document.createElement("i");
-		icon.className = `codicon codicon-${attachment.kind === "image" ? "file-media" : "file"}`;
-		const label = document.createElement("span");
-		label.textContent = attachment.label;
-		const remove = document.createElement("button");
-		remove.type = "button";
-		remove.className = "attachment-remove";
-		remove.title = `Remove ${attachment.label}`;
-		remove.setAttribute("aria-label", `Remove ${attachment.label}`);
-		remove.append(createCodicon("close"));
-		remove.addEventListener("click", () => {
-			ui.attachments = ui.attachments.filter(
-				(item) => item.id !== attachment.id,
-			);
-			post({ type: "removeAttachment", id: attachment.id });
-			scheduleRender();
-		});
-		chip.append(icon, label, remove);
-		elements.attachmentList.append(chip);
-	}
-}
-
-function syncPromptHighlightScroll(): void {
-	// Both measurements are taken before either write. Reading them in place cost
-	// two forced layouts per call, and this runs on every render pass as well as on
-	// every scroll and resize.
-	const width = elements.input.clientWidth;
-	const { scrollLeft, scrollTop } = elements.input;
-	if (width > 0) {
-		elements.promptHighlights.style.width = `${width}px`;
-	}
-	elements.promptHighlights.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
-}
-
-function renderComposerHighlights(): void {
-	const text = elements.input.value;
-	if (text.length > MAX_HIGHLIGHTED_COMPOSER_LENGTH) {
-		renderedPromptText = undefined;
-		renderedPromptInputSignature = undefined;
-		elements.promptEditor.classList.remove("has-token-highlights");
-		if (elements.promptHighlights.childNodes.length > 0) {
-			elements.promptHighlights.replaceChildren();
-		}
-		syncPromptHighlightScroll();
-		return;
-	}
-	const references = composerController
-		.managedReferences()
-		.sort((left, right) => left.start - right.start || left.end - right.end);
-	const commandNames = ui.commands.map((command) => command.name);
-	const inputSignature = [
-		...references.map(
-			(reference) =>
-				`reference:${reference.id}:${reference.revision}:${reference.start}:${reference.end}`,
-		),
-		// The names, not the ranges they resolve to: this signature has to be cheaper
-		// than what it guards, and the ranges are what it guards.
-		`commands:${commandNames.join("\u0000")}`,
-	].join("\u0000");
-	if (
-		text === renderedPromptText &&
-		inputSignature === renderedPromptInputSignature
-	) {
-		syncPromptHighlightScroll();
-		return;
-	}
-	renderedPromptText = text;
-	renderedPromptInputSignature = inputSignature;
-	const commandRanges = commandHighlightRanges(text, commandNames);
-
-	const ranges = [
-		...references.map(({ start, end }) => ({
-			start,
-			end,
-			className: "composer-reference-highlight",
-		})),
-		...commandRanges.map(({ start, end }) => ({
-			start,
-			end,
-			className: "composer-command-highlight",
-		})),
-	].sort((left, right) => left.start - right.start || left.end - right.end);
-	elements.promptEditor.classList.toggle(
-		"has-token-highlights",
-		ranges.length > 0,
-	);
-	if (ranges.length === 0) {
-		elements.promptHighlights.replaceChildren();
-		syncPromptHighlightScroll();
-		return;
-	}
-
-	const fragment = document.createDocumentFragment();
-	let cursor = 0;
-	for (const range of ranges) {
-		if (range.start < cursor) continue;
-		fragment.append(document.createTextNode(text.slice(cursor, range.start)));
-		const highlight = document.createElement("mark");
-		highlight.className = range.className;
-		highlight.textContent = text.slice(range.start, range.end);
-		fragment.append(highlight);
-		cursor = range.end;
-	}
-	fragment.append(document.createTextNode(text.slice(cursor)));
-	if (text.endsWith("\n")) fragment.append(document.createTextNode("\u200b"));
-	elements.promptHighlights.replaceChildren(fragment);
-	syncPromptHighlightScroll();
-}
-
-function renderSelectors(): void {
-	const model = ui.state.model;
-	elements.modelSelectValue.textContent = model
-		? model.name || model.id
-		: "No model";
-	elements.modelSelect.title = model
-		? `${model.provider}/${model.id}`
-		: "No model";
-
-	elements.thinkingSelectValue.textContent = ui.state.thinkingLevel || "off";
-	elements.thinkingSelect.title = ui.state.thinkingLevel || "Thinking level";
-
-	// Preserve focus while streaming renders update the selected value.
-	selectorController.syncSelected();
-}
-
-function renderQueue(): void {
-	// pi reports the two queues separately (queue_update), and which queue a
-	// message sits in is the only visible difference between the delivery
-	// modes, so the counts are shown separately rather than merged. The only
-	// statuses kept alongside are transient run states (compacting, retrying).
-	const parts: string[] = [];
-	if (ui.queue.steering.length > 0)
-		parts.push(`${ui.queue.steering.length} steering`);
-	if (ui.queue.followUp.length > 0)
-		parts.push(`${ui.queue.followUp.length} follow-up`);
-	parts.push(...extensionStatuses.values());
-	const text = parts.join(" · ");
-	elements.queueStatus.hidden = text.length === 0;
-	elements.queueStatus.textContent = text;
-	elements.queueStatus.title = text;
-}
-
-function renderWidgets(): void {
-	const lines = [...extensionWidgets.values()].flat();
-	elements.widgetArea.hidden = lines.length === 0;
-	elements.widgetArea.textContent = lines.join("\n");
-}
-
-function renderRuntimeMeta(): void {
-	const locale = ui.timeContext.locale || undefined;
-	const parts: string[] = [];
-	const stats = streamingUsage.displayStats(ui.stats);
-	const context = stats?.contextUsage?.percent;
-	if (typeof context === "number")
-		parts.push(`${Math.round(context)}% context`);
-	if (typeof stats?.cost === "number" && stats.cost > 0)
-		parts.push(formatCost(stats.cost, locale));
-	const text = parts.join(" \u00b7 ");
-	elements.runtimeMeta.hidden = !stats;
-	elements.runtimeMeta.textContent = text || "Usage";
-	elements.runtimeMeta.title = "Session usage details";
-	if (elements.runtimeMeta.hidden) dismissUsagePanel();
-	else if (!elements.usagePanel.hidden) renderUsagePanel();
-}
-
-/**
- * Session usage detail, based on pi's `get_session_stats` snapshot plus the
- * live `message_update` usage deltas while a response is streaming.
- *
- * Nothing here is computed locally beyond summing pi-reported numbers. A
- * `null` context reading is shown as unavailable rather than 0%: pi reports
- * null right after compaction until a fresh assistant response supplies real
- * usage.
- */
-function renderUsagePanel(): void {
-	const locale = ui.timeContext.locale || undefined;
-	const stats = streamingUsage.displayStats(ui.stats);
-	const rows: Array<[string, string]> = [];
-	if (stats) {
-		const usage = stats.contextUsage;
-		if (usage) {
-			rows.push([
-				"Context",
-				usage.tokens === null || typeof usage.percent !== "number"
-					? "Unavailable until the next response"
-					: `${formatTokenCount(usage.tokens, locale)} / ${formatTokenCount(
-							usage.contextWindow,
-							locale,
-						)} (${Math.round(usage.percent)}%)`,
-			]);
-		}
-		const tokens = stats.tokens;
-		if (tokens) {
-			rows.push(
-				["Input", formatTokenCount(tokens.input, locale)],
-				["Output", formatTokenCount(tokens.output, locale)],
-				["Cache read", formatTokenCount(tokens.cacheRead, locale)],
-				["Cache write", formatTokenCount(tokens.cacheWrite, locale)],
-				["Total tokens", formatTokenCount(tokens.total, locale)],
-			);
-		}
-		if (typeof stats.cost === "number")
-			rows.push(["Cost", formatCost(stats.cost, locale)]);
-		if (typeof stats.totalMessages === "number")
-			rows.push(["Messages", formatTokenCount(stats.totalMessages, locale)]);
-		if (typeof stats.toolCalls === "number")
-			rows.push(["Tool calls", formatTokenCount(stats.toolCalls, locale)]);
-	} else {
-		rows.push(["Usage", "Not reported by pi yet"]);
-	}
-
-	const list = document.createElement("dl");
-	list.className = "usage-list";
-	for (const [label, value] of rows) {
-		const term = document.createElement("dt");
-		term.textContent = label;
-		const detail = document.createElement("dd");
-		detail.textContent = value;
-		list.append(term, detail);
-	}
-	elements.usagePanel.replaceChildren(list);
-}
-
-function toggleUsagePanel(): void {
-	if (!elements.usagePanel.hidden) {
-		dismissUsagePanel();
-		return;
-	}
-	renderUsagePanel();
-	elements.usagePanel.hidden = false;
-	elements.runtimeMeta.setAttribute("aria-expanded", "true");
-	positionPopupAbove({
-		container: elements.app,
-		popup: elements.usagePanel,
-		anchor: elements.runtimeMeta,
-	});
-}
-
-function dismissUsagePanel(): void {
-	if (elements.usagePanel.hidden) return;
-	elements.usagePanel.hidden = true;
-	elements.runtimeMeta.setAttribute("aria-expanded", "false");
-}
 
 /**
  * Relabels every visible timestamp in place.
@@ -3480,428 +1366,7 @@ function scheduleRelativeTimeRefresh(epochValues: readonly number[]): void {
 	}, delay);
 }
 
-function renderComposerStatusRow(): void {
-	// The row keeps its slot even when empty: toggling it would change the
-	// transcript height the moment queue/status text appears (e.g. "1 queued"
-	// while pi is busy), which shoves the whole layout up ~21px under a
-	// bottom-anchored viewport and back down when the queue drains.
-	elements.composerStatusRow.hidden = false;
-}
 
-function renderSendButton(): void {
-	const label = ui.busy ? "Stop pi" : "Send message";
-	const icon = elements.sendButton.querySelector("i");
-	if (icon)
-		icon.className = `codicon codicon-${ui.busy ? "debug-stop" : "arrow-up"}`;
-	elements.sendButton.title = label;
-	elements.sendButton.setAttribute("aria-label", label);
-	elements.sendButton.disabled =
-		ui.connection !== "ready" ||
-		(!ui.busy &&
-			(isSubmitPending() || composerController.hasPendingReferences));
-	elements.composer.classList.toggle("busy", ui.busy || isSubmitPending());
-	// Enter's meaning flips with the run state, so a hint that is already open has
-	// to be re-rendered rather than left describing the previous state.
-	if (!elements.sendHint.hidden) {
-		if (elements.sendButton.disabled) hideSendHint();
-		else showSendHint();
-	}
-}
-
-function renderSessions(): void {
-	const queryTerms = elements.sessionSearch.value
-		.trim()
-		.toLocaleLowerCase()
-		.split(/\s+/u)
-		.filter(Boolean);
-	const sessions =
-		queryTerms.length === 0
-			? ui.sessions
-			: ui.sessions.filter((session) => {
-					const searchable =
-						`${session.title}\n${session.excerpt}`.toLocaleLowerCase();
-					return queryTerms.every((term) => searchable.includes(term));
-				});
-
-	if (sessions.length === 0) {
-		const empty = document.createElement("div");
-		empty.className = "session-list-empty";
-		empty.textContent =
-			ui.sessions.length === 0 ? "No saved sessions" : "No matching sessions";
-		elements.sessionList.replaceChildren(empty);
-		return;
-	}
-	const rows = sessions.map((session) => {
-		const row = document.createElement("div");
-		row.className = `session-row${session.active ? " active" : ""}`;
-
-		const openButton = document.createElement("button");
-		openButton.type = "button";
-		openButton.className = "session-open";
-		openButton.title = session.title;
-		if (session.active) openButton.setAttribute("aria-current", "true");
-		const title = document.createElement("strong");
-		title.textContent = session.title;
-		const time = document.createElement("time");
-		const activityAt = session.lastActivityAt ?? session.createdAt;
-		const activityEpoch = normalizeEpochMs(activityAt);
-		if (activityEpoch !== undefined) {
-			const locale = ui.timeContext.locale || undefined;
-			time.dateTime = new Date(activityEpoch).toISOString();
-			time.dataset.epochMs = String(activityEpoch);
-			time.textContent = formatRelativeTime(activityEpoch, hostNow(), locale);
-			time.title = formatAbsoluteTime(activityEpoch, locale);
-		}
-		openButton.append(title, time);
-		openButton.addEventListener("click", () => {
-			if (!session.active) runAction("switchSession", { path: session.path });
-			closeHistory();
-		});
-
-		// Rename requires the active session and delete a non-active one, so the
-		// two are mutually exclusive; share one right-edge action slot instead of
-		// two grid columns, where the disabled twin used to leave a hole beside
-		// whichever button was visible.
-		let actionButton: HTMLButtonElement;
-		if (session.active) {
-			actionButton = document.createElement("button");
-			actionButton.type = "button";
-			actionButton.className = "session-rename";
-			actionButton.title = "Rename session";
-			actionButton.setAttribute("aria-label", `Rename ${session.title}`);
-			actionButton.append(createCodicon("edit"));
-			actionButton.addEventListener("click", () => openRenamePrompt());
-		} else {
-			actionButton = document.createElement("button");
-			actionButton.type = "button";
-			actionButton.className = "session-delete";
-			actionButton.title = "Delete session";
-			actionButton.setAttribute("aria-label", `Delete ${session.title}`);
-			actionButton.append(createCodicon("trash"));
-			// Deliberately unconfirmed: deleting a history entry is a routine
-			// list-management action, and an extra modal makes cleanup tedious.
-			actionButton.addEventListener("click", () =>
-				runAction("deleteSession", { path: session.path }),
-			);
-		}
-
-		row.append(openButton, actionButton);
-		return row;
-	});
-	elements.sessionList.replaceChildren(...rows);
-}
-
-/**
- * The menu behind the header's one overflow trigger: the actions that derive a
- * new session from this one.
- *
- * Duplicating and forking are both conditional — `clone` and `fork` are
- * capabilities a pi build may not have — and both are low-frequency, which is
- * what makes them worth folding away rather than spending two header slots on:
- * every pixel the header keeps goes to the title, which is the one thing in it
- * the reader actually reads. The trigger leaves when its last item does.
- */
-function sessionMenuItems(): HTMLButtonElement[] {
-	return [
-		...elements.sessionMenu.querySelectorAll<HTMLButtonElement>(".menu-item"),
-	].filter((item) => !item.hidden && !item.disabled);
-}
-
-function toggleSessionMenu(): void {
-	if (elements.sessionMenu.hidden) openSessionMenu();
-	else closeSessionMenu();
-}
-
-/**
- * Opens the menu under its trigger, with focus on the first item.
- *
- * Focus moves into the menu on open — the pattern `role="menu"` promises, and
- * what makes the arrow keys usable without reaching for the mouse first. Unlike
- * the composer's pickers this one opens downwards: it hangs off the header, so
- * below is the side with room in it.
- */
-function openSessionMenu(): void {
-	dismissHistory();
-	dismissForkPicker();
-	selectorController.close(false);
-	dismissCommandPalette();
-	mentionController.dismiss();
-	elements.sessionMenu.hidden = false;
-	elements.sessionMenuButton.setAttribute("aria-expanded", "true");
-	positionPopupBelow({
-		container: elements.app,
-		popup: elements.sessionMenu,
-		anchor: elements.sessionMenuButton,
-	});
-	sessionMenuItems()[0]?.focus();
-}
-
-/**
- * Hides the menu and leaves focus alone.
- *
- * Separate from `closeSessionMenu` because most dismissals hand focus to
- * something else that is opening at the same time — the fork picker's search
- * field, an outside click, the window going away.
- */
-function dismissSessionMenu(): void {
-	if (elements.sessionMenu.hidden) return;
-	elements.sessionMenu.hidden = true;
-	elements.sessionMenuButton.setAttribute("aria-expanded", "false");
-}
-
-/** Hides the menu and hands focus back to its trigger. */
-function closeSessionMenu(): void {
-	const wasOpen = !elements.sessionMenu.hidden;
-	dismissSessionMenu();
-	if (wasOpen) elements.sessionMenuButton.focus();
-}
-
-/**
- * Moves focus to the item one navigation key names: the arrows step and wrap,
- * Home and End jump.
- *
- * An empty menu and an unfocused one are handled here rather than in the
- * listener: both resolve to an index, and an index is what this function is
- * about.
- */
-function focusSessionMenuItem(key: string): void {
-	const items = sessionMenuItems();
-	if (items.length === 0) return;
-	if (key === "Home") {
-		items[0]?.focus();
-		return;
-	}
-	if (key === "End") {
-		items.at(-1)?.focus();
-		return;
-	}
-	const active = document.activeElement;
-	const index =
-		active instanceof HTMLButtonElement ? items.indexOf(active) : -1;
-	const delta = key === "ArrowDown" ? 1 : -1;
-	const next = index < 0 ? 0 : (index + delta + items.length) % items.length;
-	items[next]?.focus();
-}
-
-function toggleHistory(): void {
-	if (elements.historyPanel.hidden) {
-		dismissForkPicker();
-		dismissSessionMenu();
-		elements.historyPanel.hidden = false;
-		elements.historyButton.setAttribute("aria-expanded", "true");
-		elements.sessionSearch.value = "";
-		const loading = document.createElement("div");
-		loading.className = "session-list-empty";
-		loading.textContent = "Loading...";
-		elements.sessionList.replaceChildren(loading);
-		elements.sessionSearch.focus();
-		post({ type: "listSessions" });
-	} else {
-		closeHistory();
-	}
-}
-
-function dismissHistory(): void {
-	elements.historyPanel.hidden = true;
-	elements.historyButton.setAttribute("aria-expanded", "false");
-}
-
-function closeHistory(): void {
-	dismissHistory();
-	elements.historyButton.focus();
-}
-
-/**
- * Opens the fork picker and asks the host for the prompt list.
- *
- * The list is re-fetched on every open rather than cached: prompts accumulate as
- * the conversation grows, and a stale list would offer entry ids the host would
- * only reject.
- */
-function openForkPicker(): void {
-	if (ui.connection !== "ready" || ui.busy) return;
-	if (!ui.capabilities.fork || !ui.capabilities.forkMessages) return;
-	dismissHistory();
-	dismissSessionMenu();
-	selectorController.close(false);
-	dismissCommandPalette();
-	mentionController.dismiss();
-	forkCandidates = [];
-	activeForkEntryId = undefined;
-	renderedForkEntryIds = [];
-	forkLoading = true;
-	elements.forkSearch.value = "";
-	elements.forkPanel.hidden = false;
-	elements.forkSessionButton.setAttribute("aria-expanded", "true");
-	// Shown before the list arrives, so the cost of forking is visible while the
-	// reader is still choosing rather than after they have committed.
-	elements.forkDraftWarning.hidden = !composerHasContent();
-	renderForkCandidates();
-	elements.forkSearch.focus();
-	runAction("listForkCandidates");
-}
-
-function dismissForkPicker(): void {
-	if (elements.forkPanel.hidden) return;
-	elements.forkPanel.hidden = true;
-	forkCandidates = [];
-	activeForkEntryId = undefined;
-	renderedForkEntryIds = [];
-	forkLoading = false;
-	elements.forkSearch.removeAttribute("aria-activedescendant");
-	elements.forkList.replaceChildren();
-	elements.forkSessionButton.setAttribute("aria-expanded", "false");
-}
-
-function closeForkPicker(): void {
-	const wasOpen = !elements.forkPanel.hidden;
-	dismissForkPicker();
-	// Focus goes to the trigger, not to the item that opened this picker: that
-	// item lives in the menu, which closed on the way in.
-	if (wasOpen) elements.sessionMenuButton.focus();
-}
-
-/** True when forking would discard something the reader typed or attached. */
-function composerHasContent(): boolean {
-	return (
-		elements.input.value.trim().length > 0 ||
-		ui.attachments.length > 0 ||
-		composerController.references.length > 0
-	);
-}
-
-function matchingForkCandidates(): ForkCandidate[] {
-	const terms = elements.forkSearch.value
-		.trim()
-		.toLocaleLowerCase()
-		.split(/\s+/u)
-		.filter(Boolean);
-	if (terms.length === 0) return forkCandidates;
-	return forkCandidates.filter((candidate) => {
-		const searchable = candidate.text.toLocaleLowerCase();
-		return terms.every((term) => searchable.includes(term));
-	});
-}
-
-function renderForkCandidates(): void {
-	if (forkLoading) {
-		renderedForkEntryIds = [];
-		const loading = document.createElement("div");
-		loading.className = "session-list-empty";
-		loading.textContent = "Loading...";
-		elements.forkList.replaceChildren(loading);
-		elements.forkSearch.removeAttribute("aria-activedescendant");
-		return;
-	}
-	const matches = matchingForkCandidates();
-	renderedForkEntryIds = matches.map((candidate) => candidate.entryId);
-	if (matches.length === 0) {
-		const empty = document.createElement("div");
-		empty.className = "session-list-empty";
-		empty.textContent =
-			forkCandidates.length === 0
-				? "No earlier prompt to fork from"
-				: "No matching prompts";
-		elements.forkList.replaceChildren(empty);
-		elements.forkSearch.removeAttribute("aria-activedescendant");
-		return;
-	}
-	// A filter edit can hide the highlighted row, and a highlight pointing at a
-	// row that is no longer rendered would let Enter fork something invisible.
-	if (activeForkEntryId && !renderedForkEntryIds.includes(activeForkEntryId)) {
-		activeForkEntryId = undefined;
-	}
-	elements.forkList.replaceChildren(
-		...matches.map((candidate, index) => createForkRow(candidate, index)),
-	);
-	highlightActiveFork(false);
-}
-
-function createForkRow(candidate: ForkCandidate, index: number): HTMLElement {
-	const row = document.createElement("div");
-	row.className = "fork-row";
-	row.id = `fork-row-${index}`;
-	row.setAttribute("role", "option");
-	row.setAttribute("aria-selected", "false");
-	row.dataset.forkEntryId = candidate.entryId;
-	row.tabIndex = -1;
-	// The host already collapsed the prompt to one line; an empty one still needs a
-	// visible label or the row would be an unlabelled target.
-	const text = candidate.text || "(empty prompt)";
-	row.title = text;
-
-	const label = document.createElement("span");
-	label.className = "fork-row-text";
-	label.textContent = text;
-	row.append(label);
-
-	const epochMs = normalizeEpochMs(candidate.timestamp);
-	if (epochMs !== undefined) {
-		const time = document.createElement("time");
-		time.className = "fork-row-time";
-		time.dateTime = new Date(epochMs).toISOString();
-		time.dataset.epochMs = String(epochMs);
-		applyRelativeTime(time, epochMs);
-		row.append(time);
-	}
-
-	row.addEventListener("click", () => submitFork(candidate.entryId));
-	return row;
-}
-
-function highlightActiveFork(scroll = true): void {
-	let activeId: string | undefined;
-	for (const row of elements.forkList.querySelectorAll<HTMLElement>(
-		".fork-row",
-	)) {
-		const active = row.dataset.forkEntryId === activeForkEntryId;
-		row.classList.toggle("is-active", active);
-		row.setAttribute("aria-selected", String(active));
-		if (!active) continue;
-		activeId = row.id;
-		if (scroll) row.scrollIntoView({ block: "nearest" });
-	}
-	// Focus stays in the search field, so the pointer to the highlighted row has to
-	// live there rather than on the list.
-	if (activeId)
-		elements.forkSearch.setAttribute("aria-activedescendant", activeId);
-	else elements.forkSearch.removeAttribute("aria-activedescendant");
-}
-
-function moveActiveFork(delta: number): void {
-	if (renderedForkEntryIds.length === 0) return;
-	const current = activeForkEntryId
-		? renderedForkEntryIds.indexOf(activeForkEntryId)
-		: -1;
-	let next: number;
-	if (current < 0) {
-		// Nothing highlighted yet: the wraparound formula would land ArrowUp on
-		// the second-to-last row instead of the last one.
-		next = delta > 0 ? 0 : renderedForkEntryIds.length - 1;
-	} else {
-		next =
-			(current + delta + renderedForkEntryIds.length) %
-			renderedForkEntryIds.length;
-	}
-	activeForkEntryId = renderedForkEntryIds[next];
-	highlightActiveFork();
-}
-
-/**
- * Sends the chosen prompt to the host.
- *
- * The picker closes first: a successful fork replaces the transcript and the
- * composer, so leaving the old list on screen would invite a second click on an
- * entry id that can now only be rejected.
- */
-function submitFork(entryId: string): void {
-	if (ui.connection !== "ready" || ui.busy) return;
-	dismissForkPicker();
-	// Same reasoning as `closeForkPicker`: the item that opened this picker lives
-	// in the menu, which is hidden by now, so focus goes to the trigger.
-	elements.sessionMenuButton.focus();
-	runAction("forkSession", { entryId });
-}
 
 /**
  * Slash-command palette.
@@ -4446,7 +1911,7 @@ function openRenamePrompt(): void {
 		initialValue: ui.state.sessionName ?? "",
 		confirmLabel: "Rename",
 		maxLength: MAX_SESSION_NAME_LENGTH,
-		onSubmit: (name) => runAction("renameSession", { name }),
+		onSubmit: (name: string) => runAction("renameSession", { name }),
 	});
 }
 
@@ -4530,65 +1995,6 @@ function resizeInput(): void {
 	elements.input.style.height = `${Math.min(elements.input.scrollHeight, 150)}px`;
 }
 
-function deriveSessionTitle(): string {
-	if (ui.state.sessionName?.trim()) return ui.state.sessionName.trim();
-	// A snapshot carries only the newest messages, so the prompt a session is named
-	// after has usually left `ui.messages` and the host sends its text along. The
-	// window is a fallback for a session the host could not read one from — and then
-	// it is the oldest visible prompt, not the session's first.
-	const seed = ui.titleSeed || firstWindowedUserText();
-	const text = seed
-		.replace(/^<pi-context>[\s\S]*?<\/pi-context>\s*/u, "")
-		.trim();
-	return truncate(text.replace(/\s+/gu, " "), 54) || "Untitled";
-}
-
-/** Text of the oldest user message the snapshot window still holds. */
-function firstWindowedUserText(): string {
-	const firstUser = ui.messages.find((message) => message.role === "user");
-	return firstUser ? contentText(firstUser.content) : "";
-}
-
-function connectionLabel(): string {
-	if (ui.connection === "ready")
-		return ui.busy ? "Pi is working" : "Pi is ready";
-	if (ui.connection === "starting") return "Pi is starting";
-	if (ui.connection === "no-workspace") return "Workspace required";
-	return ui.connectionDetail || "Pi is disconnected";
-}
-
-function hasEquivalentTail(
-	messages: PiMessage[],
-	candidate: PiMessage,
-): boolean {
-	const tail = messages.at(-1);
-	return Boolean(tail && isSameMessage(tail, candidate));
-}
-
-function asMessage(value: unknown): PiMessage | undefined {
-	if (!value || typeof value !== "object") return undefined;
-	const message = value as PiMessage;
-	return typeof message.role === "string" ? message : undefined;
-}
-
-function cleanExtensionText(value: string): string {
-	return value
-		.replace(ANSI_ESCAPE_PATTERN, "")
-		.replace(ORPHAN_SGR_PATTERN, "")
-		.trim();
-}
-
-function stringArray(value: unknown): string[] {
-	return Array.isArray(value)
-		? value.filter((item): item is string => typeof item === "string")
-		: [];
-}
-
-function truncate(value: string, length: number): string {
-	return value.length > length
-		? `${value.slice(0, Math.max(0, length - 1))}…`
-		: value;
-}
 
 /**
  * The host's wall clock, corrected for webview clock skew.

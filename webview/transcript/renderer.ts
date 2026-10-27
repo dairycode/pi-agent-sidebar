@@ -1131,12 +1131,9 @@ function stabilizeStreamingCodeToken(token: Token): Token {
 	if (bodySource.endsWith("\n") && stableText.endsWith("\n")) {
 		stableText = stableText.slice(0, -1);
 	}
-	const partialFence = new RegExp(
-		`(?:^|\\n) {0,3}${marker[0]}{1,${marker.length - 1}}$`,
-		"u",
-	).exec(bodySource);
+	const partialFence = trailingFenceRun(marker, bodySource);
 	if (partialFence) {
-		stableText = token.text.slice(0, -partialFence[0].length);
+		stableText = token.text.slice(0, -partialFence.length);
 	}
 	return stableText === token.text ? token : { ...token, text: stableText };
 }
@@ -1382,17 +1379,28 @@ function inlineTokensEndInPlainText(tokens: Token[] | undefined): boolean {
 	return lastToken.tokens ? inlineTokensEndInPlainText(lastToken.tokens) : true;
 }
 
+function trailingFenceRun(marker: string, source: string): string | undefined {
+	return new RegExp(
+		`(?:^|\\n) {0,3}${marker[0]}{1,${marker.length - 1}}$`,
+		"u",
+	).exec(source)?.[0];
+}
+
+function hasClosingFence(marker: string, source: string): boolean {
+	return new RegExp(
+		`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*(?:\\n|$)`,
+		"mu",
+	).test(source);
+}
+
 function isOpenFencedCode(raw: string): boolean {
 	const opener = /^(?: {0,3})(`{3,}|~{3,})[^\n]*(?:\n|$)/u.exec(raw);
 	if (!opener) return false;
 	const marker = opener[1];
 	if (!marker) return false;
-	const closingFence = new RegExp(
-		`^ {0,3}${marker[0]}{${marker.length},}[ \\t]*(?:\\n|$)`,
-		"mu",
-	);
-	return !closingFence.test(raw.slice(opener[0].length));
+	return !hasClosingFence(marker, raw.slice(opener[0].length));
 }
+
 
 /**
  * Markdown to sanitized HTML.

@@ -14,6 +14,8 @@ export interface MentionEditor {
 	selectionStart: number | null;
 	selectionEnd: number | null;
 	focus(): void;
+	setAttribute?(name: string, value: string): void;
+	removeAttribute?(name: string): void;
 }
 
 export interface MentionControllerOptions {
@@ -426,10 +428,8 @@ export class MentionController {
 	}
 
 	private setActiveDescendant(rowId: string | undefined): void {
-		const host = this.options.editor as unknown as Partial<HTMLElement>;
-		if (typeof host.setAttribute !== "function") return;
-		if (rowId) host.setAttribute("aria-activedescendant", rowId);
-		else host.removeAttribute?.("aria-activedescendant");
+		if (rowId) this.options.editor.setAttribute?.("aria-activedescendant", rowId);
+		else this.options.editor.removeAttribute?.("aria-activedescendant");
 	}
 }
 

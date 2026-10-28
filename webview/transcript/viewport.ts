@@ -29,21 +29,59 @@ export function createTranscriptViewport(options: TranscriptViewportOptions) {
   cancelFrame: (handle) => frames.cancelScrollFrame(handle),
   shouldAnimate: () => !reducedMotion.matches,
  });
- mountOverlayScrollbar({ viewport: elements.transcript, content: elements.messages, frame: elements.transcriptFrame });
+ mountOverlayScrollbar({
+  viewport: elements.transcript, content: elements.messages, frame: elements.transcriptFrame,
+  onUserIntent: noteUserIntent, onDragStart: startScrollbarDrag, onDragEnd: finishScrollbarDrag,
+ });
  let scrollTimer: ReturnType<typeof setTimeout> | undefined;
  let touchY: number | undefined;
+ let isScrollbarDragging = false;
  function syncJumpButton(): void {
   elements.jumpToBottom.classList.toggle("is-visible", !anchor.isFollowing && anchor.distanceFromBottomPx > 48);
  }
  function scheduleMeasure(): void { frames.scheduleMeasure(); }
  function scheduleScrollSettle(): void {
   if (scrollTimer !== undefined) clearTimeout(scrollTimer);
+  if (isScrollbarDragging) return;
   scrollTimer = setTimeout(() => {
    scrollTimer = undefined;
    if (anchor.finishUserScroll()) anchor.stickToBottomIfFollowing();
    scheduleMeasure();
   }, 120);
  }
+ function noteUserIntent(deltaY: number): void {
+  if (deltaY !== 0) options.cancelSubmitFollow();
+  if (anchor.noteUserIntent(deltaY)) scheduleScrollSettle();
+ }
+ function startScrollbarDrag(): void {
+  isScrollbarDragging = true;
+  if (scrollTimer !== undefined) clearTimeout(scrollTimer);
+  scrollTimer = undefined;
+  options.cancelSubmitFollow();
+  anchor.detach();
+ }
+ function finishScrollbarDrag(): void {
+  isScrollbarDragging = false;
+  // A click without movement emits no intent; preserve the direction of real drags.
+  if (!anchor.isReaderScrolling) anchor.noteUserIntent(1);
+  // Pointer release can arrive before the final native scroll event.
+  anchor.noteScroll();
+  if (anchor.finishUserScroll()) anchor.stickToBottomIfFollowing();
+  syncJumpButton();
+  scheduleMeasure();
+ }
+ function resumeFollowing(): void {
+  if (document.hidden) return;
+  if (anchor.resume()) options.scheduleRender();
+  syncJumpButton();
+  scheduleMeasure();
+ }
+ window.addEventListener("blur", () => anchor.suspend());
+ window.addEventListener("focus", resumeFollowing);
+ document.addEventListener("visibilitychange", () => {
+  if (document.hidden) anchor.suspend();
+  else resumeFollowing();
+ });
  function clearTouchAnchor(): void {
   touchY = undefined;
   if (anchor.isReaderScrolling) scheduleScrollSettle();
@@ -53,22 +91,28 @@ export function createTranscriptViewport(options: TranscriptViewportOptions) {
   syncJumpButton();
  }, { passive: true });
  elements.transcript.addEventListener("wheel", (event) => {
-  if (event.deltaY < 0) options.cancelSubmitFollow();
-  if (anchor.noteUserIntent(event.deltaY)) scheduleScrollSettle();
+  noteUserIntent(event.deltaY);
  }, { passive: true });
  elements.transcript.addEventListener("pointerdown", (event) => {
   if (event.target === elements.transcript) options.cancelSubmitFollow();
  }, { passive: true });
  elements.transcript.addEventListener("keydown", (event) => {
-  if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) options.cancelSubmitFollow();
+  if (event.defaultPrevented) return;
+  if (event.target instanceof Element) {
+   if (event.target.closest("input, textarea, select, [contenteditable]")) return;
+   // Space activates a button; navigation keys still scroll its container.
+   if (event.key === " " && event.target.closest("button")) return;
+  }
+  const isUp = ["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey);
+  const isDown = ["ArrowDown", "PageDown", "End"].includes(event.key) || (event.key === " " && !event.shiftKey);
+  if (isUp || isDown) noteUserIntent(isUp ? -1 : 1);
  });
  elements.transcript.addEventListener("touchstart", (event) => { touchY = event.touches[0]?.clientY; }, { passive: true });
  elements.transcript.addEventListener("touchmove", (event) => {
   const currentY = event.touches[0]?.clientY;
   if (currentY === undefined || touchY === undefined) return;
   const delta = touchY - currentY;
-  if (delta < 0) options.cancelSubmitFollow();
-  if (anchor.noteUserIntent(delta)) scheduleScrollSettle();
+  noteUserIntent(delta);
   touchY = currentY;
  }, { passive: true });
  elements.transcript.addEventListener("touchend", clearTouchAnchor, { passive: true });

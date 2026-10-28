@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { marked, type Token, type Tokens } from "marked";
+import markedCjkFriendly from "marked-cjk-friendly";
 import {
 	parseFileReferencePayload,
 	parseSelectionReferencePayload,
@@ -21,6 +22,13 @@ import {
 import { thinkingGroups, type ThinkingGroup } from "./thinkingGroups.js";
 
 marked.setOptions({ gfm: true, breaks: true });
+const cjkExtension = markedCjkFriendly();
+// marked 15 has no delLDelim rule required by the extension's strikethrough
+// tokenizer. Keep marked's existing strikethrough behavior; enable emphasis only.
+delete cjkExtension.tokenizer?.del;
+// Bundling uses one marked instance; NodeNext otherwise treats its ESM and CJS
+// declarations as distinct types when consuming this ESM-only extension.
+marked.use(cjkExtension as Parameters<typeof marked.use>[0]);
 
 const highlighter: CodeHighlighter = new HighlightJsHighlighter();
 
@@ -1148,11 +1156,35 @@ function stabilizeStreamingCodeToken(token: Token): Token {
  * the authoritative Markdown pass restores any genuinely literal punctuation.
  */
 function stabilizeStreamingDelimiters(source: string): string {
-	let stable = maskUnmatchedRuns(source, "`");
-	stable = maskUnmatchedRuns(stable, "*");
-	stable = maskUnmatchedRuns(stable, "_");
-	stable = maskUnmatchedRuns(stable, "~");
-	return stable;
+	// Protect complete parser-recognized spans (including CJK emphasis), but not
+	// partial runs such as **bold* that marked temporarily interprets as italic.
+	const protectedRanges: Array<{ start: number; end: number }> = [];
+	let offset = 0;
+	for (const token of marked.Lexer.lexInline(source)) {
+		const end = offset + token.raw.length;
+		if (
+			token.type !== "text" &&
+			source[offset - 1] !== token.raw[0] &&
+			source[end] !== token.raw.at(-1)
+		) {
+			protectedRanges.push({ start: offset, end });
+		}
+		offset = end;
+	}
+	const stabilize = (text: string): string => {
+		let stable = maskUnmatchedRuns(text, "`");
+		stable = maskUnmatchedRuns(stable, "*");
+		stable = maskUnmatchedRuns(stable, "_");
+		return maskUnmatchedRuns(stable, "~");
+	};
+	let result = "";
+	offset = 0;
+	for (const range of protectedRanges) {
+		result += stabilize(source.slice(offset, range.start));
+		result += source.slice(range.start, range.end);
+		offset = range.end;
+	}
+	return result + stabilize(source.slice(offset));
 }
 
 interface DelimiterRun {

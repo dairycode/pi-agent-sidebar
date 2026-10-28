@@ -64,6 +64,9 @@ const PROGRAMMATIC_TOLERANCE_PX = 1;
 
 export class ScrollAnchor {
 	private following = true;
+	private isInactive = false;
+	private isImmediatePinPending = false;
+	private isSmoothFollowPending = false;
 	private expectedScrollTop: number | undefined;
 	private snapUntilGesture = false;
 	private absorbedUnexpectedCount = 0;
@@ -99,6 +102,20 @@ export class ScrollAnchor {
 		return scrollHeight - scrollTop - clientHeight;
 	}
 
+	/** Preserve follow intent across background layout changes, not reader gestures. */
+	public suspend(): void {
+		this.isInactive = true;
+	}
+
+	/** Returns whether a foreground render is needed to restore the bottom. */
+	public resume(): boolean {
+		if (!this.isInactive) return false;
+		this.isInactive = false;
+		if (!this.following) return false;
+		this.follow({ immediate: true });
+		return true;
+	}
+
 	/** True while native user scrolling exclusively owns scrollTop. */
 	public get isReaderScrolling(): boolean {
 		return this.readerControlsViewport;
@@ -128,6 +145,12 @@ export class ScrollAnchor {
 		) {
 			return false;
 		}
+		// Start direction tracking at the gesture, not at a stale pre-animation
+		// position: automatic scrolling may not have emitted its scroll event yet.
+		this.lastScrollTop = this.options.viewport.scrollTop;
+		this.lastDistanceFromBottom = this.distanceFromBottomPx;
+		this.isImmediatePinPending = false;
+		this.isSmoothFollowPending = false;
 		this.readerControlsViewport = true;
 		this.readerScrollDirection = deltaY > 0 ? 1 : -1;
 		if (deltaY < 0) this.readerReachedBottom = false;
@@ -147,6 +170,8 @@ export class ScrollAnchor {
 	 * already up to date inside a scroll handler and so force no extra layout.
 	 */
 	public noteScroll(): boolean {
+		// Explicit input still detaches before a background or pending-pin scroll.
+		if (this.following && (this.isInactive || this.isImmediatePinPending || this.isSmoothFollowPending)) return false;
 		const { scrollTop } = this.options.viewport;
 		const distanceFromBottom = this.distanceFromBottomPx;
 		const previousDistanceFromBottom = this.lastDistanceFromBottom;
@@ -261,6 +286,8 @@ export class ScrollAnchor {
 
 	/** Detaches for a local layout change without starting native-scroll ownership. */
 	public detach(): void {
+		this.isSmoothFollowPending = false;
+		this.isImmediatePinPending = false;
 		this.readerControlsViewport = false;
 		this.readerReachedBottom = false;
 		this.readerScrollDirection = 0;
@@ -294,6 +321,9 @@ export class ScrollAnchor {
 	/**
 	 * Forces following again, for actions that imply "show me the latest".
 	 *
+	 * `smooth` protects the trip to the bottom from layout scrolls until arrival.
+	 * Explicit reader input always cancels it.
+	 * `immediate` pins only the next update, then restores smooth streaming.
 	 * `snap` holds every stick to a direct pin — no easing — until the reader
 	 * takes the viewport over with a gesture. A fresh build's offset is
 	 * meaningless, and it stays meaningless for more than one frame: the
@@ -301,7 +331,9 @@ export class ScrollAnchor {
 	 * after the first pin, and easing any of them reads as the transcript
 	 * sliding instead of landing.
 	 */
-	public follow(options?: { snap?: boolean }): void {
+	public follow(options?: { snap?: boolean; immediate?: boolean; smooth?: boolean }): void {
+		this.isSmoothFollowPending = Boolean(options?.smooth);
+		this.isImmediatePinPending = Boolean(options?.immediate);
 		this.readerControlsViewport = false;
 		this.readerReachedBottom = false;
 		this.readerScrollDirection = 0;
@@ -329,7 +361,8 @@ export class ScrollAnchor {
 			0,
 			viewport.scrollHeight - viewport.clientHeight,
 		);
-		if (this.snapUntilGesture) {
+		if (this.snapUntilGesture || this.isImmediatePinPending) {
+			this.isImmediatePinPending = false;
 			this.cancelAnimation();
 			viewport.scrollTop = targetScrollTop;
 			this.expectedScrollTop = viewport.scrollTop;
@@ -357,6 +390,7 @@ export class ScrollAnchor {
 		}
 
 		this.cancelAnimation();
+		this.isSmoothFollowPending = false;
 		viewport.scrollTop = viewport.scrollHeight;
 		this.expectedScrollTop = viewport.scrollTop;
 		return true;
@@ -381,6 +415,11 @@ export class ScrollAnchor {
 		if (!this.following || targetScrollTop === undefined) return;
 
 		const { viewport } = this.options;
+		if (this.isSmoothFollowPending || this.isInactive) {
+			// Layout can change between frames, even before its scroll event arrives.
+			this.animationTargetScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+			this.expectedScrollTop = viewport.scrollTop;
+		}
 		if (!this.isAtExpectedScrollTop(viewport.scrollTop)) {
 			this.following = false;
 			this.cancelAnimation();
@@ -405,6 +444,7 @@ export class ScrollAnchor {
 		const { viewport } = this.options;
 		const remaining = targetScrollTop - viewport.scrollTop;
 		if (remaining <= 0) {
+			this.isSmoothFollowPending = false;
 			this.expectedScrollTop = viewport.scrollTop;
 			this.cancelAnimation();
 			return true;
@@ -418,6 +458,7 @@ export class ScrollAnchor {
 			return false;
 		}
 		viewport.scrollTop = targetScrollTop;
+		this.isSmoothFollowPending = false;
 		this.expectedScrollTop = viewport.scrollTop;
 		this.cancelAnimation();
 		return true;

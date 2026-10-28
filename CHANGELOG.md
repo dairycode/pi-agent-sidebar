@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.3
+
+- Smoothly scroll to the latest message after sending and keep following through
+  message arrival, composer resizing, and other layout changes, including while
+  the visible sidebar is unfocused.
+- Restore bottom following when the sidebar regains focus or becomes visible,
+  without pulling readers away from history. Explicit wheel, touch, keyboard,
+  and overlay-scrollbar input cancels automatic recovery.
+- Fix bold and italic Markdown next to Chinese, Japanese, and Korean punctuation
+  with `marked-cjk-friendly`. Preserve recognized emphasis during streaming as
+  well as in completed messages; keep the existing strikethrough behavior for
+  compatibility with marked 15.
+- Add regression coverage for scroll recovery, submit update ordering, reader
+  gestures, and CJK Markdown rendering, including streaming, escaped markers,
+  nested emphasis, and code blocks.
+
 ## 1.0.2
 
 - Split the sidebar into focused controllers and renderers for host messages,

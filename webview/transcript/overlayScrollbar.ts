@@ -47,6 +47,9 @@ export interface OverlayScrollbarOptions {
 	/** The positioned ancestor the thumb strip docks to. */
 	frame: HTMLElement;
 	hideDelayMs?: number;
+	onUserIntent?: (deltaY: number) => void;
+	onDragStart?: () => void;
+	onDragEnd?: () => void;
 }
 
 /**
@@ -144,6 +147,7 @@ export function mountOverlayScrollbar(options: OverlayScrollbarOptions): void {
 	root.addEventListener(
 		"wheel",
 		(event) => {
+			options.onUserIntent?.(event.deltaY);
 			viewport.scrollTop += event.deltaY;
 		},
 		{ passive: true },
@@ -160,6 +164,7 @@ export function mountOverlayScrollbar(options: OverlayScrollbarOptions): void {
 
 	thumb.addEventListener("pointerdown", (event) => {
 		if (event.button !== 0) return;
+		options.onDragStart?.();
 		dragPointerId = event.pointerId;
 		dragOrigin = { pointerY: event.clientY, scrollTop: viewport.scrollTop };
 		thumb.setPointerCapture(event.pointerId);
@@ -170,18 +175,22 @@ export function mountOverlayScrollbar(options: OverlayScrollbarOptions): void {
 		const travel = viewport.clientHeight - thumbHeight;
 		if (travel <= 0) return;
 		const range = viewport.scrollHeight - viewport.clientHeight;
-		viewport.scrollTop =
+		const targetScrollTop =
 			dragOrigin.scrollTop +
 			((event.clientY - dragOrigin.pointerY) / travel) * range;
+		options.onUserIntent?.(targetScrollTop - viewport.scrollTop);
+		viewport.scrollTop = targetScrollTop;
 	});
 	const endDrag = (event: PointerEvent) => {
 		if (event.pointerId !== dragPointerId) return;
 		dragPointerId = undefined;
 		root.classList.remove("is-dragging");
+		options.onDragEnd?.();
 		scheduleHide(hideDelayMs);
 	};
 	thumb.addEventListener("pointerup", endDrag);
 	thumb.addEventListener("pointercancel", endDrag);
+	thumb.addEventListener("lostpointercapture", endDrag);
 
 	paint();
 }

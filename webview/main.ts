@@ -317,13 +317,10 @@ const transcriptViewport = createTranscriptViewport({
 });
 const { anchor: scrollAnchor, syncJumpButton: syncJumpToBottomButton, scheduleMeasure: scheduleTranscriptMeasure } = transcriptViewport;
 const submitFollowCoordinator = new SubmitFollowCoordinator({
-	// Every coordinator follow lands on a render: `follow` alone clears the
-	// anchor's recorded position, and until the next render pins the viewport a
-	// single native scroll event reads as a reader gesture and undoes it. The
-	// ack and composer-resize paths have no render of their own, so scheduling
-	// here is what closes that gap.
+	// Retarget the smooth trip after acknowledgement/resize without letting
+	// intervening layout scrolls cancel the explicit send intent.
 	onFollow: () => {
-		scrollAnchor.follow();
+		scrollAnchor.follow({ smooth: true });
 		scheduleRender();
 	},
 });
@@ -786,14 +783,6 @@ document.addEventListener("visibilitychange", () => {
 	// retried only from a render pass, and nothing here is guaranteed to schedule
 	// one. The host is waiting on the `composerFocused` reply.
 	composerFocusRequests.attempt();
-	// No frame ran while the view was hidden, but its geometry kept changing:
-	// images finished loading, diagrams mounted, the composer reflowed, and a
-	// resync may have replaced nodes. A viewport that was attached owes itself a
-	// re-pin once frames run again, before any clamp the drift produced can be
-	// mistaken for a reader gesture. A detached one drifted too — its gap moved
-	// with no scroll event to report it, and the chip re-reads that gap here.
-	if (scrollAnchor.isFollowing) scheduleRender();
-	else syncJumpToBottomButton();
 });
 
 window.addEventListener("resize", () => selectorController.reposition());
@@ -1831,7 +1820,7 @@ function sendPrompt(delivery?: SubmitDelivery): void {
 	//
 	// Sending is an explicit "show me what happens next", so it re-attaches the
 	// transcript to its bottom edge even if the reader had scrolled up.
-	scrollAnchor.follow();
+	scrollAnchor.follow({ smooth: true });
 	const actionId = runAction("submit", {
 		text,
 		attachmentIds: ui.attachments.map((attachment) => attachment.id),
